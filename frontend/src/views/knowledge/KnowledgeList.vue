@@ -42,13 +42,38 @@
               {{ formatFileSize(row?.file_size) }}
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" width="120">
             <template #default="{ row }">
-              <el-tag :type="docStatusType(row?.status)" size="small">{{ DOC_STATUS_MAP[row?.status] || row?.status }}</el-tag>
+              <el-progress
+                v-if="row?.status === 'processing'"
+                :percentage="100"
+                :indeterminate="true"
+                :duration="1.2"
+                :stroke-width="4"
+                style="width: 70px"
+              />
+              <el-tag
+                v-else-if="row?.quality_status === 'pending_review'"
+                type="warning"
+                size="small"
+              >待人工复核</el-tag>
+              <el-tag
+                v-else-if="row?.quality_status === 'expired' || isExpired(row)"
+                type="danger"
+                size="small"
+              >已过期</el-tag>
+              <el-tag v-else :type="docStatusType(row?.status)" size="small">{{ DOC_STATUS_MAP[row?.status] || row?.status }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="version" label="版本" width="70" />
           <el-table-column prop="chunk_count" label="切片数" width="80" />
+          <el-table-column label="有效期" width="130">
+            <template #default="{ row }">
+              <el-tag v-if="isExpired(row)" type="danger" size="small">已过期</el-tag>
+              <el-tag v-else-if="isExpiringSoon(row)" type="warning" size="small">临期</el-tag>
+              <span v-else>{{ row?.expires_at ? formatDate(row.expires_at) : '长期' }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="上传时间" width="180">
             <template #default="{ row }">
               {{ formatDate(row?.uploaded_at) }}
@@ -57,7 +82,7 @@
           <el-table-column label="操作" width="120">
             <template #default="{ row }">
               <el-button
-                v-if="row?.status === 'failed'"
+                v-if="row?.status === 'failed' || row?.quality_status === 'pending_review' || row?.quality_status === 'expired'"
                 type="warning"
                 size="small"
                 @click="handleRebuild(row?.doc_id)"
@@ -97,6 +122,19 @@ const DOC_STATUS_MAP: Record<string, string> = {
 /** 文档状态 -> el-tag 配色 */
 function docStatusType(status?: string): string {
   return { pending: 'warning', processing: 'primary', ready: 'success', failed: 'danger' }[status ?? ''] || 'info'
+}
+
+/** 是否已过期（expires_at 早于当前） */
+function isExpired(row: any): boolean {
+  if (!row?.expires_at) return false
+  return new Date(row.expires_at).getTime() < Date.now()
+}
+
+/** 是否临期（7 天内到期） */
+function isExpiringSoon(row: any): boolean {
+  if (!row?.expires_at || isExpired(row)) return false
+  const diff = new Date(row.expires_at).getTime() - Date.now()
+  return diff < 7 * 24 * 60 * 60 * 1000
 }
 
 const documents = ref<DocumentItem[]>([])

@@ -35,6 +35,9 @@ class DocumentItem(BaseModel):
     is_latest: bool
     chunk_count: int
     uploaded_at: datetime
+    # 013 审查 P2：生命周期与质量状态（UI 临期/复核提示依赖）
+    expires_at: datetime | None = None
+    quality_status: str = "ready"
 
     class Config:
         from_attributes = True

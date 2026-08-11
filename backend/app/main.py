@@ -196,6 +196,10 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(TenantMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(AccessLogMiddleware)
+# 013 审查 P2：Prometheus 监控探针（最内层，先于业务中间件统计全量请求）
+from app.middlewares.metrics_middleware import MetricsMiddleware
+
+app.add_middleware(MetricsMiddleware)
 
 # 路由挂载 -- 统一前缀 /api/v1/<module>
 app.include_router(agent_router.router, prefix="/api/v1/agent", tags=["agent"])
@@ -215,3 +219,14 @@ app.include_router(ws_router.router, prefix="/api/v1/ws", tags=["websocket"])
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def metrics_endpoint():
+    """Prometheus 文本格式指标（审查 P2 监控探针）。
+    生产建议置于内网或加鉴权；demo 直接暴露便于抓取。"""
+    from starlette.responses import Response
+    from app.core.metrics import render_metrics
+
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)

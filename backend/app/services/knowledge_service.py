@@ -279,6 +279,8 @@ def list_documents(
                 "is_latest": d.is_latest,
                 "chunk_count": d.chunk_count,
                 "uploaded_at": d.created_at,
+                "expires_at": d.expires_at,
+                "quality_status": d.quality_status,
             }
             for d in items
         ],

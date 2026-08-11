@@ -15,6 +15,8 @@ export interface DocumentItem {
   is_latest: boolean
   chunk_count: number
   uploaded_at: string
+  expires_at?: string | null
+  quality_status?: string
 }
 
 export interface DocumentListResponse {

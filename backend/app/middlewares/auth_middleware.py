@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 #   /wechat/bind 需 JWT（已登录后才允许绑定）
 _PUBLIC_PREFIXES = (
     "/health",
+    "/metrics",  # 监控探针：生产建议置于内网或加鉴权
     "/api/v1/auth/register",
     "/api/v1/auth/login",
     "/api/v1/auth/sms/send",
