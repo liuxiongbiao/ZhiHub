@@ -60,13 +60,15 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { sendCode, passwordReset, bindEmail, wechatAuth, wechatBind } from '@/api/auth'
 import { useUserStore } from '@/store/modules/user'
+import { useRoute } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 const userStore = useUserStore()
+const route = useRoute()
 const activeTab = ref('pwd')
 const loading = ref(false)
 const wxLoading = ref(false)
@@ -136,6 +138,21 @@ async function handleBindWechat() {
     window.location.href = res.data.auth_url
   } catch (e: any) { ElMessage.error(e?.message || '微信授权失败') } finally { wxLoading.value = false }
 }
+
+
+// 013 fresh-eyes P1: wechat bind callback loop
+onMounted(async () => {
+  const code = route.query.code as string | undefined
+  if (!code) return
+  wxLoading.value = true
+  try {
+    const res = await wechatBind(code)
+    ElMessage.success(`微信绑定成功（${res.data.openid.slice(0, 8)}...）`)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '微信绑定失败')
+  } finally { wxLoading.value = false }
+})
+
 </script>
 
 <style scoped lang="scss">

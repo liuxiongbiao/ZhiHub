@@ -55,11 +55,11 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useUserStore } from '@/store/modules/user'
-import { smsSend, wechatAuth } from '@/api/auth'
+import { smsSend, wechatAuth, wechatCallback } from '@/api/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -149,6 +149,34 @@ async function handleWechatLogin() {
     ElMessage.error(e?.message || '微信授权失败')
   } finally { wechatLoading.value = false }
 }
+
+
+// 013 fresh-eyes P1: wechat scan-code callback loop (PRD 3.1)
+onMounted(async () => {
+  const code = route.query.code as string | undefined
+  const state = route.query.state as string | undefined
+  if (!code) return
+  wechatLoading.value = true
+  try {
+    const res = await wechatCallback(code, state)
+    if (res.data.need_bind) {
+      ElMessage.warning('该微信尚未绑定账号，请先登录后在个人中心完成绑定')
+    } else if (res.data.access_token) {
+      userStore.$patch({
+        token: res.data.access_token,
+        user_id: res.data.user_id,
+        tenant_id: res.data.tenant_id,
+        role: (res.data.role ?? 'admin') as 'admin' | 'agent',
+      })
+      userStore.persist()
+      ElMessage.success('微信登录成功')
+      safeRedirect()
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || '微信授权失败')
+  } finally { wechatLoading.value = false }
+})
+
 </script>
 
 <style scoped lang="scss">

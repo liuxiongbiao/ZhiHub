@@ -33,10 +33,10 @@ def _get_tenant_id(request: Request) -> int:
 
 
 @router.get("/quota", dependencies=[Depends(require_role("admin"))])
-def get_quota(request: Request):
-    """查询 Redis 实时配额，调 billing_service.check_quota。仅管理员。"""
-    from app.services.billing_service import check_quota
-    return check_quota(_get_tenant_id(request))
+def get_quota(request: Request, db: Session = Depends(get_db)):
+    """查询 Redis 实时配额（按套餐矩阵），调 billing_service.check_quota。仅管理员。"""
+    from app.services.billing_service import check_quota, get_tenant_quota
+    return check_quota(_get_tenant_id(request), quota=get_tenant_quota(db, _get_tenant_id(request)))
 
 
 @router.get("/invoices", dependencies=[Depends(require_role("admin"))])
@@ -52,10 +52,11 @@ def list_invoices(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/usage", dependencies=[Depends(require_role("admin"))])
-def usage_overview(request: Request):
-    """用量概览，复用 billing_service.check_quota。仅管理员。"""
-    from app.services.billing_service import check_quota
-    return {"quota": check_quota(_get_tenant_id(request))}
+def usage_overview(request: Request, db: Session = Depends(get_db)):
+    """用量概览（按套餐配额），复用 billing_service.check_quota。仅管理员。"""
+    from app.services.billing_service import check_quota, get_tenant_quota
+    tid = _get_tenant_id(request)
+    return {"quota": check_quota(tid, quota=get_tenant_quota(db, tid))}
 
 
 @router.get("/usage/export", dependencies=[Depends(require_role("admin"))])

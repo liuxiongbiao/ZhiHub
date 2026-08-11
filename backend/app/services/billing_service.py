@@ -52,6 +52,8 @@ WARNING_BANNER_TTL = 60 * 60 * 24 * 40  # 40 天 TTL，覆盖整月（与去重�
 
 # 套餐配额（demo 硬编码，生产读 tenant.plan_type）
 TRIAL_QUOTA = 100  # 试用套餐 100次/月
+PLAN_QUOTA = {"trial": 100, "basic": 2000, "pro": 10000, "enterprise": 100000}
+
 QUOTA_WARNING_80 = 0.8
 QUOTA_WARNING_100 = 1.0
 
@@ -75,7 +77,7 @@ def _warning_key(tenant_id: int, level: str) -> str:
     return f"{WARNING_SENT_KEY}{tenant_id}:{month}:{level}"
 
 
-def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat") -> dict:
+def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int | None = None) -> dict:
     """每次 Agent 有效回复后 INCR 配额计数器（010: 按模型权重折算）。
 
     仅在会话 RESOLVED 时调用，RESOLVED 前的中断不计入。
@@ -115,32 +117,33 @@ def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat") -> dict:
     count = r.incrbyfloat(key, weight)
     r.expire(key, 60 * 60 * 24 * 40)  # 40天TTL覆盖整月
 
-    is_overage = count >= TRIAL_QUOTA
+    q = quota if quota is not None else TRIAL_QUOTA
+    is_overage = count >= q
     warning = None
 
     # 80% 预警（仅触发一次）-- SETNX 原子去重（T18）:
     # 原 exists+set 两步非原子，并发结算可同时触发同一级预警重复通知；
     # nx=True 保证只有首个写入者进入触发分支，键带 TTL 覆盖整月
-    if count >= int(TRIAL_QUOTA * QUOTA_WARNING_80) and r.set(
+    if count >= int(q * QUOTA_WARNING_80) and r.set(
         _warning_key(tenant_id, "80"), "1", ex=60 * 60 * 24 * 40, nx=True,
     ):
         # 009: 预警横幅标记（PRD 3.9），/home 读取显示红色横幅
         r.set(f"{WARNING_BANNER_KEY}{tenant_id}:80", "1", ex=WARNING_BANNER_TTL)
         warning = "80%"
-        logger.info(f"Tenant {tenant_id} quota 80% warning: {count}/{TRIAL_QUOTA}")
+        logger.info(f"Tenant {tenant_id} quota 80% warning: {count}/{q}")
         _notify(tenant_id, "80%", count)
 
     # 100% 预警（同 SETNX 原子去重）
-    if count >= TRIAL_QUOTA and r.set(
+    if count >= q and r.set(
         _warning_key(tenant_id, "100"), "1", ex=60 * 60 * 24 * 40, nx=True,
     ):
         # 009: 预警横幅标记（PRD 3.9），100% 覆盖 80%（/home 读最新 level）
         r.set(f"{WARNING_BANNER_KEY}{tenant_id}:100", "1", ex=WARNING_BANNER_TTL)
         warning = "100%"
-        logger.info(f"Tenant {tenant_id} quota EXCEEDED: {count}/{TRIAL_QUOTA}")
+        logger.info(f"Tenant {tenant_id} quota EXCEEDED: {count}/{q}")
         _notify(tenant_id, "100%", count)
 
-    return {"count": count, "quota": TRIAL_QUOTA, "is_overage": is_overage, "warning": warning}
+    return {"count": count, "quota": q, "is_overage": is_overage, "warning": warning}
 
 
 def incr_usage_for_tenant(db: Session, tenant_id: int) -> dict:
@@ -187,7 +190,7 @@ def _notify(tenant_id: int, level: str, count: int) -> None:
         logger.warning(f"Quota warning notification failed: {e}")
 
 
-def check_quota(tenant_id: int) -> dict:
+def check_quota(tenant_id: int, quota: int | None = None) -> dict:
     """查询当前配额使用情况（只读）。
 
     Args:
@@ -198,7 +201,8 @@ def check_quota(tenant_id: int) -> dict:
     """
     r = get_redis()
     count = float(r.get(_quota_key(tenant_id)) or 0)
-    return {"count": count, "quota": TRIAL_QUOTA, "remaining": max(0, TRIAL_QUOTA - count)}
+    q = quota if quota is not None else TRIAL_QUOTA
+    return {"count": count, "quota": q, "remaining": max(0, q - count)}
 
 
 def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
@@ -499,3 +503,19 @@ def is_degraded(tenant_id: int) -> bool:
         bool: True 表示已降级（逾期未付款）
     """
     return get_redis().exists(f"billing:degraded:{tenant_id}") == 1
+
+def get_tenant_quota(db: Session, tenant_id: int) -> int:
+    """按套餐返回租户月对话配额（PRD 3.9 套餐矩阵，fresh-eyes P1-2）。"""
+    try:
+        from app.crud import tenant as tenant_crud
+        t = tenant_crud.get_by_id(db, tenant_id)
+        if t is not None:
+            return PLAN_QUOTA.get(t.plan_type, TRIAL_QUOTA)
+    except Exception:
+        pass
+    return TRIAL_QUOTA
+
+
+def _plan_quota(db: Session, tenant_id: int) -> int:
+    """incr_usage_for_tenant 内部 helper：读取套餐配额（降级默认 trial）。"""
+    return get_tenant_quota(db, tenant_id)

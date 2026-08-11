@@ -296,6 +296,17 @@ def handle_message(
     sentiment = final_state.get("sentiment", "normal")
     retrieval_result = final_state.get("retrieval_result", [])
 
+    # 013 fresh-eyes P1-3：计费按"会话"而非"回复条数"（PRD 3.9：RESOLVED 时计数）。
+    # 以"该会话尚无 assistant 回复"作为首轮判定，多轮会话只计一次配额。
+    from sqlalchemy import func, select
+    from app.models.message import Message
+    existing_assistant = db.execute(
+        select(func.count()).select_from(Message).where(
+            Message.session_id == session_id, Message.role == "assistant"
+        )
+    ).scalar() or 0
+    first_round = existing_assistant == 0
+
     # 10. 保存 Agent 回复到 MySQL
     elapsed = int((time.perf_counter() - start) * 1000)
 
@@ -325,6 +336,9 @@ def handle_message(
             "tokens": tokens_used,
         },
     )
+    # 013 fresh-eyes P2：监控指标接线（Agent 回复计数）
+    from app.core.metrics import AGENT_MESSAGES
+    AGENT_MESSAGES.labels(role="assistant").inc()
     # commit 前保存 id：expire_on_commit 会使 commit 后 msg.id 过期，访问触发懒加载，
     # 在 anyio threadpool 中与 session 连接分配并发冲突（InvalidRequestError）
     # ⚠️ 关键：先取 msg.id 再 commit，规避 anyio 线程池下懒加载与 session 连接并发的冲突
@@ -351,7 +365,7 @@ def handle_message(
         _notify_new_session(tenant_id=tenant_id, session_id=s.id)
 
     # 计费闸门：Agent 有效回复递增配额计数（转人工中断不计入），触发 80%/100% 预警
-    if not should_interrupt:
+    if not should_interrupt and first_round:
         try:
             from app.services.billing_service import incr_usage_for_tenant
             incr_usage_for_tenant(db, tenant_id)

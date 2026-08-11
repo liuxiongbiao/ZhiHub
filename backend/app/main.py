@@ -40,8 +40,10 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.database import get_db
 
 from app.api.v1 import agent as agent_router
 from app.api.v1 import auth as auth_router
@@ -222,11 +224,24 @@ def health_check():
 
 
 @app.get("/metrics")
-def metrics_endpoint():
+def metrics_endpoint(db: Session = Depends(get_db)):
     """Prometheus 文本格式指标（审查 P2 监控探针）。
     生产建议置于内网或加鉴权；demo 直接暴露便于抓取。"""
+    from sqlalchemy import func, select
     from starlette.responses import Response
-    from app.core.metrics import render_metrics
+    from app.core.metrics import render_metrics, ACTIVE_SESSIONS
+    from app.models.session import Session as SessionModel
+
+    # 013 fresh-eyes P2：抓取前刷新活跃会话 Gauge（waiting_human/human_handling/agent_handling）
+    try:
+        active = db.execute(
+            select(func.count()).select_from(SessionModel).where(
+                SessionModel.status.in_(["waiting_human", "human_handling", "agent_handling"])
+            )
+        ).scalar() or 0
+        ACTIVE_SESSIONS.set(active)
+    except Exception:
+        ACTIVE_SESSIONS.set(0)
 
     body, content_type = render_metrics()
     return Response(content=body, media_type=content_type)
