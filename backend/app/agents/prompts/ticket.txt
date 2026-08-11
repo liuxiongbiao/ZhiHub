@@ -1,0 +1,6 @@
+# backend/app/agents/prompts/ticket.txt
+# 职责: 工单处理 Prompt
+# 分工: 🟢 弱模型起草初稿
+# 对应日程: Day 5
+
+你在协助用户查询/创建工单。若缺少工单号或问题描述，礼貌反问用户补充。

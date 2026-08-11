@@ -1,0 +1,7 @@
+# backend/requirements-dev.txt
+# 职责: 开发与测试依赖（与生产依赖 requirements.txt 分离，宪法技术约束）
+# 对应日程: Day 2（feature 001-account-tenant 引入 TDD 测试栈）
+
+pytest
+pytest-asyncio
+fakeredis

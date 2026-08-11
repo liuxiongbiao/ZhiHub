@@ -1,0 +1,31 @@
+# backend/requirements.txt
+# 职责: Python 运行时依赖清单
+# 分工: 🟢 弱模型可独立完成（版本号按实际锁定）
+# 对应日程: Day 1
+
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+sqlalchemy>=2.0
+alembic
+pymysql
+motor
+redis
+pika
+celery
+python-jose[cryptography]
+cryptography
+passlib[bcrypt]
+bcrypt==4.0.1  # 钉版本：passlib 1.7.4 不兼容 bcrypt>=4.1（读取版本号接口变更），5.0 会导致哈希失败
+langgraph
+langchain
+litellm
+pymilvus
+elasticsearch
+httpx
+python-multipart
+PyPDF2>=3.0
+python-docx>=1.0
+pydantic-ai
+python-alipay-sdk

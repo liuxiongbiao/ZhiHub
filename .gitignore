@@ -1,0 +1,31 @@
+# 密钥与环境（绝不入库）
+backend/.env
+backend/.env.local
+**/.env
+!**/.env.example
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend/e2e-cred.json
+frontend/connectivity-*.log
+frontend/connectivity-*.err.log
+
+# 后端
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/*.log
+backend/*.err.log
+backend/e2e-*.pyc
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 测试临时产物
+frontend/tests/e2e/e2e-cred.json

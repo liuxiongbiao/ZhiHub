@@ -1,0 +1,41 @@
+# .github/workflows/ci.yml
+# 职责: 基础CI — lint + 单元测试 + 健康检查
+# 分工: 🟢 弱模型可独立完成
+# 对应日程: Day 9
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install fakeredis pytest
+
+      - name: Run tests
+        run: |
+          cd backend
+          python -m pytest tests/unit/ -v --tb=short
+        env:
+          REDIS_HOST: localhost
+          MYSQL_HOST: localhost

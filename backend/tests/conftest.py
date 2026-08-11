@@ -1,0 +1,113 @@
+"""
+backend/tests/conftest.py
+
+职责: 全局测试夹具，让 295 个测试脱离真实 MySQL/Redis 容器独立运行
+对应日程: 贯穿 001~010
+
+夹具设计（面试讲测试架构的重点）:
+  - db: SQLite in-memory Session。用 StaticPool 强制全测试共用同一连接，
+        否则 :memory: 每个连接会建独立库（建表后查不到）。每测试建表 + 结束销毁。
+  - fake_redis(autouse): 用 fakeredis 替换 core.redis 的连接单例。autouse 保证
+        每个测试拿到干净的 Redis 状态（失败计数/黑名单/熔断计数不串测试）。
+  - client: TestClient 覆盖 get_db 依赖指向内存库，中间件链路（auth/tenant）保持
+        真实，从而能测到中间件层的行为而非仅路由层。
+  - make_token: 令牌工厂 make_token(user_id, tenant_id, role) -> JWT。
+        不在夹具里写死角色，由各测试按需传参（admin/agent/过期）。
+"""
+
+import fakeredis
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.core import redis as redis_module
+from app.core.database import get_db
+from app.core.security import create_access_token
+from app.models.base import Base
+
+# 触发所有 ORM 模型注册到 Base.metadata（建表需要）
+from app.models import audit_log as _audit_log  # noqa: F401
+from app.models import answer_feedback as _answer_feedback  # noqa: F401
+from app.models import user as _user  # noqa: F401
+from app.models import tenant as _tenant  # noqa: F401
+from app.models import tenant_member as _tm  # noqa: F401
+from app.models import knowledge_document as _kd  # noqa: F401
+from app.models import message as _msg  # noqa: F401
+from app.models import order as _order  # noqa: F401
+from app.models import quick_reply as _quick_reply  # noqa: F401
+from app.models import refund_approval as _ra  # noqa: F401
+from app.models import session as _sess  # noqa: F401
+from app.models import billing_invoice as _bi  # noqa: F401
+from app.models import csat as _csat  # noqa: F401
+from app.models import ticket as _ticket  # noqa: F401
+from app.models import usage_record as _ur  # noqa: F401
+
+
+@pytest.fixture()
+def db():
+    """SQLite in-memory 会话。StaticPool 让全测试共用同一连接，否则 :memory: 每连接独立建库。"""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,  # 全测试共用同一连接，否则 :memory: 每连接一个独立库（建表后查不到）
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    session = TestingSession()
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(autouse=True)
+def fake_redis():
+    """fakeredis 替换 core.redis 单例。autouse 保证每测试 Redis 状态隔离（失败计数/黑名单/熔断不串）。"""
+    server = fakeredis.FakeServer()
+    fake = fakeredis.FakeStrictRedis(server=server, decode_responses=True)
+    redis_module._redis_client = fake
+    yield fake
+    redis_module._redis_client = None
+
+
+@pytest.fixture()
+def client(db):
+    """TestClient：覆盖 get_db 指向内存库，中间件链路（auth/tenant）保持真实，测到完整请求链。"""
+    from app.main import app
+
+    def _override_get_db():
+        try:
+            yield db
+        finally:
+            pass  # 会话生命周期由 db 夹具管理
+
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def make_token():
+    """令牌工厂：不写死角色，由测试按需传参 make_token(user_id, tenant_id, role) → JWT。"""
+
+    def _make(user_id: int = 1, tenant_id: int = 1, role: str = "admin") -> str:
+        return create_access_token(
+            subject=str(user_id),
+            extra_claims={"tenant_id": tenant_id, "role": role},
+        )
+
+    return _make
+
+
+def register_user_via_api(client, *, phone="13800138000", password="abc12345",
+                          tenant_name="示例科技"):
+    """HTTP 注册（含短信验证码，PRD 3.1.1）。返回 register 响应 json。"""
+    code = client.post("/api/v1/auth/sms/send", json={"phone": phone}).json()["code"]
+    return client.post(
+        "/api/v1/auth/register",
+        json={"phone": phone, "password": password, "tenant_name": tenant_name, "code": code},
+    ).json()

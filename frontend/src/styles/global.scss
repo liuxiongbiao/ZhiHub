@@ -1,0 +1,97 @@
+/* frontend/src/styles/global.scss
+ * 职责: 全局样式 -- 主题变量(CSS 自定义属性) + reset + 基础排版 + 工具类
+ * 设计基调: 浅色侧边栏 + Element Plus 默认蓝主色,现代且克制
+ *
+ * 为什么用 CSS 自定义属性而非 SCSS 变量: 自定义属性通过 DOM 继承,
+ * 在各 .vue 的 <style scoped> 中可直接引用 var(--zh-xxx),无需 @use 导入;
+ * SCSS 变量是编译期作用域,scoped 样式里拿不到。vite 也未配置 scss 全局注入。
+ */
+
+/* ── 主题变量 ── */
+:root {
+  /* 主色: Element Plus 默认蓝 */
+  --zh-primary: #409eff;
+  --zh-primary-hover: #66b1ff;
+  --zh-primary-bg: #ecf5ff;
+
+  /* 文字 */
+  --zh-text-primary: #303133;
+  --zh-text-regular: #606266;
+  --zh-text-secondary: #909399;
+  --zh-text-placeholder: #c0c4cc;
+
+  /* 背景 */
+  --zh-bg-page: #f5f7fa;      /* 内容区背景(浅灰,衬托白色卡片) */
+  --zh-bg-card: #ffffff;       /* 卡片/容器背景 */
+  --zh-bg-sidebar: #ffffff;    /* 侧边栏(浅色基调) */
+
+  /* 边框 / 分隔 */
+  --zh-border: #dcdfe6;
+  --zh-border-light: #ebeef5;
+
+  /* 圆角 */
+  --zh-radius: 8px;
+  --zh-radius-sm: 4px;
+
+  /* 阴影(克制,不喧宾夺主) */
+  --zh-shadow: 0 1px 4px rgba(0, 21, 41, 0.06);
+  --zh-shadow-hover: 0 2px 12px rgba(0, 21, 41, 0.1);
+
+  /* 间距(8px 基准) */
+  --zh-gap: 16px;
+  --zh-gap-sm: 8px;
+  --zh-gap-lg: 24px;
+}
+
+/* ── reset ── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body, #app { height: 100%; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  color: var(--zh-text-primary);
+  background: var(--zh-bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a { color: var(--zh-primary); text-decoration: none; }
+
+/* ── 滚动条美化(细而克制) ── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #c0c4cc; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #909399; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── 工具类 ── */
+/* 页面容器: 统一内容区内边距,所有业务页面根节点套这个 */
+.page-container {
+  padding: var(--zh-gap-lg);
+}
+/* 同级卡片间垂直间距 */
+.page-container > .el-card + .el-card {
+  margin-top: var(--zh-gap-lg);
+}
+
+/* 卡片标题(卡片内 section 标题) */
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--zh-text-primary);
+}
+
+/* 分页栏:右对齐 + 上间距,列表页统一 */
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--zh-gap);
+}
+
+/* 卡片内工具条(筛选/操作行):与表格间距 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--zh-gap-sm);
+  margin-bottom: var(--zh-gap);
+}
