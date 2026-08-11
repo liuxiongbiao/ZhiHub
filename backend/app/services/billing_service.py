@@ -26,7 +26,7 @@ backend/app/services/billing_service.py
 
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.core.redis import get_redis

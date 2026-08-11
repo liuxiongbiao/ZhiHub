@@ -29,7 +29,7 @@ backend/app/tasks/billing_tasks.py
 """
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from celery import shared_task
 
 from app.core.database import SessionLocal

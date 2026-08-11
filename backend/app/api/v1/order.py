@@ -109,7 +109,6 @@ def ship_order(order_id: int, request: Request, body: ShipRequest, db: Session =
     仅 paid 状态可发货；shipped/completed 等状态 -> 400（非法跃迁）。
     跨租户 -> 404（order_crud.get_by_id 按 tenant_id 隔离）。
     """
-    from pydantic import Field as _Field
     if not body.tracking_no or len(body.tracking_no) > 100:
         raise HTTPException(status_code=422, detail="tracking_no 必填且不超过 100 字符")
     from app.services.order_service import ship_order as do_ship, OrderError, VersionConflict

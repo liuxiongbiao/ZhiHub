@@ -32,7 +32,6 @@ backend/app/tasks/knowledge_tasks.py
 import logging
 import os
 
-from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core.embedding_client import (

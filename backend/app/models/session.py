@@ -12,7 +12,7 @@ backend/app/models/session.py
             sentiment(情绪)、assignee_id(坐席 ID，007 启用)
 """
 
-from sqlalchemy import BigInteger, Float, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel

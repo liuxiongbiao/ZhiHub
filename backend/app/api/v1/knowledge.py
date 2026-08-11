@@ -17,7 +17,7 @@ backend/app/api/v1/knowledge.py
   - 下游: app.services.knowledge_service、app.services.retrieval_service
 """
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_role

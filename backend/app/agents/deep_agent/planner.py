@@ -29,7 +29,6 @@ backend/app/agents/deep_agent/planner.py
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 logger = logging.getLogger(__name__)
 

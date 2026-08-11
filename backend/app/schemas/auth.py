@@ -1,4 +1,4 @@
-﻿"""
+"""
 backend/app/schemas/auth.py
 
 职责: 注册/登录/登出/验证码/邮箱/密码找回/绑定 请求体与响应 Pydantic 模型（Pydantic v2）
