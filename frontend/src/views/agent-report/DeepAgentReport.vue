@@ -61,6 +61,20 @@
       <el-alert v-if="result.error" :title="result.error" type="error" show-icon />
     </div>
 
+    <!-- 013 审查 P2-2：历史任务查询（GET /agent/deep-task/{id}） -->
+    <el-card shadow="never" class="history-card">
+      <template #header><span class="section-title">查询历史任务</span></template>
+      <div class="history-row">
+        <el-input v-model="taskId" placeholder="输入任务 ID（如 deep-xxxxxxxxxxxx）" style="width: 320px" />
+        <el-button type="primary" :loading="querying" @click="handleQueryTask">查询</el-button>
+      </div>
+      <el-alert v-if="queryError" :title="queryError" type="error" show-icon class="query-error" />
+      <div v-if="taskResult?.report" class="report-section">
+        <h4>历史报告</h4>
+        <div class="report-content" v-html="renderMarkdown(taskResult.report)"></div>
+      </div>
+    </el-card>
+
     <!-- 快捷预设 -->
     <div class="presets">
       <h4>快捷预设</h4>
@@ -79,6 +93,10 @@ import request from '@/api/request'
 const goal = ref('')
 const loading = ref(false)
 const result = ref<any>(null)
+const taskId = ref('')
+const querying = ref(false)
+const queryError = ref('')
+const taskResult = ref<any>(null)
 
 /** 快捷预设任务目标列表 */
 const presets = [
@@ -106,6 +124,22 @@ async function handleExecute() {
   } finally {
     loading.value = false
   }
+}
+
+/** 查询历史 DeepAgent 任务（GET /agent/deep-task/{id}，按租户隔离） */
+async function handleQueryTask() {
+  if (!taskId.value.trim()) { ElMessage.warning('请输入任务 ID'); return }
+  querying.value = true
+  queryError.value = ''
+  taskResult.value = null
+  try {
+    const res = await request.get(`/agent/deep-task/${taskId.value.trim()}`)
+    taskResult.value = res.data
+    if (!res.data?.report) ElMessage.info('任务存在但尚未生成报告')
+  } catch (e: any) {
+    if (e?.status === 404) queryError.value = '任务不存在或已过期'
+    else queryError.value = e?.message || '查询失败'
+  } finally { querying.value = false }
 }
 </script>
 

@@ -12,12 +12,15 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  backend:
     runs-on: ubuntu-latest
     services:
       redis:
         image: redis:7-alpine
         ports: ["6379:6379"]
+      rabbitmq:
+        image: rabbitmq:3.12-management
+        ports: ["5672:5672"]
     steps:
       - uses: actions/checkout@v4
 
@@ -32,10 +35,48 @@ jobs:
           pip install -r requirements.txt
           pip install fakeredis pytest
 
-      - name: Run tests
+      - name: Syntax check (compileall)
+        run: |
+          cd backend
+          python -m compileall app/ -q
+
+      - name: Run unit tests
         run: |
           cd backend
           python -m pytest tests/unit/ -v --tb=short
         env:
           REDIS_HOST: localhost
           MYSQL_HOST: localhost
+
+      - name: Run contract tests
+        run: |
+          cd backend
+          python -m pytest tests/contracts/ -q --tb=short
+        env:
+          REDIS_HOST: localhost
+          RABBITMQ_URL: amqp://guest:guest@localhost:5672/
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Type check (vue-tsc)
+        run: |
+          cd frontend
+          npx vue-tsc --noEmit
+
+      - name: Run unit/component tests
+        run: |
+          cd frontend
+          npx vitest run

@@ -8,7 +8,7 @@
           :before-upload="handleBeforeUpload"
           :http-request="handleUpload"
           :show-file-list="false"
-          accept=".pdf,.docx,.md"
+          accept=".pdf,.docx,.md,.xlsx"
         >
           <el-button type="primary">
             <el-icon><Upload /></el-icon>&nbsp;上传文档
@@ -141,7 +141,7 @@ async function fetchList() {
 
 /** 上传前校验: 格式（pdf/docx/md）+ 大小（≤10MB），不通过返回 false 中断 */
 function handleBeforeUpload(file: File): boolean {
-  const allowed = ['.pdf', '.docx', '.md']
+  const allowed = ['.pdf', '.docx', '.md', '.xlsx']
   const ext = '.' + file.name.split('.').pop()?.toLowerCase()
   if (!allowed.includes(ext)) {
     ElMessage.error(`不支持的文件格式：${ext}，仅支持 PDF、Word、Markdown`)

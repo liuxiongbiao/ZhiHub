@@ -165,3 +165,61 @@ class TestParseAndChunk:
         """无效格式在校验阶段即被拒绝."""
         with pytest.raises(FileValidationError):
             parse_and_chunk("test.exe", b"data")
+
+
+
+def _make_min_xlsx(rows):
+    """Construct minimal parseable xlsx with stdlib zipfile."""
+    import io as _io
+    import zipfile as _zipfile
+    shared = []
+    for row in rows:
+        for cell in row:
+            if cell not in shared:
+                shared.append(cell)
+    shared_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="'
+        + str(len(shared)) + '">'
+        + "".join("<si><t>" + c + "</t></si>" for c in shared)
+        + "</sst>"
+    )
+    sheet_rows = []
+    for row in rows:
+        cells = "".join(
+            '<c r="X' + str(i) + '" t="s"><v>' + str(shared.index(c)) + "</v></c>"
+            for i, c in enumerate(row)
+        )
+        sheet_rows.append("<row>" + cells + "</row>")
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        "<sheetData>" + "".join(sheet_rows) + "</sheetData></worksheet>"
+    )
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        z.writestr("xl/workbook.xml", '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="S" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></sheets></workbook>')
+        z.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        z.writestr("xl/sharedStrings.xml", shared_xml)
+        z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return buf.getvalue()
+
+
+class TestXlsxSupport:
+    """PRD 3.2 spreadsheet support (review P2-1)."""
+
+    def test_xlsx_in_allowed_extensions(self):
+        assert ".xlsx" in ALLOWED_EXTENSIONS
+
+    def test_validate_xlsx(self):
+        validate_file("table.xlsx", _make_min_xlsx([["order_no", "status"]]))
+
+    def test_extract_xlsx_text(self):
+        content = _make_min_xlsx([["order_no", "status"], ["ORD-1", "shipped"]])
+        text = extract_text("table.xlsx", content)
+        assert "ORD-1" in text
+        assert "shipped" in text
+
+    def test_extract_invalid_xlsx_returns_empty(self):
+        assert extract_text("bad.xlsx", b"not a zip") == ""

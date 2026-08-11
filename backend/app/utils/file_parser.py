@@ -12,10 +12,12 @@ backend/app/utils/file_parser.py
 
 import io
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 # 支持的文件格式白名单
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".xlsx"}
 # 文件大小上限：10 MB
 MAX_FILE_SIZE = 10 * 1024 * 1024
 # 解压后文本上限（T32 压缩炸弹防护）: 10MB 原始文件限制不覆盖解压后膨胀
@@ -75,6 +77,8 @@ def extract_text(filename: str, content: bytes) -> str:
         text = _extract_pdf_text(content)
     elif ext == ".docx":
         text = _extract_docx_text(content)
+    elif ext == ".xlsx":
+        text = _extract_xlsx_text(content)
     else:
         raise FileParseError(f"不支持的文件格式: {ext}")
 
@@ -83,6 +87,44 @@ def extract_text(filename: str, content: bytes) -> str:
         raise FileValidationError(f"文档解压后文本超过上限（{MAX_TEXT_LENGTH // (1024 * 1024)}MB）")
     return text
 
+
+def _extract_xlsx_text(content: bytes) -> str:
+    """Extract text from .xlsx cells (PRD 3.2 spreadsheet support).
+
+    Standard-library zipfile + XML parser (no openpyxl dependency):
+    reads sharedStrings then iterates the first worksheet, joining cells by tab.
+    Returns empty string on parse errors (upper layer empty-file check catches it).
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as z:
+            names = z.namelist()
+            shared: list[str] = []
+            if "xl/sharedStrings.xml" in names:
+                root = ET.fromstring(z.read("xl/sharedStrings.xml"))
+                for si in root.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}si"):
+                    shared.append("".join(t.text or "" for t in si.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t")))
+            sheet_name = next(
+                (n for n in names if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")), None,
+            )
+            if not sheet_name:
+                return ""
+            root = ET.fromstring(z.read(sheet_name))
+            rows: list[str] = []
+            for row in root.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}row"):
+                cells: list[str] = []
+                for c in row.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"):
+                    v = c.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v")
+                    if c.get("t") == "s" and v is not None and v.text:
+                        idx = int(v.text)
+                        if 0 <= idx < len(shared):
+                            cells.append(shared[idx])
+                    elif v is not None and v.text:
+                        cells.append(v.text)
+                if cells:
+                    rows.append("\t".join(cells))
+            return "\n".join(rows)
+    except (zipfile.BadZipFile, ET.ParseError, KeyError, ValueError):
+        return ""
 
 def _extract_pdf_text(content: bytes) -> str:
     """从 PDF 文件提取文本.

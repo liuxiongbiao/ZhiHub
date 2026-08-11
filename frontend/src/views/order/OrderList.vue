@@ -85,7 +85,7 @@ async function loadOrders() {
   loading.value = true
   try {
     // 看板模式拉取当前分栏数据；演示规模一次拉取
-    const res = await getOrderList({ page: 1, page_size: 200 })
+    const res = await getOrderList({ page: 1, page_size: 100 })
     let items = res.data.items
     if (activeStatus.value) items = items.filter((o) => o.status === activeStatus.value)
     orders.value = items
