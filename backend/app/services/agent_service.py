@@ -65,6 +65,19 @@ def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
                 "tenant_id": tenant_id,
             },
         )
+        # closure-plan P1-5: 转人工写站内信（管理员可查）
+        from app.core.database import SessionLocal
+        from app.services.notification_service import create_notification
+        ndb = SessionLocal()
+        try:
+            create_notification(
+                ndb, tenant_id=tenant_id,
+                title="新会话转人工",
+                content=f"会话 #{session_id} 已转人工，请在坐席工作台处理。",
+                type="handoff",
+            )
+        finally:
+            ndb.close()
     except Exception as e:  # noqa: BLE001 广播失败不影响主对话链路
         logger.warning(f"new_session broadcast failed (non-blocking): {e}")
 

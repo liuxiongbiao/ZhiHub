@@ -16,6 +16,7 @@ from app.models.billing_invoice import BillingInvoice
 from app.models.csat import CsatEvaluation
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.message import Message
+from app.models.notification import Notification
 from app.models.order import Order
 from app.models.quick_reply import QuickReply
 from app.models.refund_approval import RefundApproval

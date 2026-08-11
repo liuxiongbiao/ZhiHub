@@ -64,6 +64,7 @@ def get_ticket_status(db: Session, *, tenant_id: int, ticket_no: str) -> dict:
 
 def create_ticket(
     db: Session, *, tenant_id: int, title: str, description: str | None = None, priority: str = "medium",
+    category: str = "general",
 ) -> dict:
     """创建工单。
 
@@ -93,7 +94,7 @@ def create_ticket(
     ticket_no = f"TK-{uuid.uuid4().hex[:12].upper()}"
     ticket = ticket_crud.create_ticket(
         db, tenant_id=tenant_id, ticket_no=ticket_no, title=title,
-        description=description, priority=priority,
+        description=description, priority=priority, category=category,
     )
     db.commit()
     return {

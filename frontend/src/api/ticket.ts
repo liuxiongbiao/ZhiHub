@@ -28,3 +28,15 @@ export function getTicketList(params: { page?: number; page_size?: number; statu
 export function getTicketDetail(ticketId: number) {
   return request.get<Ticket>(`/ticket/${ticketId}`)
 }
+
+/** 用户主动提交工单（closure-plan P1-4，PRD 3.8） */
+export interface CreateTicketBody {
+  title: string
+  description?: string
+  priority?: string
+  category?: string
+}
+
+export function createTicket(body: CreateTicketBody) {
+  return request.post<{ id: number; ticket_no: string; title: string; status: string; priority: string }>('/ticket', body)
+}

@@ -113,6 +113,21 @@
           </el-tag>
         </div>
         <div class="header-right">
+          <el-popover placement="bottom-end" :width="340" trigger="click" @show="loadNotifications">
+            <template #reference>
+              <el-badge :value="unreadCount" :hidden="unreadCount === 0" class="notif-badge">
+                <el-icon class="notif-icon"><Bell /></el-icon>
+              </el-badge>
+            </template>
+            <div v-loading="notifLoading" class="notif-panel">
+              <div v-if="notifications.length === 0" class="notif-empty">暂无通知</div>
+              <div v-for="n in notifications" :key="n.id" class="notif-item" :class="{ unread: !n.read_at }" @click="readNotification(n)">
+                <div class="notif-title">{{ n.title }}</div>
+                <div class="notif-content">{{ n.content }}</div>
+                <div class="notif-time">{{ formatNotifTime(n.created_at) }}</div>
+              </div>
+            </div>
+          </el-popover>
           <el-dropdown @command="handleCommand">
             <span class="user-trigger">
               <el-icon><User /></el-icon>
@@ -155,14 +170,15 @@
   菜单分组: 工作台 / 知识管理 / 工单与订单 / 计费 / 智能体。
 -->
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Service, Odometer, Collection, Files, Search, Tickets, Document, List,
   Wallet, TrendCharts, DataLine, Money, MagicStick, Notebook, Headset,
-  ChatDotRound, Setting, User, ArrowDown, SwitchButton, Brush, DocumentChecked,
+  ChatDotRound, Setting, User, ArrowDown, SwitchButton, Brush, DocumentChecked, Bell,
 } from '@element-plus/icons-vue'
+import { getNotifications, getUnreadCount, markNotificationRead, type NotificationItem } from '@/api/notification'
 import { useTenantStore } from '@/store/modules/tenant'
 import { useUserStore } from '@/store/modules/user'
 
@@ -183,6 +199,45 @@ onMounted(async () => {
       ElMessage.error(e?.message || '加载租户信息失败')
     }
   }
+})
+
+
+const notifications = ref<NotificationItem[]>([])
+const unreadCount = ref(0)
+const notifLoading = ref(false)
+
+function formatNotifTime(iso: string): string {
+  return new Date(iso).toLocaleString('zh-CN')
+}
+
+async function refreshUnread() {
+  try {
+    const res = await getUnreadCount()
+    unreadCount.value = res.data.count
+  } catch { /* 静默 */ }
+}
+
+async function loadNotifications() {
+  notifLoading.value = true
+  try {
+    const res = await getNotifications({ page_size: 10 })
+    notifications.value = res.data.items
+    await refreshUnread()
+  } catch { /* 静默 */ } finally { notifLoading.value = false }
+}
+
+async function readNotification(n: NotificationItem) {
+  if (n.read_at) return
+  try {
+    await markNotificationRead(n.id)
+    n.read_at = new Date().toISOString()
+    unreadCount.value = Math.max(0, unreadCount.value - 1)
+  } catch { /* 静默 */ }
+}
+
+onMounted(() => {
+  refreshUnread()
+  // 组合现有轮询节奏刷新未读（简化：初始+麃铃展开时刷新）
 })
 
 /** 下拉菜单命令分发: logout -> 退出登录 */

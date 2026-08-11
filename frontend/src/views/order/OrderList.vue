@@ -2,6 +2,9 @@
   <div>
     <PageHeader title="订单列表" subtitle="查看所有订单及支付/履约状态" />
     <div class="page-container">
+      <div class="toolbar">
+        <el-button type="primary" size="small" @click="openCreate">新建订单</el-button>
+      </div>
       <el-card shadow="never">
         <!-- 013 审查 P1-6：按履约状态分栏看板（PRD 3.6/3.8） -->
         <el-tabs v-model="activeStatus" @tab-change="loadOrders">
@@ -38,6 +41,28 @@
           <el-button type="primary" :loading="shipping" @click="confirmShip">确认发货</el-button>
         </template>
       </el-dialog>
+
+      <!-- closure-plan P1-3: 新建订单弹窗 -->
+      <el-dialog v-model="createDialog" title="新建订单" width="460px">
+        <el-form :model="createForm" label-width="90px">
+          <el-form-item label="订单号">
+            <el-input v-model="createForm.order_no" placeholder="ORD-XXXXXXXX" />
+          </el-form-item>
+          <el-form-item label="金额">
+            <el-input-number v-model="createForm.amount" :min="0.01" :precision="2" style="width: 180px" />
+          </el-form-item>
+          <el-form-item label="实付金额">
+            <el-input-number v-model="createForm.paid_amount" :min="0" :precision="2" style="width: 180px" />
+          </el-form-item>
+          <el-form-item label="绑定手机号">
+            <el-input v-model="createForm.phone" placeholder="可选，用于双因子校验" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="createDialog = false">取消</el-button>
+          <el-button type="primary" :loading="creating" @click="confirmCreate">创建</el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -46,7 +71,7 @@
 import { ref, onMounted } from 'vue'
 import { computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getOrderList, shipOrder, ORDER_STATUS_MAP, type Order } from '@/api/order'
+import { getOrderList, shipOrder, createOrder, ORDER_STATUS_MAP, type Order } from '@/api/order'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 const orders = ref<Order[]>([])
@@ -55,6 +80,9 @@ const shipDialog = ref(false)
 const shipRow = ref<Order | null>(null)
 const trackingNo = ref('')
 const shipping = ref(false)
+const createDialog = ref(false)
+const creating = ref(false)
+const createForm = ref({ order_no: '', amount: 0, paid_amount: 0, phone: '' })
 const activeStatus = ref('')
 
 /** 履约状态分栏（全部 + 主要状态） */
@@ -93,6 +121,31 @@ async function loadOrders() {
 }
 
 function openShip(row: Order) { shipRow.value = row; trackingNo.value = ''; shipDialog.value = true }
+
+function openCreate() {
+  createForm.value = { order_no: '', amount: 0, paid_amount: 0, phone: '' }
+  createDialog.value = true
+}
+
+async function confirmCreate() {
+  if (!createForm.value.order_no.trim()) { ElMessage.warning('请输入订单号'); return }
+  if (!createForm.value.amount || createForm.value.amount <= 0) { ElMessage.warning('金额必须大于 0'); return }
+  creating.value = true
+  try {
+    await createOrder({
+      order_no: createForm.value.order_no.trim(),
+      amount: createForm.value.amount,
+      paid_amount: createForm.value.paid_amount,
+      phone: createForm.value.phone || undefined,
+    })
+    ElMessage.success('订单已创建')
+    createDialog.value = false
+    await loadOrders()
+  } catch (e: any) {
+    if (e?.status === 409) ElMessage.error('订单号已存在')
+    else ElMessage.error(e?.message || '创建失败')
+  } finally { creating.value = false }
+}
 
 async function confirmShip() {
   if (!shipRow.value) return

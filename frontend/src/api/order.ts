@@ -89,3 +89,15 @@ export function cancelRefund(approvalId: number) {
 export function shipOrder(orderId: number, tracking_no: string) {
   return request.post<ShipResponse>(`/order/${orderId}/ship`, { tracking_no })
 }
+
+/** 创建订单（closure-plan P1-3，PRD 3.6，admin/agent） */
+export interface CreateOrderBody {
+  order_no: string
+  amount: number
+  paid_amount?: number
+  phone?: string
+}
+
+export function createOrder(body: CreateOrderBody) {
+  return request.post<Order>('/order', body)
+}

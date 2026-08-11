@@ -63,7 +63,10 @@ class OcrClient:
         """
         if self.is_mock:
             # mock 模式返回占位文本（非空，保证下游切片有内容）
-            return _MOCK_OCR_TEXT
+            # closure-plan P1-1: mock 不再返回占位文本（否则会污染知识库）。
+            # 未配置 OCR key 时返回空串，由 file_parser 向上抛"无法识别"错误，
+            # 文档置 failed 而非把假内容入库。
+            return ""
 
         # 真实模式
         try:

@@ -7,8 +7,12 @@
         :closable="false"
         show-icon
         class="closed-alert"
-        title="会话已关闭超过 24 小时，请新建会话继续咨询"
-      />
+      >
+        <template #title>
+          <span>会话已关闭超过 24 小时</span>
+          <el-button link type="primary" size="small" @click="emit('new-session')">开始新会话</el-button>
+        </template>
+      </el-alert>
       <div v-if="messages.length === 0" class="empty-hint">发送一条消息开始对话</div>
       <MessageBubble
         v-for="msg in messages"
@@ -49,7 +53,7 @@ const props = defineProps<{
   sessionId: number | null
   prefillText?: string
 }>()
-const emit = defineEmits<{ (e: 'message-sent'): void; (e: 'status-change', status: string): void }>()
+const emit = defineEmits<{ (e: 'message-sent'): void; (e: 'status-change', status: string): void; (e: 'new-session'): void }>()
 
 const messages = ref<LocalMessage[]>([])
 const input = ref('')

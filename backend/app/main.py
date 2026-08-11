@@ -49,6 +49,7 @@ from app.api.v1 import agent as agent_router
 from app.api.v1 import auth as auth_router
 from app.api.v1 import billing as billing_router
 from app.api.v1 import knowledge as knowledge_router
+from app.api.v1 import notification as notification_router
 from app.api.v1.mcp import server as mcp_router
 from app.api.v1 import order as order_router
 from app.api.v1 import session as session_router
@@ -209,6 +210,7 @@ app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(knowledge_router.router, prefix="/api/v1/knowledge", tags=["knowledge"])
 app.include_router(billing_router.router, prefix="/api/v1/billing", tags=["billing"])
 app.include_router(mcp_router.router, prefix="/api/v1/mcp", tags=["mcp"])
+app.include_router(notification_router.router, prefix="/api/v1/notifications", tags=["notifications"])
 app.include_router(order_router.router, prefix="/api/v1/order", tags=["order"])
 app.include_router(session_router.router, prefix="/api/v1/session", tags=["session"])
 app.include_router(tenant_router.router, prefix="/api/v1/tenant", tags=["tenant"])

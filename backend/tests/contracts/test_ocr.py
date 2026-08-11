@@ -25,13 +25,12 @@ class TestOcrClient:
         client = get_ocr_client()
         assert client.is_mock is True
 
-    def test_mock_recognize_returns_nonempty(self):
-        """mock 模式 recognize 返回非空文本（保证下游切片有内容）。"""
+    def test_mock_recognize_returns_empty(self):
+        """mock 模式 recognize 返回空串（不允许占位文本伪装识别结果污染知识库，closure-plan P1-1）。"""
         reset_ocr_client()
         client = get_ocr_client()
         text = client.recognize(b"fake-image-bytes")
-        assert isinstance(text, str)
-        assert len(text) > 0
+        assert text == ""
 
     def test_recognize_pdf_page_alias(self):
         """recognize_pdf_page 复用 recognize，返回相同结果。"""
@@ -52,8 +51,8 @@ class TestOcrClient:
 class TestOcrFallback:
     """PDF 文本提取失败时 OCR 兜底契约。"""
 
-    def test_pdf_empty_text_triggers_ocr(self, monkeypatch):
-        """PDF 无文本层（extract_text 返回空）-> OCR 兜底返回 mock 文本。"""
+    def test_pdf_empty_text_raises_without_ocr_key(self, monkeypatch):
+        """PDF 无文本层 + 未配置 OCR key -> 报错而非入库假内容（closure-plan P1-1）。"""
 
         # mock PdfReader: pages[0].extract_text() 返回空串
         class _FakePage:
@@ -67,14 +66,13 @@ class TestOcrFallback:
         monkeypatch.setattr("PyPDF2.PdfReader", _FakeReader)
         reset_ocr_client()
 
-        from app.utils.file_parser import extract_text
+        from app.utils.file_parser import extract_text, FileParseError
 
-        text = extract_text("scan.pdf", b"%PDF-1.4 fake")
-        # OCR mock 模式返回占位文本（非空）
-        assert len(text) > 0
+        with pytest.raises(FileParseError):
+            extract_text("scan.pdf", b"%PDF-1.4 fake")
 
-    def test_pdf_parse_error_triggers_ocr(self, monkeypatch):
-        """PDF 解析抛异常 -> OCR 兜底返回 mock 文本。"""
+    def test_pdf_parse_error_raises_without_ocr_key(self, monkeypatch):
+        """PDF 解析抛异常 + 未配置 OCR key -> 报错而非入库假内容。"""
 
         class _BrokenReader:
             def __init__(self, stream):
@@ -85,9 +83,8 @@ class TestOcrFallback:
 
         from app.utils.file_parser import extract_text, FileParseError
 
-        # 异常 -> OCR 兜底成功 -> 返回 mock 文本（不抛异常）
-        text = extract_text("broken.pdf", b"%PDF-1.4 broken")
-        assert len(text) > 0
+        with pytest.raises(FileParseError):
+            extract_text("broken.pdf", b"%PDF-1.4 broken")
 
     def test_ocr_disabled_raises_error(self, monkeypatch):
         """OCR 也失败（返回空）-> extract_text 抛 FileParseError。"""

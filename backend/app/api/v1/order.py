@@ -36,6 +36,29 @@ def _get_tenant_id(request: Request) -> int:
     return tid
 
 
+class CreateOrderRequest(BaseModel):
+    """订单创建请求（closure-plan P1-3，PRD 3.6）。"""
+    order_no: str
+    amount: float
+    paid_amount: float | None = None
+    phone: str | None = None
+
+
+@router.post("", status_code=201, dependencies=[Depends(require_role("admin", "agent"))])
+def create_order(body: CreateOrderRequest, request: Request, db: Session = Depends(get_db)):
+    """订单业务创建入口：admin/agent 手动建单（status=created）。"""
+    from app.services.order_service import create_order as do_create, OrderError
+    try:
+        return do_create(
+            db, tenant_id=_get_tenant_id(request), order_no=body.order_no,
+            amount=body.amount, paid_amount=body.paid_amount, phone=body.phone,
+        )
+    except OrderError as e:
+        msg = str(e)
+        code = 409 if "已存在" in msg else 422
+        raise HTTPException(status_code=code, detail=msg) from e
+
+
 @router.get("/list")
 def list_orders(request: Request, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)):
     """订单列表（分页）: 调 order_crud.list_orders。"""

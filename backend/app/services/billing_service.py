@@ -131,7 +131,7 @@ def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int
         r.set(f"{WARNING_BANNER_KEY}{tenant_id}:80", "1", ex=WARNING_BANNER_TTL)
         warning = "80%"
         logger.info(f"Tenant {tenant_id} quota 80% warning: {count}/{q}")
-        _notify(tenant_id, "80%", count)
+        _notify(tenant_id, "80%", count, q)
 
     # 100% 预警（同 SETNX 原子去重）
     if count >= q and r.set(
@@ -141,7 +141,7 @@ def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int
         r.set(f"{WARNING_BANNER_KEY}{tenant_id}:100", "1", ex=WARNING_BANNER_TTL)
         warning = "100%"
         logger.info(f"Tenant {tenant_id} quota EXCEEDED: {count}/{q}")
-        _notify(tenant_id, "100%", count)
+        _notify(tenant_id, "100%", count, q)
 
     return {"count": count, "quota": q, "is_overage": is_overage, "warning": warning}
 
@@ -177,15 +177,15 @@ def incr_usage_for_tenant(db: Session, tenant_id: int) -> dict:
     return incr_usage(tenant_id, model)
 
 
-def _notify(tenant_id: int, level: str, count: int) -> None:
-    """触发配额预警通知（mock，失败不影响主流程）。
+def _notify(tenant_id: int, level: str, count: int, quota: int) -> None:
+    """触发配额预警通知（写站内信，失败不影响主流程）。
 
     设计决策: 通知失败只 log warning 不抛异常 -- 配额计数已完成，
     通知是旁路逻辑，不能因通知失败回滚计费。
     """
     try:
         from app.tasks.notification_tasks import notify_quota_warning
-        notify_quota_warning(tenant_id, level, count, TRIAL_QUOTA)
+        notify_quota_warning(tenant_id, level, count, quota)
     except Exception as e:
         logger.warning(f"Quota warning notification failed: {e}")
 

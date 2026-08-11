@@ -364,3 +364,51 @@ def ship_order(db: Session, *, order_id: int, tenant_id: int, tracking_no: str) 
     db.commit()
     logger.info(f"Order {order_id} shipped, tracking_no={tracking_no}")
     return {"id": order.id, "order_no": order.order_no, "status": "shipped", "tracking_no": tracking_no}
+
+
+
+def create_order(
+    db: Session, *, tenant_id: int, order_no: str, amount: float,
+    paid_amount: float | None = None, phone: str | None = None,
+) -> dict:
+    """\u521b\u5efa\u8ba2\u5355\uff08closure-plan P1-3\uff0cPRD 3.6\uff09\u3002
+
+    \u6d41\u7a0b:
+      1. \u91d1\u989d\u6821\u9a8c\uff08>0\u3001\u6709\u9650\u6570\u3001\u975e bool\uff09
+      2. \u8ba2\u5355\u53f7\u5168\u5c40\u552f\u4e00\u6821\u9a8c\uff08DB unique\uff09
+      3. \u4e8b\u52a1\u521b\u5efa status=created + \u5ba1\u8ba1\u65e5\u5fd7
+
+    Returns:
+        dict: id / order_no / status / amount / paid_amount
+    """
+    if not isinstance(amount, (int, float)) or isinstance(amount, bool) or not math.isfinite(amount) or amount <= 0:
+        raise OrderError("\u8ba2\u5355\u91d1\u989d\u5fc5\u987b\u662f\u5927\u4e8e 0 \u7684\u6709\u9650\u6570\u503c")
+    pay = paid_amount if paid_amount is not None else 0.0
+    if not isinstance(pay, (int, float)) or isinstance(pay, bool) or not math.isfinite(pay) or pay < 0:
+        raise OrderError("\u5b9e\u4ed8\u91d1\u989d\u4e0d\u80fd\u4e3a\u8d1f")
+
+    from app.models.order import Order
+    from sqlalchemy import select
+    exists = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
+    if exists is not None:
+        raise OrderError(f"\u8ba2\u5355\u53f7\u5df2\u5b58\u5728: {order_no}")
+
+    order = Order(
+        tenant_id=tenant_id, order_no=order_no,
+        amount=Decimal(str(amount)), paid_amount=Decimal(str(pay)),
+        status="created", version=1, phone=phone,
+    )
+    db.add(order)
+    db.flush()
+    log_audit(
+        db, tenant_id=tenant_id, user_id=None, action="order_create",
+        target_type="order", target_id=order.id,
+        detail=f"order_no={order_no}, amount={amount}",
+    )
+    db.commit()
+    db.refresh(order)
+    logger.info(f"Order {order_no} created by tenant {tenant_id}")
+    return {
+        "id": order.id, "order_no": order.order_no,
+        "status": order.status, "amount": float(order.amount), "paid_amount": float(order.paid_amount),
+    }

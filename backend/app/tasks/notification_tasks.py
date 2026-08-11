@@ -51,6 +51,23 @@ def notify_quota_warning(tenant_id: int, level: str, count: int, quota: int) -> 
     message = f"[配额预警] 租户 {tenant_id} 用量已达 {level}（{count}/{quota}）"
     logger.warning(message)
 
+    # closure-plan P1-5: 写站内信（真实触达，前端铃铛可查）
+    try:
+        from app.core.database import SessionLocal
+        from app.services.notification_service import create_notification
+        db = SessionLocal()
+        try:
+            create_notification(
+                db, tenant_id=tenant_id,
+                title=f"配额预警：{level}",
+                content=f"当前用量 {count}/{quota}，已触发 {level} 预警，超出部分将按量计费。",
+                type="quota_warning",
+            )
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Quota warning notification write failed (non-blocking): {e}")
+
     # 记录通知计数（可观测性演示），带 TTL 防永久累积
     r = get_redis()
     key = f"{NOTIF_COUNT_PREFIX}quota_warning:{tenant_id}"

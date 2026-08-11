@@ -16,6 +16,7 @@ backend/app/api/v1/ticket.py
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -30,6 +31,24 @@ def _get_tenant_id(request: Request) -> int:
     if tid is None:
         raise HTTPException(status_code=401, detail="未认证")
     return tid
+
+
+class CreateTicketRequest(BaseModel):
+    """用户提交工单请求（closure-plan P1-4，PRD 3.8）。"""
+    title: str
+    description: str | None = None
+    priority: str = "medium"
+    category: str = "general"
+
+
+@router.post("", status_code=201)
+def create_ticket(body: CreateTicketRequest, request: Request, db: Session = Depends(get_db)):
+    """用户主动提交工单（登录用户即可，category 默认 general）。"""
+    from app.services.ticket_service import create_ticket as do_create
+    return do_create(
+        db, tenant_id=_get_tenant_id(request), title=body.title,
+        description=body.description, priority=body.priority, category=body.category,
+    )
 
 
 @router.get("/list")

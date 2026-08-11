@@ -35,6 +35,7 @@ from app.models import tenant as _tenant  # noqa: F401
 from app.models import tenant_member as _tm  # noqa: F401
 from app.models import knowledge_document as _kd  # noqa: F401
 from app.models import message as _msg  # noqa: F401
+from app.models import notification as _notification  # noqa: F401
 from app.models import order as _order  # noqa: F401
 from app.models import quick_reply as _quick_reply  # noqa: F401
 from app.models import refund_approval as _ra  # noqa: F401
