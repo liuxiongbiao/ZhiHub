@@ -5,8 +5,6 @@ backend/app/services/retrieval_service.py
       查询改写（补全指代） -> Milvus 向量召回 Top20 + ES BM25 召回 Top20
       -> RRF 融合排序 -> bge-reranker 精排 -> 置信度判断（低于阈值触发 HyDE 兜底）
       -> 空知识库分支判断 -> 降级模式标记
-分工: 🔴 强模型独立完成，不可分包（算法逻辑错了整条知识问答链路都是错的）
-对应日程: Day 3
 
 核心设计:
   双路召回 + RRF 融合 + 精排 + 兜底，是工业级 RAG 检索的标准范式。向量召回抓语义相似

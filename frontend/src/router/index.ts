@@ -78,7 +78,6 @@ const routes: RouteRecordRaw[] = [
         name: 'profile',
         component: () => import('@/views/profile/Profile.vue'),
       },
-      // Day 3: 知识库
       {
         path: 'knowledge/list',
         name: 'knowledge-list',
@@ -89,7 +88,6 @@ const routes: RouteRecordRaw[] = [
         name: 'knowledge-search-test',
         component: () => import('@/views/knowledge/SearchTest.vue'),
       },
-      // Day 5: 工单/订单/退款
       {
         path: 'ticket/list',
         name: 'ticket-list',
@@ -106,7 +104,6 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/order/RefundApproval.vue'),
         meta: { requiresRole: ['admin'] },  // 后端 refunds 端点 require_role("admin")
       },
-      // Day 6: 计费
       {
         path: 'billing/usage',
         name: 'billing-usage',
@@ -119,7 +116,6 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/billing/InvoiceList.vue'),
         meta: { requiresRole: ['admin'] },
       },
-      // Day 7: 会话详情
       {
         path: 'session/:id',
         name: 'session-detail',
@@ -132,7 +128,6 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/session/SessionMonitor.vue'),
         meta: { requiresRole: ['admin'] },
       },
-      // Day 8: DeepAgent
       {
         path: 'agent-report',
         name: 'agent-report',
@@ -146,7 +141,6 @@ const routes: RouteRecordRaw[] = [
       },
     ],
   },
-  // Day 6: 坐席工作台（独立布局）
   {
     path: '/agent',
     component: () => import('@/layouts/AgentLayout.vue'),

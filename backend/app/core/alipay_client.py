@@ -2,8 +2,6 @@
 backend/app/core/alipay_client.py
 
 职责: 封装支付宝沙箱支付网关（下单生成支付链接 / 异步回调验签 / 退款）
-分工: 🔴 强模型独立完成（签名校验错=可被伪造回调伪造支付）
-对应日程: 010 业务闭环 / PRD 3.10
 
 核心设计:
   - key 占位降级: settings.alipay_app_id 为空 -> mock 模式，create_payment 返回假链接、
@@ -104,14 +102,13 @@ class AlipayClient:
                 f"&trade_no={trade_no}&amount={amount}&subject={subject}"
             )
 
-        order = {
-            "out_trade_no": trade_no,
-            "total_amount": str(amount),
-            "subject": subject,
-            "product_code": "FAST_INSTANT_TRADE_PAY",
-        }
+        # python-alipay-sdk 3.x 的 api_alipay_trade_page_pay 签名是
+        # (subject, out_trade_no, total_amount, return_url, notify_url)，
+        # 不接受 biz_content 关键字；SDK 内部会补 product_code。
         url = self._alipay.api_alipay_trade_page_pay(
-            biz_content=order,
+            subject=subject,
+            out_trade_no=trade_no,
+            total_amount=str(amount),
             return_url="",
             notify_url=settings.alipay_notify_url or None,
         )

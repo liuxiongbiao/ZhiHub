@@ -2,8 +2,6 @@
 backend/app/core/llm_client.py
 
 职责: 模型网关封装 -- 主模型失败自动切备用模型（PRD 3.14）
-分工: 通用基础设施，供所有 LLM 调用方使用
-对应日程: feature 005-model-gateway
 
 核心设计:
   llm_complete(messages, **kwargs) 是 litellm.completion 的薄封装，增加主备降级能力。
@@ -85,3 +83,47 @@ def llm_complete(messages: list[dict], **kwargs) -> Any:
             f"Primary model {primary} failed: {e}, switching to backup {backup}"
         )
         return litellm.completion(model=backup, messages=messages, timeout=timeout, **kwargs)
+
+
+def llm_complete_stream(messages: list[dict], **kwargs):
+    """LLM 流式调用: yield 文本 chunk（token 级真流式）。
+
+    与 llm_complete 的区别:
+      - llm_complete 返回完整 ModelResponse（同步阻塞）
+      - llm_complete_stream 是生成器，逐 chunk yield 文本片段
+
+    主备降级: 主模型流式失败 -> 尝试备用模型流式；都失败抛异常。
+
+    Args:
+        messages: OpenAI 格式消息列表
+        **kwargs: 透传给 litellm.completion（max_tokens, temperature 等）
+
+    Yields:
+        str: 文本 chunk（非完整响应，拼接后为完整回答）
+    """
+    import litellm
+    from app.config import settings
+
+    primary = settings.llm_primary_model or _DEFAULT_MODEL
+    backup = settings.llm_backup_model or _DEFAULT_MODEL
+    timeout = kwargs.pop("timeout", LLM_TIMEOUT_SECONDS)
+
+    try:
+        response = litellm.completion(
+            model=primary, messages=messages, timeout=timeout, stream=True, **kwargs
+        )
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
+    except Exception as e:
+        if backup == primary:
+            raise
+        logger.warning(f"Stream primary {primary} failed: {e}, trying backup {backup}")
+        response = litellm.completion(
+            model=backup, messages=messages, timeout=timeout, stream=True, **kwargs
+        )
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content

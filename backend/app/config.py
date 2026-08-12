@@ -2,7 +2,6 @@
 backend/app/config.py
 
 职责: 集中配置类，基于 pydantic-settings 从 .env 读取全部配置项
-对应日程: Day 1（第 1 个要写的文件，所有模块依赖此文件）
 
 核心设计:
   - 继承 BaseSettings，字段名小写下划线，自动映射环境变量大写形式
@@ -17,7 +16,7 @@ backend/app/config.py
 import os
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # ── 应用 & JWT ──
@@ -90,6 +89,9 @@ class Settings(BaseSettings):
     # 009 技术栈对比: 工具调用模式（mcp=JSON-RPC 信封 | fc=Function Calling，默认 mcp）
     agent_tool_mode: str = "mcp"
 
+    # P-011: CORS 允许来源（逗号分隔，从 .env 读取；默认仅前端开发服务器）
+    cors_origins: str = "http://localhost:5173"
+
     # 010 业务闭环: 退款 / 知识库 / 计费配置
     refund_approval_threshold: float = 1000.0   # 大额退款审批阈值（超过则需审批）
     refund_timeout_days: int = 7                 # 退款超时自动取消天数
@@ -100,7 +102,20 @@ class Settings(BaseSettings):
     quality_garbage_threshold: float = 0.3       # 文档乱码率阈值（超过判为低质）
     storage_doc_limit: int = 50                  # 租户文档数量上限
     invoice_overdue_days: int = 15               # 账单逾期降级天数
-    model_weights: str = '{"deepseek/deepseek-chat": 1.0}'  # 模型折算权重（JSON 字符串，计费用）
+    # ── 015 计费准确性（公式与示例见 specs/015-billing-accuracy/spec.md）──
+    # 套餐月基础费（元）：trial=0 / basic=999 / pro=4999 / enterprise=0（议价）
+    billing_plan_base_fees: str = '{"trial": 0, "basic": 999, "pro": 4999, "enterprise": 0}'
+    # 超额单价（元/条）：PRD 3.9 默认 0.5；账单公式 overage_fee = overage_cnt * price
+    billing_overage_price: float = 0.5
+    # 试用租户是否生成账单：默认 false（业务决策项，见修复清单待决策区；产品可改配置切换）
+    billing_charge_trial: bool = False
+    # PRD 3.2 知识库存储上限（MB/月）：0=无限制（enterprise 议价）
+    storage_quota_mb: str = '{"trial": 500, "basic": 5120, "pro": 51200, "enterprise": 0}'
+    # 014 Widget 公共通道：Widget 会话令牌有效期（分钟）
+    widget_token_expire_minutes: int = 30
+    # 007/PRD 3.4: 单会话最大轮次（原硬编码 50 与 PRD 15 不符）
+    max_rounds_per_session: int = 15
+    model_weights: str = '{"deepseek/deepseek-chat": 1.0, "deepseek/deepseek-reasoner": 3.0, "gpt-4o": 5.0, "gpt-4o-mini": 0.5, "claude-3-5-sonnet": 4.0}'  # 模型折算权重（JSON 字符串，贵模型权重高）
 
     # 010 PRD 3.10: 支付宝沙箱支付（key 为空 -> mock 模式，不调真实网关；用户后填真 key 即切换）
     alipay_app_id: str = ""                                  # 支付宝应用 ID（沙箱）
@@ -121,8 +136,7 @@ class Settings(BaseSettings):
     ocr_api_key: str = ""                                    # 百度 OCR API Key
     ocr_secret_key: str = ""                                 # 百度 OCR Secret Key
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings()

@@ -1,7 +1,5 @@
 // frontend/src/api/billing.ts
 // 职责: 配额/账单/用量接口
-// 分工: 🟢 弱模型可独立完成
-// 对应日程: Day 6
 
 import request from './request'
 

@@ -2,7 +2,6 @@
 backend/tests/integration/test_auth_middleware.py
 
 职责: 测试 auth/tenant 中间件集成（令牌校验、公开路径放行、黑名单拒绝、伪造 tenant_id 忽略）
-对应日程: 001-auth-tenant
 
 测试内容:
   - TestAuthMiddleware: 有效令牌通过 / 无令牌 401 / 畸形令牌 401 /

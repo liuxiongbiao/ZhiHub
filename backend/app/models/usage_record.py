@@ -2,7 +2,6 @@
 backend/app/models/usage_record.py
 
 职责: usage_records 表 ORM 模型定义（按天聚合用量）
-对应日程: 005-billing-csat
 
 核心设计:
   按租户+日期聚合的对话用量，is_overage 标记是否超出套餐配额，账单据此计算超量费。

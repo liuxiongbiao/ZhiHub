@@ -2,9 +2,7 @@
 backend/tests/conftest.py
 
 职责: 全局测试夹具，让 295 个测试脱离真实 MySQL/Redis 容器独立运行
-对应日程: 贯穿 001~010
 
-夹具设计（面试讲测试架构的重点）:
   - db: SQLite in-memory Session。用 StaticPool 强制全测试共用同一连接，
         否则 :memory: 每个连接会建独立库（建表后查不到）。每测试建表 + 结束销毁。
   - fake_redis(autouse): 用 fakeredis 替换 core.redis 的连接单例。autouse 保证
@@ -72,6 +70,31 @@ def fake_redis():
     redis_module._redis_client = fake
     yield fake
     redis_module._redis_client = None
+
+
+@pytest.fixture(autouse=True)
+def reset_third_party_clients(monkeypatch):
+    """测试环境与本地 .env 解耦：支付宝/微信一律 mock，避免真实 Key 影响断言。
+
+    修复：契约测试此前依赖本机 .env 中 ALIPAY_APP_ID 是否为空，
+    导致“真实模式密钥解析失败 -> 拒绝退款”的不稳定失败。
+    """
+    from app.config import settings
+    from app.core.alipay_client import reset_alipay_client
+    from app.core.wechat_client import reset_wechat_client
+    from app.core.ocr_client import reset_ocr_client
+
+    monkeypatch.setattr(settings, "alipay_app_id", "")
+    monkeypatch.setattr(settings, "wechat_app_id", "")
+    monkeypatch.setattr(settings, "ocr_api_key", "")
+    monkeypatch.setattr(settings, "ocr_secret_key", "")
+    reset_alipay_client()
+    reset_wechat_client()
+    reset_ocr_client()
+    yield
+    reset_alipay_client()
+    reset_wechat_client()
+    reset_ocr_client()
 
 
 @pytest.fixture()

@@ -2,9 +2,7 @@
 backend/app/middlewares/auth_middleware.py
 
 职责: JWT 解析 -> 验签/验过期 -> Redis 黑名单查询（登出即时失效） -> 注入 request.state 身份信息
-对应日程: Day 2
 
-中间件链位置（面试点）:
   入站执行顺序: Auth -> Tenant -> RateLimit -> CORS -> 路由
   Auth 必须在 Tenant 之前: Auth 解析 JWT 注入 token_tenant_id/user_id/role，
   Tenant 才能搬运 token_tenant_id -> tenant_id，RateLimit 才能用 tenant_id+user_id 限流。
@@ -45,7 +43,7 @@ logger = logging.getLogger(__name__)
 #   /wechat/bind 需 JWT（已登录后才允许绑定）
 _PUBLIC_PREFIXES = (
     "/health",
-    "/metrics",  # 监控探针：生产建议置于内网或加鉴权
+    # "/metrics" 已移除公开白名单 -- 监控探针需鉴权或内网隔离（P-003 修复）
     "/api/v1/auth/register",
     "/api/v1/auth/login",
     "/api/v1/auth/sms/send",
@@ -55,6 +53,7 @@ _PUBLIC_PREFIXES = (
     "/api/v1/auth/wechat/callback",
     "/api/v1/tenant/invite/accept",
     "/api/v1/billing/alipay/notify",
+    "/api/v1/widget/session",  # 014: 仅会话创建公开；发消息/撤单需 Widget 令牌
     "/docs",
     "/redoc",
     "/openapi.json",
@@ -96,6 +95,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 is_blocked = False
             if is_blocked:
                 return JSONResponse({"detail": "未认证"}, status_code=401)
+
+        # 014: Widget 令牌（role=widget）只允许访问 /api/v1/widget/*，
+        # 注入 widget_session_id，user_id 保持 None（匿名终端用户）。
+        if payload.get("role") == "widget":
+            if not request.url.path.startswith("/api/v1/widget/"):
+                return JSONResponse({"detail": "未认证"}, status_code=401)
+            try:
+                request.state.widget_session_id = int(payload.get("session_id"))
+            except (TypeError, ValueError):
+                return JSONResponse({"detail": "无效令牌"}, status_code=401)
+            request.state.user_id = None
+            request.state.role = "widget"
+            request.state.jti = jti
+            request.state.token_exp = payload.get("exp")
+            request.state.token_tenant_id = payload.get("tenant_id")
+            return await call_next(request)
 
         # 注入身份信息到 request.state，供 Tenant 中间件与 deps 消费
         try:

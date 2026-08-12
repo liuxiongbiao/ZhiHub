@@ -2,7 +2,6 @@
 backend/app/crud/ticket.py
 
 职责: tickets 表的数据库访问层（工单 CRUD、按工单号查询、状态更新）
-对应日程: 004-ticket-order
 
 核心设计:
   所有查询强制 tenant_id 过滤（多租户隔离）；只 flush 不 commit，事务由 Service 层控制。

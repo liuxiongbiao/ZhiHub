@@ -2,7 +2,6 @@
 backend/tests/unit/test_security.py
 
 职责: 回归保护 core/security.py 的 bcrypt 哈希 + JWT 生成/解码/过期处理
-对应日程: 001-auth-tenant
 
 测试内容:
   - TestPasswordHashing: hash != 明文 + verify 正确/错误密码

@@ -2,7 +2,6 @@
 backend/tests/contracts/test_knowledge_ext.py
 
 职责: 测试 #18 知识库数量上限（套餐配额）契约
-对应日程: 018-kb-count-limit / PRD 3.2
 
 测试内容:
   - 套餐配额: trial 1 / basic 3 / pro 无限

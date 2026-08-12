@@ -2,7 +2,6 @@
 backend/app/models/message.py
 
 职责: messages 表 ORM 模型定义（会话中的一条消息）
-对应日程: 003-session-routing
 
 核心设计:
   会话消息流水，role 区分消息来源，sources/metadata 以 JSON 存检索引用与运行指标。

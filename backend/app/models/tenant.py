@@ -2,7 +2,6 @@
 backend/app/models/tenant.py
 
 职责: tenants 表 ORM 模型定义（租户套餐/配额/状态）
-对应日程: 001-account-tenant
 
 核心设计:
   多租户系统的核心隔离单位，每个企业客户对应一行，套餐决定配额与功能开关。
@@ -42,5 +41,8 @@ class Tenant(BaseModel):
     widget_theme_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#1890ff")
     widget_logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     widget_welcome_text: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # 014 Widget 公共通道：API Key 仅存 SHA-256 哈希（防库泄露后直接使用）；域名白名单逗号分隔
+    widget_api_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    widget_allowed_domains: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     # 026 多模型计费折算（PRD 3.9）：租户默认模型，计费时按 MODEL_WEIGHTS 折算配额
     default_model: Mapped[str] = mapped_column(String(100), nullable=False, default="deepseek/deepseek-chat")

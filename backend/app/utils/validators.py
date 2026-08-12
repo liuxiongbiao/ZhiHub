@@ -2,7 +2,6 @@ r"""
 backend/app/utils/validators.py
 
 职责: 手机号格式校验、密码强度校验（纯函数，不合法 raise ValueError）
-对应日程: 001-account-tenant
 
 核心设计:
   规则来源 PRD V1.4 §3.1.2：手机号中国大陆 11 位（1 开头第二位 3-9）；
@@ -73,3 +72,16 @@ def validate_password_strength(pw: str) -> None:
         raise ValueError("密码过于常见，请更换")
     if _has_sequential_run(pw):
         raise ValueError("密码不能包含连续字符序列")
+
+
+def verify_phone_suffix(provided: str | None, bound: str | None) -> bool:
+    """双因子校验：提供的手机号与业务记录绑定手机号后 4 位是否一致（016）。
+
+    任一为空/长度不足 4 -> False。只比较后 4 位字符串，避免数字前导零问题。
+    注意：调用方必须保证 bound 来自可信来源（DB 解密后的明文手机号）。
+    """
+    if not provided or not bound:
+        return False
+    if len(provided) < 4 or len(bound) < 4:
+        return False
+    return provided[-4:] == bound[-4:]

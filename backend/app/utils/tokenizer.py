@@ -2,7 +2,6 @@
 backend/app/utils/tokenizer.py
 
 职责: 估算文本 token 数量，用于 agent_service 上下文截断预算判断
-对应日程: 003-session-routing
 
 核心设计:
   轻量近似：中文约 1.5 chars/token，其他约 4 chars/token，误差 ±20% 对截断判断足够。

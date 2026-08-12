@@ -2,8 +2,6 @@
 backend/app/agents/nodes/router.py
 
 职责: LangGraph 路由节点（入口）--一次 LLM 调用完成意图识别 + 槽位提取 + 情绪判断 + 置信度评分。
-分工: 🔴 强模型独立完成（Prompt 工程需反复调试置信度阈值，弱模型调不出可用效果）
-对应日程: Day 4 / 011 PydanticAI 结构化输出接入
 
 核心设计:
   路由节点是图的入口，用 PydanticAI Agent 一次调用产出结构化路由结果（intent/confidence/sentiment/slots）。

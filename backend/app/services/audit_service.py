@@ -2,7 +2,6 @@
 backend/app/services/audit_service.py
 
 职责: 系统审计日志写入与查询（PRD 2.1）
-对应日程: handover-and-plan #28
 
 核心设计:
   log_audit 只 add + flush 不 commit，由各 service 的 commit 统一提交，

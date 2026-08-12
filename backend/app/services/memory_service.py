@@ -2,8 +2,6 @@
 backend/app/services/memory_service.py
 
 职责: 长期记忆--LLM 抽取关键事实 -> 向量化 -> Milvus 存储/检索，跨会话记住用户偏好。
-分工: 🔴 强模型独立完成（记忆抽取/检索逻辑影响跨会话体验）
-对应日程: 009 US2 / 011 PydanticAI 结构化输出接入
 
 核心设计:
   三步：①extract_facts 用 PydanticAI Agent 从用户消息抽取值得长期记住的事实（套餐/手机号/昵称/偏好）；
@@ -156,6 +154,11 @@ def save_memory(tenant_id: int, user_id: str, facts: list[dict]) -> None:
             if fact.get("fact_type") not in ALLOWED_FACT_TYPES:
                 logger.warning(f"Memory fact_type not in whitelist, skipped: {fact.get('fact_type')!r}")
                 continue
+            # P1-新1: 记忆内容（可能含手机号）入库前脱敏
+            from app.utils.desensitize import mask_pii
+            content = mask_pii(fact.get("content"))
+            if not content:
+                continue
             # upsert：先删同 tenant+user+fact_type 的旧记忆，再插新的
             expr = (
                 f'tenant_id == {tenant_id} and user_id == "{user_id}" '
@@ -167,14 +170,14 @@ def save_memory(tenant_id: int, user_id: str, facts: list[dict]) -> None:
                 # 删旧失败不阻塞：最坏情况是同类型记忆并存两条，检索时都能召回
                 pass
 
-            vectors = embed_texts([fact["content"]])
+            vectors = embed_texts([content])
             if vectors:
                 collection.insert([
                     {
                         "tenant_id": tenant_id,
                         "user_id": user_id,
                         "fact_type": fact["fact_type"],
-                        "content": fact["content"],
+                        "content": content,
                         "vector": vectors[0],
                         "created_at": float(time.time()),
                     }

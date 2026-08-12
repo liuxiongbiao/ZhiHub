@@ -2,8 +2,6 @@
 backend/app/core/rerank_client.py
 
 职责: 硅基流动 bge-reranker-v2-m3 Rerank API 封装
-分工: 🟡 弱模型起草 + 强模型 review
-对应日程: Day 3 / 003-knowledge-base
 
 核心设计:
   RAG 检索二阶段: 先用向量检索（Milvus）召回 Top-K 候选，再用 reranker 精排取 Top-N。

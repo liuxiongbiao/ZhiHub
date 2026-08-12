@@ -2,7 +2,6 @@
 backend/app/schemas/auth.py
 
 职责: 注册/登录/登出/验证码/邮箱/密码找回/绑定 请求体与响应 Pydantic 模型（Pydantic v2）
-对应日程: 001-account-tenant / PRD 3.1 账户体系扩展
 """
 
 from pydantic import BaseModel, Field

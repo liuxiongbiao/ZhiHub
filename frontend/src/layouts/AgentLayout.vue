@@ -1,7 +1,5 @@
 <!-- frontend/src/layouts/AgentLayout.vue -->
 <!-- 职责: 坐席工作台布局 - 侧边菜单 + 主内容区 -->
-<!-- 分工: 🟢 弱模型可独立完成 -->
-<!-- 对应日程: Day 6 -->
 <template>
   <el-container class="agent-layout">
     <el-aside width="220px" class="sidebar">

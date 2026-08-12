@@ -3,8 +3,6 @@ backend/app/services/agent_service.py
 
 职责: 接收用户消息，驱动 LangGraph 状态图执行 -> 收集 trace 写 MongoDB -> 触发配额计数
       -> LLM 异常兜底 -> 上下文 token 预算截断 -> 单会话轮次上限检查。
-分工: 🔴 强模型独立完成（跨模块编排中枢，一步错全链路崩）
-对应日程: Day 4 / 006 注入检测 / 007 轮次转人工 / 009 长期记忆
 
 核心设计:
   handle_message 是整个对话系统的主编排入口，串联：加载会话+上下文 -> 记忆注入 -> 保存用户消息
@@ -33,6 +31,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.crud import session as session_crud
 from app.services import session_service
+from app.config import settings
 from app.core.langfuse_client import observe
 from app.core.ws_manager import manager
 from app.utils.tokenizer import count_messages_tokens, truncate_messages
@@ -41,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Token 预算（与 BUILD_PLAN 对齐）
 MAX_TOKEN_BUDGET = 4000  # 上下文 token 上限，超则截断历史
-MAX_ROUNDS = 50  # 单会话最大轮次（轮次上限保护，防无限对话）
+MAX_ROUNDS = settings.max_rounds_per_session  # 单会话最大轮次（PRD 3.4: 15，可配置）
 
 
 class AgentError(Exception):
@@ -431,3 +430,183 @@ def handle_message(
             "tokens": tokens_used,
         },
     }
+
+
+def prepare_message_stream(
+    db: DbSession,
+    *,
+    session_id: int,
+    tenant_id: int,
+    user_message: str,
+) -> dict:
+    """流式消息预处理: 执行 graph.invoke 获取路由+检索结果，但不生成最终回答。
+
+    与 handle_message 的区别: graph.invoke 完成路由+检索后，提取 retrieval_result，
+    由调用方通过 llm_complete_stream 流式生成回答（token 级真流式）。
+    """
+    start = time.perf_counter()
+
+    s = session_crud.get_by_id(db, session_id, tenant_id)
+    if s is None:
+        raise session_service.SessionNotFound(f"会话不存在: {session_id}")
+    end_user_id = getattr(s, "end_user_id", None)
+
+    from app.services.billing_service import is_degraded
+    if is_degraded(tenant_id):
+        return {"need_stream": False, "content": "您的账户因账单逾期已进入降级模式，请完成支付后恢复服务",
+                "retrieval_result": [], "intent": "degraded", "confidence": 1.0,
+                "sentiment": "normal", "should_interrupt": False, "context": [],
+                "session": s, "end_user_id": end_user_id, "final_state": {},
+                "elapsed_ms": int((time.perf_counter() - start) * 1000)}
+
+    context = session_service.get_context(session_id)
+    context.append({"role": "user", "content": user_message})
+    try:
+        from app.services.memory_service import search_memory
+        memories = search_memory(tenant_id, end_user_id, user_message) if end_user_id else []
+        if memories:
+            memory_text = "；".join(memories)
+            context.insert(0, {"role": "system", "content": f"用户历史记忆: {memory_text}"})
+    except Exception as e:
+        logger.warning(f"Memory search failed (non-blocking): {e}")
+
+    session_crud.create_message(db, session_id=session_id, role="user", content=user_message)
+
+    final_state = _detect_injection(db, session_id=session_id, tenant_id=tenant_id, user_message=user_message)
+
+    if final_state is None:
+        session_crud.update_status(db, s, "routing")
+        db.commit()
+        if len(context) > MAX_ROUNDS * 2:
+            context = context[-(MAX_ROUNDS * 2):]
+        if count_messages_tokens(context) > MAX_TOKEN_BUDGET:
+            context = truncate_messages(context, MAX_TOKEN_BUDGET)
+
+        initial_state = {"session_id": session_id, "tenant_id": tenant_id,
+            "messages": context, "intent": "", "confidence": 0.0,
+            "sentiment": "normal", "slots": {}, "retrieval_result": [],
+            "current_agent": "router", "should_interrupt": False, "final_response": ""}
+
+        try:
+            from app.agents.graph import get_graph
+            graph = get_graph()
+            final_state = graph.invoke(initial_state)
+        except Exception as e:
+            logger.exception(f"LangGraph execution failed: {e}")
+            final_state = {**initial_state,
+                "final_response": "抱歉，系统处理您的请求时遇到了问题，请稍后重试。",
+                "intent": "knowledge_consult", "confidence": 0.0}
+        _check_rounds_handoff(session_id, final_state)
+    else:
+        logger.info(f"Session {session_id}: injection -> human handoff (graph skipped)")
+
+    final_response = final_state.get("final_response", "")
+    intent = final_state.get("intent", "knowledge_consult")
+    confidence = final_state.get("confidence", 0.0)
+    sentiment = final_state.get("sentiment", "normal")
+    retrieval_result = final_state.get("retrieval_result", [])
+    should_interrupt = final_state.get("should_interrupt", False)
+    need_stream = not should_interrupt and bool(retrieval_result) and bool(final_response)
+
+    return {"need_stream": need_stream, "content": final_response if not need_stream else "",
+            "retrieval_result": retrieval_result, "intent": intent, "confidence": confidence,
+            "sentiment": sentiment, "should_interrupt": should_interrupt, "context": context,
+            "session": s, "end_user_id": end_user_id, "final_state": final_state,
+            "elapsed_ms": int((time.perf_counter() - start) * 1000)}
+
+
+def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
+                            content: str, prep: dict) -> dict:
+    """流式消息后处理: 保存 assistant 消息 + 计费 + trace + 记忆抽取。"""
+    s = prep["session"]
+    context = prep["context"]
+    intent = prep["intent"]
+    confidence = prep["confidence"]
+    sentiment = prep["sentiment"]
+    retrieval_result = prep["retrieval_result"]
+    should_interrupt = prep["should_interrupt"]
+    end_user_id = prep["end_user_id"]
+    elapsed = prep["elapsed_ms"]
+
+    from sqlalchemy import func, select
+    from app.models.message import Message
+    existing_assistant = db.execute(
+        select(func.count()).select_from(Message).where(
+            Message.session_id == session_id, Message.role == "assistant"
+        )
+    ).scalar() or 0
+    first_round = existing_assistant == 0
+
+    sources = []
+    for r in retrieval_result[:5]:
+        sources.append({"doc": r.get("doc_filename", "未知文档"),
+                        "chunk_index": r.get("chunk_index", 0),
+                        "text": (r.get("chunk_text", ""))[:200]})
+
+    tokens_used = count_messages_tokens(context)
+    msg = session_crud.create_message(db, session_id=session_id, role="assistant",
+        content=content, sources=sources if sources else None,
+        metadata={"intent": intent, "confidence": round(confidence, 4),
+                   "sentiment": sentiment, "elapsed_ms": elapsed, "tokens": tokens_used})
+    from app.core.metrics import AGENT_MESSAGES
+    AGENT_MESSAGES.labels(role="assistant").inc()
+    msg_id = msg.id
+
+    context.append({"role": "assistant", "content": content})
+    session_service.save_context(session_id, context)
+    session_crud.update_status(db, s, "waiting_human" if should_interrupt else "agent_handling")
+    session_crud.update_intent(db, s, intent=intent, confidence=confidence, sentiment=sentiment)
+    db.commit()
+
+    if should_interrupt:
+        _notify_new_session(tenant_id=tenant_id, session_id=s.id)
+
+    if not should_interrupt and first_round:
+        try:
+            from app.services.billing_service import incr_usage_for_tenant
+            incr_usage_for_tenant(db, tenant_id)
+        except Exception as e:
+            logger.warning(f"Billing incr_usage failed (non-blocking): {e}")
+
+    try:
+        import threading, asyncio as _aio
+        from app.services.trace_service import save_trace
+        final_state = prep.get("final_state", {})
+        final_state["final_response"] = content
+        def _save_trace():
+            try:
+                _aio.run(save_trace(session_id, tenant_id, msg_id, final_state, elapsed))
+            except Exception as te:
+                logger.warning(f"Trace save failed: {te}")
+        threading.Thread(target=_save_trace, daemon=True).start()
+    except Exception:
+        logger.warning("Trace save skipped")
+
+    try:
+        from app.services.memory_service import extract_facts, save_memory
+        user_msg = context[-2]["content"] if len(context) >= 2 else ""
+        facts = extract_facts(user_msg)
+        if facts and end_user_id:
+            save_memory(tenant_id, end_user_id, facts)
+    except Exception as e:
+        logger.warning(f"Memory save failed (non-blocking): {e}")
+
+    logger.info(f"Agent stream: session={session_id}, intent={intent}, elapsed={elapsed}ms")
+    return {"message_id": msg_id, "role": "assistant", "content": content,
+            "sources": sources, "metadata": {"intent": intent, "confidence": round(confidence, 4),
+            "sentiment": sentiment, "elapsed_ms": elapsed, "tokens": tokens_used}}
+
+
+def build_stream_messages(user_message: str, retrieval_result: list, context: list) -> list:
+    """构建流式 LLM 调用的 messages（复用 knowledge prompt 模板）。"""
+    from app.agents.nodes.knowledge_agent import _build_sources_text, _load_prompt
+    sources_text = _build_sources_text(retrieval_result)
+    template = _load_prompt()
+    prompt = template.replace("{sources}", sources_text).replace("{query}", user_message)
+    messages = [{"role": "system", "content": prompt}]
+    history = context[-7:-1] if len(context) > 1 else []
+    for h in history:
+        if h.get("role") in ("user", "assistant"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": user_message})
+    return messages

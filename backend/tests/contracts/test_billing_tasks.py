@@ -2,7 +2,6 @@
 backend/tests/contracts/test_billing_tasks.py
 
 职责: 资金逻辑回归防护（T1/T9 修复，此前零测试）
-对应日程: 005-billing / 第二轮审查 T1/T9
 
 测试内容:
   - TestAggregateDailyUsage: 聚合任务崩溃修复（浮点计数）+ 当日增量 + is_overage
@@ -113,21 +112,30 @@ class TestGenerateInvoiceByPeriod:
     def test_previous_month_invoice_reads_previous_quota(self, db, fake_redis):
         """月初生成上月账单: 读上月 key，超额费正确；当前月计数不串扰。"""
         from app.services.billing_service import generate_invoice
+        from app.models.tenant import Tenant
 
-        fake_redis.set("billing:quota:1:2026-07", "150")
+        db.add(Tenant(name="basic-tenant", plan_type="basic", status="active"))
+        db.commit()
+
+        fake_redis.set("billing:quota:1:2026-07", "2500")  # basic 配额 2000，超额 500
         fake_redis.set("billing:quota:1:2026-08", "30")  # 当前月计数，不应影响 7 月账单
         result = generate_invoice(db, tenant_id=1, period="2026-07")
-        assert result["overage_fee"] == 50.0  # (150-100)//10*10
+        assert float(result["base_fee"]) == 999.0
+        assert float(result["overage_fee"]) == 250.0  # 500 * 0.5
 
     def test_idempotent_same_period(self, db, fake_redis):
         """同账期重复生成 -> cached=True，不重复计费。"""
         from app.services.billing_service import generate_invoice
+        from app.models.tenant import Tenant
 
-        fake_redis.set("billing:quota:1:2026-07", "150")
+        db.add(Tenant(name="basic-tenant", plan_type="basic", status="active"))
+        db.commit()
+
+        fake_redis.set("billing:quota:1:2026-07", "2500")
         r1 = generate_invoice(db, tenant_id=1, period="2026-07")
         r2 = generate_invoice(db, tenant_id=1, period="2026-07")
         assert r2["cached"] is True
-        assert r2["overage_fee"] == r1["overage_fee"] == 50.0
+        assert float(r2["overage_fee"]) == float(r1["overage_fee"]) == 250.0
 
     def test_under_quota_month_no_overage(self, db, fake_redis):
         """未超额账期 -> overage_fee=0。"""

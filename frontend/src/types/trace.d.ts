@@ -1,7 +1,5 @@
 // frontend/src/types/trace.d.ts
 // 职责: Agent执行步骤/工具调用/检索结果类型（对齐 MongoDB trace 结构）
-// 分工: 🟡 强模型定字段结构，翻译成TS类型弱模型可做
-// 对应日程: Day 7
 
 /** 单步执行记录 */
 export interface TraceStep {

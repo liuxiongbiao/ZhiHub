@@ -2,13 +2,10 @@
 backend/app/mcp_servers/base_server.py
 
 职责: MCP 协议的最底层——JSON-RPC 2.0 标准信封的构造与解析，以及双因子身份校验工具。
-分工: 🔴 强模型独立完成（协议信封是 MCP 真实协议叙事的核心，错误码必须对齐 JSON-RPC 2.0 标准）
-对应日程: 006-mcp-security (User Story 2)
 
 核心设计:
   本文件不依赖任何官方 MCP SDK，纯手写 JSON-RPC 2.0 信封。原因是官方 SDK 默认走 stdio 传输，
   而本系统是 Web 服务架构，工具调用走 HTTP（见 app/api/v1/mcp/server.py），手写信封既剥离了
-  stdio 进程管理的复杂度，又能在面试中讲清"协议信封长什么样、错误码怎么对齐标准"。
   信封三件套：请求 / 成功 / 错误，外加一个 parse_request 做入站信封校验。
   错误码前 5 个（-32x00 系列）严格对齐 JSON-RPC 2.0 规范，后 2 个（-32000/-32001）是业务扩展。
 
@@ -26,6 +23,8 @@ backend/app/mcp_servers/base_server.py
 
 import uuid
 from typing import Any
+
+from app.utils.validators import verify_phone_suffix  # noqa: F401  # 016: 逻辑收敛到 validators，此处再导出保持兼容
 
 JSONRPC_VERSION = "2.0"
 
@@ -68,33 +67,6 @@ class IdentityVerificationError(Exception):
     def __init__(self, message: str = "未查询到匹配信息"):
         # 默认消息恒定，调用方一般不覆盖，确保对外的错误消息无法被用来区分失败原因
         super().__init__(message)
-
-
-def verify_phone_suffix(provided: str | None, bound: str | None) -> bool:
-    """校验终端用户提供的手机号与业务记录绑定手机号的后 4 位是否匹配。
-
-    流程:
-      1. 任一为空 -> 直接 False（空值无法校验）
-      2. 任一长度 < 4 -> False（取不到后 4 位）
-      3. 比较两者后 4 位字符串是否相等
-
-    设计决策:
-      只比对后 4 位而非完整手机号，是用户体验与安全的折中——终端用户在对话里往往只报尾号，
-      要求报全号体验差；而后 4 位在工单/订单场景下已能显著缩小命中范围，配合"统一报错防枚举"
-      可接受。完整手机号本身已存在 DB 的 ticket.phone/order.phone 列（006 迁移新增）。
-
-    Args:
-        provided: 终端用户在对话中提供的手机号
-        bound: 工单/订单绑定的手机号（DB 列 ticket.phone / order.phone）
-    Returns:
-        True 若两者后 4 位一致；False（含空值/长度不足）。
-    """
-    if not provided or not bound:
-        return False
-    if len(provided) < 4 or len(bound) < 4:
-        return False
-    # 切片 [-4:] 取后 4 位；字符串比较，避免数字前导零问题（如尾号 0123）
-    return provided[-4:] == bound[-4:]
 
 
 def build_request(method: str, params: dict | None = None, req_id: str | None = None) -> dict:

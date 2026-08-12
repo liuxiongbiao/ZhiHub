@@ -2,8 +2,6 @@
 backend/app/services/auth_service.py
 
 职责: 注册事务编排（用户+租户+管理员关联）、登录校验（密码强度、失败锁定）、登出黑名单写入。
-分工: 🟡 弱模型起草 + 强模型 review 安全细节（锁定阈值、黑名单 TTL、事务边界）
-对应日程: Day 2（feature 001-account-tenant）
 
 核心设计:
   认证三件套：注册（单事务建三表）、登录（失败计数+锁定+JWT 签发）、登出（jti 黑名单）。
@@ -429,8 +427,11 @@ def send_verification_code(target: str, code_type: str = "sms") -> SendCodeResul
     # 7. 清零失败计数（新码覆盖旧码）
     r.delete(_vcode_fail_key(target, code_type))
 
+    # P-016: 非 development 环境不返回验证码（防泄露），仅写 Redis 供校验
+    from app.config import settings
+    return_code = code if settings.app_env == 'development' else ''
     return SendCodeResult(
-        code=code, expires_in=VCODE_TTL_SECONDS, message="验证码已发送"
+        code=return_code, expires_in=VCODE_TTL_SECONDS, message='验证码已发送'
     )
 
 

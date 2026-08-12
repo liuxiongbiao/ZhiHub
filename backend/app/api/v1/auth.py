@@ -2,7 +2,6 @@
 backend/app/api/v1/auth.py
 
 职责: 认证路由 -- 注册（手机号/邮箱）、登录（密码/验证码）、登出、验证码发送、密码找回、绑定邮箱
-对应日程: Day 2 / PRD 3.1 账户体系扩展
 
 端点概览:
   POST /register         201  手机号注册（公开）       -> auth_service.register
@@ -310,6 +309,11 @@ def wechat_callback(code: str, state: str | None = None, db: Session = Depends(g
         result = auth_service.wechat_login_callback(db, code=code, state=state)
     except WechatStateError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    except RuntimeError as e:
+        # 微信 API 失败（code 无效/过期/网络错误）：返回 502 而非 500，
+        # 避免内部异常暴露给前端，同时让调用方知道是微信侧问题
+        logger.warning(f"WeChat callback failed: {e}")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="微信授权失败，请重新扫码") from e
     return WechatCallbackResponse(
         need_bind=result.need_bind,
         openid=result.openid,

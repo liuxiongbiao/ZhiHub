@@ -1,7 +1,5 @@
 <!-- frontend/src/components/trace/RetrievalResult.vue -->
 <!-- 职责: 检索结果展示 - 来源文档/置信度/纯向量vs混合对比 -->
-<!-- 分工: 🟡 展示层弱模型可写，字段需对齐retrieval_service输出 -->
-<!-- 对应日程: Day 3/Day7 -->
 <template>
   <div class="retrieval-result">
     <div class="result-header">

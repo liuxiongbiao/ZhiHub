@@ -2,8 +2,6 @@
 backend/app/core/wechat_client.py
 
 职责: 封装微信公众号 OAuth2 网页授权（生成授权 URL / code 换 openid）
-分工: 🔴 强模型独立完成（OAuth 回调安全，openid 不可伪造）
-对应日程: PRD 3.1 #12 微信扫码登录
 
 核心设计:
   - key 占位降级: settings.wechat_app_id 为空 -> mock 模式，get_auth_url 返回假 URL、

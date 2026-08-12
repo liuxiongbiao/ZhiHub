@@ -2,9 +2,7 @@
 backend/app/api/v1/mcp/server.py
 
 职责: MCP HTTP 传输层 -- 将 HTTP 请求转换为 JSON-RPC 2.0 信封，交由 mcp_service 分发
-对应日程: Day 5 / 006-mcp-security（User Story 2 协议化）
 
-核心设计（面试点）:
   HTTP -> JSON-RPC 转换:
     /tools/list  -> 直接返回 JSON-RPC 信封 {jsonrpc, result: {tools: [...]}}
     /tools/call  -> 请求体 {name, arguments} -> build_request() 构造 JSON-RPC 信封
@@ -23,6 +21,7 @@ backend/app/api/v1/mcp/server.py
 """
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DbSession
 
 from app.api.deps import get_db
@@ -35,6 +34,12 @@ router = APIRouter()
 ALL_MCP_TOOLS = TICKET_TOOLS + ORDER_TOOLS
 
 
+class ToolCallRequest(BaseModel):
+    """MCP tools/call 请求体 Schema（P-010: 替换裸 dict，强制类型校验）。"""
+    name: str = Field(..., min_length=1, max_length=100, description="工具名称")
+    arguments: dict = Field(default_factory=dict, description="工具参数")
+
+
 @router.get("/tools/list")
 def list_tools(request: Request):
     """MCP tools/list: 返回所有已注册工具的 JSON-RPC 信封。"""
@@ -42,7 +47,7 @@ def list_tools(request: Request):
 
 
 @router.post("/tools/call")
-def call_tool(request: Request, body: dict, db: DbSession = Depends(get_db)):
+def call_tool(request: Request, body: ToolCallRequest, db: DbSession = Depends(get_db)):
     """MCP tools/call: 将 {name, arguments} 构造为 JSON-RPC 信封，交 mcp_service 分发。
 
     请求体: {"name": "<tool>", "arguments": {...}}
@@ -50,8 +55,8 @@ def call_tool(request: Request, body: dict, db: DbSession = Depends(get_db)):
     """
     from app.services.mcp_service import call_tool as mcp_call
 
-    tool_name = body.get("name", "")
-    arguments = body.get("arguments") or {}
+    tool_name = body.name
+    arguments = body.arguments
     role = getattr(request.state, "role", "user")
 
     # 租户隔离红线: tenant_id 必须来自 JWT（request.state），绝不信任客户端传入

@@ -2,7 +2,6 @@
 backend/app/models/base.py
 
 职责: ORM 基类定义，提供公共字段 id/created_at/updated_at
-对应日程: 001-account-tenant
 
 核心设计:
   Base 为 DeclarativeBase 根类，alembic 通过 Base.metadata 收集全部表结构做 autogenerate；

@@ -2,7 +2,6 @@
 backend/tests/contracts/test_audit.py
 
 职责: 测试 PRD 2.1 系统审计日志契约 -- 关键操作埋点 + 端点查询 + 租户隔离
-对应日程: handover-and-plan #28
 
 测试内容:
   - TestRefundApproveAudit: approve_refund 成功后 audit_logs 有 refund_approve 记录

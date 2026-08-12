@@ -2,8 +2,6 @@
 backend/app/services/session_service.py
 
 职责: 会话生命周期管理--创建、状态流转、Redis 上下文读写、轮次计数转人工、在线坐席 presence。
-分工: 🟡 状态机弱模型可写，转移条件由强模型定
-对应日程: Day 4 / 007-session-lifecycle（轮次转人工 + presence）
 
 核心设计:
   四块功能：①Redis 上下文读写（最近 N 轮消息，TTL 30min 空闲超时）；②轮次计数（consecutive/total/last_intent），
@@ -51,7 +49,12 @@ def get_context(session_id: int) -> list[dict]:
     r = get_redis()
     data = r.get(_context_key(session_id))
     if data:
-        return json.loads(data).get("messages", [])
+        try:
+            return json.loads(data).get("messages", [])
+        except (json.JSONDecodeError, TypeError):
+            # 缓存数据损坏（异常写入/版本升级）时清掉重来，不让主对话链路 500
+            logger.warning(f"Session context corrupted, resetting: {session_id}")
+            r.delete(_context_key(session_id))
     return []
 
 
@@ -206,6 +209,8 @@ def get_session_detail(
         "status": session.status,
         "intent": session.intent,
         "sentiment": session.sentiment,
+        "message_count": len(messages),
+        "created_at": session.created_at,
         # T28: 前端详情页渲染时间用（此前只改 schema 未填值 -> 前端 formatDate(null) 显示 1970）
         "updated_at": session.updated_at,
         "messages": [

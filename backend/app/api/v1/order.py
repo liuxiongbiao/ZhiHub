@@ -2,12 +2,12 @@
 backend/app/api/v1/order.py
 
 职责: 订单列表/详情、退款列表、退款审批/撤销
-对应日程: Day 5（订单）+ 010 US1（退款闭环）
 
 端点概览:
   GET  /list                         订单列表（分页）        -> order_crud.list_orders
   GET  /{order_id}                   订单详情                -> order_crud.get_by_id
   GET  /refunds/list                 退款审批列表（分页）    -> order_crud.list_refund_approvals
+  POST /refunds/request              坐席代终端用户创建退款申请（016，双因子+幂等）
   POST /refunds/{id}/approve         退款审批（approved/rejected）-> order_service.approve_refund
   POST /refunds/{id}/cancel          撤销售后申请（仅 pending）  -> order_service.cancel_refund
 
@@ -89,7 +89,38 @@ class ApproveRefundRequest(BaseModel):
     decision: str = "approved"  # approved | rejected
 
 
-@router.post("/refunds/{approval_id}/approve")
+class RefundRequestCreate(BaseModel):
+    """坐席代终端用户创建退款申请（016）：必须携带手机号做双因子校验。"""
+    order_no: str
+    phone: str
+    amount: float
+    reason: str | None = None
+    client_request_id: str
+
+
+@router.post("/refunds/request", status_code=201, dependencies=[Depends(require_role("admin", "agent"))])
+def create_refund_request(body: RefundRequestCreate, request: Request, db: Session = Depends(get_db)):
+    """创建退款申请：admin/agent 可用；phone 后 4 位须匹配订单绑定手机号。"""
+    from app.services.order_service import request_refund, OrderError, VersionConflict
+    tenant_id = _get_tenant_id(request)
+    try:
+        result = request_refund(
+            db, tenant_id=tenant_id, order_no=body.order_no, amount=body.amount,
+            reason=body.reason, client_request_id=body.client_request_id, phone=body.phone,
+        )
+        db.commit()
+        return result
+    except VersionConflict as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except OrderError as e:
+        db.rollback()
+        msg = str(e)
+        code = 409 if "已处理" in msg else 400
+        raise HTTPException(status_code=code, detail=msg) from e
+
+
+@router.post("/refunds/{approval_id}/approve", dependencies=[Depends(require_role("admin"))])
 def approve_refund(approval_id: int, request: Request, body: ApproveRefundRequest, db: Session = Depends(get_db)):
     """退款审批: 调 order_service.approve_refund，role 从 request.state 取（service 层校验权限）。"""
     from app.services.order_service import approve_refund, OrderError

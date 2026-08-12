@@ -2,7 +2,6 @@
 backend/tests/unit/test_retrieval_service.py
 
 职责: 测试混合检索引擎（查询改写、RRF 融合、空知识库、检索结果数据类）
-对应日程: 002-knowledge-base
 
 测试内容:
   - TestRewriteQuery: 无历史返回原查询 / 有历史补全指代 / 完整查询不大改

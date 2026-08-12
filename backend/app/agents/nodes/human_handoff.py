@@ -2,8 +2,6 @@
 backend/app/agents/nodes/human_handoff.py
 
 职责: 转人工节点--汇总所有转人工触发条件 -> 置 should_interrupt 标记 -> 生成用户提示。
-分工: 🟡 条件汇总逻辑不难，但要对齐 graph.py 里定义的全部触发条件
-对应日程: Day 6
 
 核心设计:
   Human-in-the-loop 的实现节点。汇总转人工触发原因（愤怒情绪/敏感操作/低置信度），

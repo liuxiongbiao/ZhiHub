@@ -2,7 +2,6 @@
 backend/app/api/deps.py
 
 职责: 共享依赖注入 —— 数据库 session、当前用户加载、角色权限校验、租户状态校验
-对应日程: Day 2
 
 核心设计:
   - 中间件判断"是谁"（已注入 request.state），deps 判断"能不能做"（宪法原则 I）

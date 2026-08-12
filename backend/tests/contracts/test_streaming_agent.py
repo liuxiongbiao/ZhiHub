@@ -24,24 +24,29 @@ def _make_session(db, *, tenant_id=1, status="agent_handling"):
 
 class TestStreamingReusesAgent:
     def test_stream_content_comes_from_agent(self, client, db, make_token, monkeypatch):
-        """流式内容来自 agent_service.handle_message，而非裸 litellm。"""
+        """流式内容来自 agent_service 主链路（prepare+finalize），而非裸 litellm。"""
         s = _make_session(db)
         token = make_token(user_id=1, tenant_id=1, role="admin")
 
         called = {"n": 0}
 
-        def _fake_handle(db, *, session_id, tenant_id, user_message):
+        def _fake_prepare(db, *, session_id, tenant_id, user_message):
             called["n"] += 1
             return {
-                "message_id": 42,
-                "role": "assistant",
-                "content": "AGENT_REPLY",
-                "sources": [],
-                "metadata": None,
+                "need_stream": False, "content": "AGENT_REPLY", "retrieval_result": [],
+                "intent": "knowledge_consult", "confidence": 0.9, "sentiment": "normal",
+                "should_interrupt": False, "context": [], "session": s,
+                "end_user_id": "eu-test", "final_state": {}, "elapsed_ms": 1,
             }
 
         from app.services import agent_service
-        monkeypatch.setattr(agent_service, "handle_message", _fake_handle)
+        monkeypatch.setattr(agent_service, "prepare_message_stream", _fake_prepare)
+        monkeypatch.setattr(
+            agent_service, "finalize_message_stream",
+            lambda db, *, session_id, tenant_id, content, prep: {
+                "message_id": 42, "role": "assistant", "content": content, "sources": [], "metadata": None,
+            },
+        )
 
         resp = client.post(
             "/api/v1/session/message/stream",
@@ -49,15 +54,10 @@ class TestStreamingReusesAgent:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
-        # handle_message 必须被调用（证明走 Agent 主链路）
+        # prepare_message_stream 必须被调用（证明走 Agent 主链路）
         assert called["n"] == 1
-        # SSE 内容应包含 AGENT_REPLY 的字符（来自 Agent，非裸 LLM）
-        body = resp.text
-        # SSE 逐字输出，解析 chunk 重构完整内容
-        chunks = re.findall(r'data: ({"chunk": "."})', body)
-        reconstructed = "".join(json.loads(c)["chunk"] for c in chunks)
-        assert reconstructed == "AGENT_REPLY"
-        assert "[DONE]" in body
+        assert "AGENT_REPLY" in resp.text
+        assert "[DONE]" in resp.text
 
     def test_stream_does_not_call_litellm_directly(self, client, db, make_token, monkeypatch):
         """流式端点不直接调 litellm.completion（裸 LLM）。"""
@@ -69,15 +69,28 @@ class TestStreamingReusesAgent:
         monkeypatch.setattr(litellm, "completion", lambda **kw: litellm_called.__setitem__("n", litellm_called["n"] + 1))
 
         from app.services import agent_service
-        monkeypatch.setattr(agent_service, "handle_message", lambda db_, **kw: {
-            "message_id": 1, "role": "assistant", "content": "OK", "sources": [], "metadata": None})
+        monkeypatch.setattr(
+            agent_service, "prepare_message_stream",
+            lambda db, *, session_id, tenant_id, user_message: {
+                "need_stream": False, "content": "OK", "retrieval_result": [],
+                "intent": "knowledge_consult", "confidence": 0.9, "sentiment": "normal",
+                "should_interrupt": False, "context": [], "session": None,
+                "end_user_id": None, "final_state": {}, "elapsed_ms": 1,
+            },
+        )
+        monkeypatch.setattr(
+            agent_service, "finalize_message_stream",
+            lambda db, *, session_id, tenant_id, content, prep: {
+                "message_id": 1, "role": "assistant", "content": content, "sources": [], "metadata": None,
+            },
+        )
 
         client.post(
             "/api/v1/session/message/stream",
             json={"session_id": s.id, "content": "hi"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        # 流式端点不得直接调 litellm.completion（应由 agent_service 内部经网关调用）
+        # 流式端点不得直接调 litellm.completion（应由 agent_service 主链路调用）
         assert litellm_called["n"] == 0
 
     def test_stream_session_not_found_404(self, client, make_token):
@@ -99,10 +112,21 @@ class TestStreamingReusesAgent:
         token = make_token(user_id=1, tenant_id=1, role="admin")
 
         from app.services import agent_service
-        monkeypatch.setattr(agent_service, "handle_message", lambda **kw: {
-            "message_id": 99, "role": "assistant", "content": "OK",
-            "sources": [], "metadata": None,
-        })
+        monkeypatch.setattr(
+            agent_service, "prepare_message_stream",
+            lambda db, *, session_id, tenant_id, user_message: {
+                "need_stream": False, "content": "OK", "retrieval_result": [],
+                "intent": "knowledge_consult", "confidence": 0.9, "sentiment": "normal",
+                "should_interrupt": False, "context": [], "session": s,
+                "end_user_id": "eu-mid", "final_state": {}, "elapsed_ms": 1,
+            },
+        )
+        monkeypatch.setattr(
+            agent_service, "finalize_message_stream",
+            lambda db, *, session_id, tenant_id, content, prep: {
+                "message_id": 99, "role": "assistant", "content": content, "sources": [], "metadata": None,
+            },
+        )
 
         resp = client.post(
             "/api/v1/session/message/stream",
@@ -111,5 +135,5 @@ class TestStreamingReusesAgent:
         )
         assert resp.status_code == 200
         assert '"message_id": 99' in resp.text
-        assert '"chunk": "O"' in resp.text
+        assert '"chunk": "OK"' in resp.text
         assert "[DONE]" in resp.text

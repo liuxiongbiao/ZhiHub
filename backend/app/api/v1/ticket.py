@@ -2,7 +2,6 @@
 backend/app/api/v1/ticket.py
 
 职责: 工单列表、详情查询
-对应日程: Day 5
 
 端点概览:
   GET /list           工单列表（分页 + 状态筛选）-> ticket_crud.list_tickets

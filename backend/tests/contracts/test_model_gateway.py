@@ -2,7 +2,6 @@
 backend/tests/contracts/test_model_gateway.py
 
 职责: 测试模型网关 llm_complete 主备切换（#5, PRD 3.14）
-对应日程: feature 005-model-gateway
 
 测试内容:
   - TestModelGateway: llm_complete 封装主模型失败自动切备用模型
@@ -12,7 +11,6 @@ backend/tests/contracts/test_model_gateway.py
     - 使用 config 中的 llm_primary_model/llm_backup_model 配置
     - 切换时记 logger warning
 
-设计说明（面试点）:
   - 模型网关是 LLM 调用的统一入口，所有 litellm.completion 直调点改为 llm_complete
   - 主备降级是高可用核心: 主模型 API 不可用时自动切备用，用户无感
   - try/except 而非重试库: 一次切换足够，重试会增加延迟且可能打满配额

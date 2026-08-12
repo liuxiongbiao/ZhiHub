@@ -2,8 +2,6 @@
 backend/app/core/rabbitmq.py
 
 职责: RabbitMQ 连接管理、Exchange/Queue 声明、消息发布与消费基础封装
-分工: 🟢 弱模型可独立完成（通用范式，网上参考成熟）
-对应日程: Day 1 / 003-knowledge-base
 
 核心设计:
   topic exchange + durable queue 实现知识库文档异步处理。

@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.env
+.env.local
+*.log
+*.err.log
+tests
+e2e-seed.py
+alembic/versions/*.pyc

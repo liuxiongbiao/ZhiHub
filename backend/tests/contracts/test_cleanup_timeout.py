@@ -2,7 +2,6 @@
 backend/tests/contracts/test_cleanup_timeout.py
 
 职责: 测试订单超时自动流转（PRD 3.6）与试用版30天降级只读（PRD 3.1）的契约
-对应日程: 010 业务闭环 / PRD 3.6 + 3.1
 
 测试内容:
   - TestOrderTimeoutCleanup:

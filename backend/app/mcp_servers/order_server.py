@@ -3,8 +3,6 @@ backend/app/mcp_servers/order_server.py
 
 职责: 订单域 MCP Server--暴露 query_order/request_refund 两个工具，按 JSON-RPC 2.0 协议
       定义 inputSchema，分发执行订单业务逻辑，强制 tenant_id 过滤。
-分工: 🔴 强模型独立完成
-对应日程: Day 5 / 006-mcp-security (User Story 1 双因子 + User Story 2 协议化)
 
 核心设计:
   与 ticket_server 同构：定义工具（ORDER_TOOLS）+ 分发执行（handle_order_tool）。
@@ -52,12 +50,13 @@ ORDER_TOOLS = [
             "type": "object",
             "properties": {
                 "order_no": {"type": "string"},
+                "phone": {"type": "string", "description": "终端用户手机号（双因子校验，后4位匹配订单绑定手机号）"},
                 "amount": {"type": "number"},
                 "reason": {"type": "string"},
                 "client_request_id": {"type": "string", "description": "幂等键，用于防重"},
                 "tenant_id": {"type": "integer"},
             },
-            "required": ["order_no", "amount", "client_request_id"],  # T29: tenant_id 服务端注入
+            "required": ["order_no", "phone", "amount", "client_request_id"],  # T29: tenant_id 服务端注入
         },
     },
 ]
@@ -101,6 +100,7 @@ def handle_order_tool(tool_name: str, params: dict, *, db: Session | None = None
                 db, tenant_id=tenant_id, order_no=params["order_no"],
                 amount=params["amount"], reason=params.get("reason"),
                 client_request_id=params["client_request_id"],
+                phone=params.get("phone"),
             )
             db.commit()
             return result

@@ -1,7 +1,7 @@
 # backend/requirements-dev.txt
-# 职责: 开发与测试依赖（与生产依赖 requirements.txt 分离，宪法技术约束）
-# 对应日程: Day 2（feature 001-account-tenant 引入 TDD 测试栈）
+# 职责: 开发与测试依赖（版本锁定；与生产依赖分离）
 
-pytest
-pytest-asyncio
-fakeredis
+pytest==9.1.1
+pytest-asyncio==1.4.0
+fakeredis==2.37.0
+pip-audit>=2.7  # CI 安全审计工具（随发布滚动）

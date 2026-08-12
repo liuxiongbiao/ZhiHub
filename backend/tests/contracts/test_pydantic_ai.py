@@ -2,7 +2,6 @@
 backend/tests/contracts/test_pydantic_ai.py
 
 职责: 测试 PydanticAI 结构化输出接入的契约（路由节点 + 记忆抽取）
-对应日程: 011-pydantic-ai
 
 测试内容:
   - TestPydanticAIRouter: RouterOutput 结构化输出 + router_node mock run_sync +

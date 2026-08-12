@@ -2,7 +2,6 @@
 backend/scripts/agent_eval.py
 
 职责: Agent 评测 -- 对 10 条专用测试集评估意图识别准确率 + 工具调用成功率
-对应日程: 009-tech-compare-agent-enhance
 
 核心设计:
   内置 10 条 agent 专用评测集（含 expected_intent + expected_tool），覆盖知识咨询/

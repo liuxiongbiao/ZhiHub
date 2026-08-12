@@ -2,7 +2,6 @@
 backend/app/schemas/session.py
 
 职责: 会话/消息 API 请求与响应 Pydantic 模型
-对应日程: 003-session-routing（007-session-lifecycle 增补留言建单/CSAT）
 """
 
 from datetime import datetime
@@ -101,6 +100,8 @@ class SessionDetailResponse(BaseModel):
     status: str
     intent: str | None = None
     sentiment: str | None = None
+    message_count: int = 0
+    created_at: datetime | None = None
     # T28: 前端详情页渲染时间用（此前缺字段导致前端 Invalid Date）
     updated_at: datetime | None = None
     messages: list[MessageItem] = Field(default_factory=list)

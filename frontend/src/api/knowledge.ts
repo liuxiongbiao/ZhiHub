@@ -1,7 +1,5 @@
 // frontend/src/api/knowledge.ts
 // 职责: 知识库文档上传/列表/重建索引/检索测试接口
-// 分工: 🟢 弱模型可独立完成
-// 对应日程: Day 3
 
 import request from './request'
 

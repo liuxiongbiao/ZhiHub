@@ -2,7 +2,6 @@
 backend/app/models/quick_reply.py
 
 职责: quick_replies 表 ORM 模型定义（坐席快捷回复模板）
-对应日程: 022-quick-reply / PRD 3.7
 
 核心设计:
   坐席常用回复模板，按租户隔离。坐席在人工接待时一键选择模板快速回复，提升效率。

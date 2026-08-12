@@ -2,7 +2,6 @@
 backend/app/models/ticket.py
 
 职责: tickets 表 ORM 模型定义（工单）
-对应日程: 004-ticket-order（006-mcp-security / 007-session-lifecycle 增补字段）
 
 核心设计:
   工单流转载体，状态机 open -> in_progress -> resolved -> closed，支持坐席认领。

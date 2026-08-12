@@ -2,9 +2,7 @@
 backend/app/middlewares/tenant_middleware.py
 
 职责: 从 JWT claims 搬运 tenant_id 到 request.state.tenant_id，确保下游查询统一携带租户过滤
-对应日程: Day 2
 
-中间件链位置（面试点）:
   入站顺序 Auth -> Tenant -> RateLimit
   Tenant 在 Auth 之后: 读取 Auth 注入的 request.state.token_tenant_id，搬运为 request.state.tenant_id。
   下游所有 CRUD/Service 统一从 request.state.tenant_id 取租户上下文。

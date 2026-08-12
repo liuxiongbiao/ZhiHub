@@ -3,8 +3,6 @@ backend/app/agents/graph.py
 
 职责: 【多智能体编排核心】LangGraph 状态图定义--State 类型定义、节点注册、条件边（路由分支）、
       图的编译与导出。
-分工: 🔴 强模型独立完成（图设计错了整个"多智能体编排能力"叙事塌了）
-对应日程: Day 4 / 009 AGENT_TOOL_MODE 模式切换
 
 核心设计:
   定义 AgentState（TypedDict）作为各节点共享的状态，router 为入口节点，条件边 _route_intent
@@ -93,18 +91,15 @@ def build_graph() -> CompiledStateGraph:
       6. compile 编译
 
     设计决策:
-      009 的 AGENT_TOOL_MODE 切换是面试对比点--同一图结构下，ticket_agent 节点可注册 MCP 版
       或 FC 版，运行时按配置切换，对比两种工具调用范式。条件边 _route_intent 集中路由逻辑，
       节点本身不决定下一跳（单一职责）。
 
-    拓扑 (Day 4):
       START -> router -> route_intent (条件边)
         ├── knowledge_consult -> knowledge_agent -> END
         ├── ticket_query -> ticket_agent -> END
         ├── order_query -> order_agent -> END
         └── angry/sensitive -> human_handoff -> END
 
-    Day 5-6 扩展: ticket_agent/order_agent 替换为真实 MCP 调用;
                     human_handoff 替换为 interrupt 中断点。
     """
     builder = StateGraph(AgentState)
@@ -178,7 +173,6 @@ def _route_intent(state: AgentState) -> Literal[
         logger.info(f"Route: sentiment=angry -> human_handoff")
         return "human_handoff"
 
-    # 2. 敏感操作 -> 强制转人工（Day 6 实现完整 interrupt）
     if intent == "sensitive_action":
         logger.info(f"Route: intent=sensitive_action -> human_handoff")
         return "human_handoff"

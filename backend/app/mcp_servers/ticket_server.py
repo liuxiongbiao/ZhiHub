@@ -3,8 +3,6 @@ backend/app/mcp_servers/ticket_server.py
 
 职责: 工单域 MCP Server--暴露 get_ticket_status/create_ticket/update_ticket 三个工具，
       按 JSON-RPC 2.0 协议定义 inputSchema，分发执行工单业务逻辑，强制 tenant_id 过滤。
-分工: 🔴 强模型独立完成（协议规范必须踩对，不能偷懒变成函数调用，面试会被追问细节）
-对应日程: Day 5 / 006-mcp-security (User Story 1 双因子 + User Story 2 协议化)
 
 核心设计:
   本文件是"工具实现层"--定义工具有哪些（TICKET_TOOLS 的 inputSchema 即 tools/list 返回内容）、

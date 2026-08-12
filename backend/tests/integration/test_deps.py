@@ -2,7 +2,6 @@
 backend/tests/integration/test_deps.py
 
 职责: 测试 api/deps.py 依赖注入（get_current_user 加载用户、require_role 越权拦截）
-对应日程: 001-auth-tenant
 
 测试内容:
   - TestRequireRole: agent 角色访问 admin 端点 403 / admin 角色通过

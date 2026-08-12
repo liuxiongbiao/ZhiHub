@@ -2,13 +2,11 @@
 backend/app/api/v1/tenant.py
 
 职责: 租户信息路由 -- 后台首页（任意登录用户）、管理员专属账单接口（角色隔离可测样例）
-对应日程: Day 2
 
 端点概览:
   GET /home     任意登录用户  -> get_current_user + require_tenant -> TenantHomeResponse
   GET /billing  仅 admin      -> require_role("admin") + require_tenant -> 占位账单
 
-角色隔离说明（面试点）:
   /billing 用 dependencies=[Depends(require_role("admin"))] 在路由级声明，
   非 admin 角色（如 agent 坐席）访问 -> 403。这是宪法原则 I（中间件判身份、deps 判权限）的落地样例。
 
@@ -18,6 +16,7 @@ backend/app/api/v1/tenant.py
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_role, require_tenant
@@ -40,6 +39,16 @@ from app.schemas.auth import EnterpriseApproveRequest, EnterpriseApproveResponse
 from app.services import tenant_service
 
 router = APIRouter()
+
+
+class WidgetDomainsRequest(BaseModel):
+    """Widget 域名白名单（014）：空列表=仅开发环境 localhost 可用。"""
+    domains: list[str] = []
+
+
+class WidgetApiKeyResponse(BaseModel):
+    """Widget API Key 生成响应（014）：原始 Key 只返回一次。"""
+    api_key: str
 
 
 def _map_tenant_error(exc: Exception) -> HTTPException:
@@ -123,7 +132,7 @@ def _get_warning_banner(tenant_id: int) -> str | None:
 
 @router.get("/billing", dependencies=[Depends(require_role("admin"))])
 def billing(tenant: Tenant = Depends(require_tenant())):
-    """管理员专属账单接口: require_role("admin") 拦截非 admin 角色。占位返回，完整逻辑属 Day 6。"""
+    """管理员专属账单接口（require_role("admin") 拦截非 admin 角色）。"""
     return {"tenant_id": tenant.id, "plan_type": tenant.plan_type, "usage": {}}
 
 
@@ -294,9 +303,36 @@ def get_widget_embed_code(
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="租户不存在")
     embed_code = (
-        f'<script src="https://cdn.zhihub.com/widget.js" '
-        f'data-tenant-id="{tenant.id}" '
+        f'<script src="/widget.js" '
+        f'data-api-key="PASTE_WIDGET_API_KEY" '
+        f'data-endpoint="/api/v1/widget" '
         f'data-theme-color="{tenant.widget_theme_color}" '
         f'async></script>'
     )
     return WidgetEmbedCodeResponse(tenant_id=tenant.id, embed_code=embed_code)
+
+
+# ---------- 014 Widget 公共通道：API Key / 域名白名单 ----------
+@router.post(
+    "/widget/api-key",
+    response_model=WidgetApiKeyResponse,
+    dependencies=[Depends(require_role("admin")), Depends(require_tenant())],
+)
+def rotate_widget_api_key(request: Request, db: Session = Depends(get_db)):
+    """生成/轮换 Widget API Key（014）：仅返回一次，旧 Key 立即失效。"""
+    try:
+        return tenant_service.generate_widget_api_key(db, request.state.tenant_id)
+    except tenant_service.TenantNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.put(
+    "/widget/domains",
+    dependencies=[Depends(require_role("admin")), Depends(require_tenant())],
+)
+def set_widget_domains(body: WidgetDomainsRequest, request: Request, db: Session = Depends(get_db)):
+    """设置 Widget 域名白名单（014）。"""
+    try:
+        return tenant_service.set_widget_allowed_domains(db, request.state.tenant_id, body.domains)
+    except tenant_service.TenantNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

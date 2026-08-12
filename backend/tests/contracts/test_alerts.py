@@ -2,7 +2,6 @@
 backend/tests/contracts/test_alerts.py
 
 职责: 测试降级模式告警横幅（#8, PRD 3.4/3.8）+ 预警站内红色横幅（#9, PRD 3.9）
-对应日程: feature 008-degradation-banner + 009-warning-banner
 
 测试内容:
   - TestDegradationBanner: 检索降级标记
@@ -15,7 +14,6 @@ backend/tests/contracts/test_alerts.py
     - incr_usage 达 100% -> Redis 标记 warning_banner:{tenant}:{100}
     - /home 返回 warning_banner 字段（100% 优先于 80%）
 
-设计说明（面试点）:
   - 降级标记用 Redis 而非 DB: 检索基础设施故障是临时状态，Redis TTL 自然过期恢复，
     无需人工清理。TTL 1h 平衡敏感度与抖动（太短用户看不到，太长故障恢复后仍显示）。
   - 预警横幅用独立键 warning_banner:{tenant}:{level}: 与计费去重键 billing:warning 分离，

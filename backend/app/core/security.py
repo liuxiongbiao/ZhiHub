@@ -2,8 +2,6 @@
 backend/app/core/security.py
 
 职责: bcrypt 密码哈希与校验、JWT 生成与解码、随机 Token 生成
-分工: 🔴 强模型独立完成（安全底座，一次写对，全项目依赖）
-对应日程: Day 1 / 001-account-tenant
 
 核心设计:
   密码存储用 bcrypt 自适应哈希（不可逆 + 加盐），不存明文也不存 MD5/SHA。
@@ -88,6 +86,8 @@ def create_access_token(subject: str, extra_claims: dict[str, Any] | None = None
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "sub": subject,  # JWT 标准字段：token 主体（用户标识）
+        "iss": "zhihub",  # P1-5: 签发方标识，防跨系统复用
+        "aud": "zhihub-api",  # P1-5: 受众标识，防令牌被其他服务接受
         "iat": now,  # issued at：签发时间（带时区，避免 naive datetime 歧义）
         "exp": now + timedelta(minutes=settings.jwt_access_token_expire_minutes),  # 过期时间
         "jti": secrets.token_hex(16),  # JWT ID：每 token 唯一，用于登出黑名单吊销
@@ -114,7 +114,13 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         校验通过返回 payload dict；签名无效/已过期返回 None
     """
     try:
-        return jwt.decode(token, settings.app_secret_key, algorithms=[settings.jwt_algorithm])
+        return jwt.decode(
+            token,
+            settings.app_secret_key,
+            algorithms=[settings.jwt_algorithm],
+            audience="zhihub-api",
+            issuer="zhihub",
+        )
     except JWTError:
         return None
 

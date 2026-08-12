@@ -2,7 +2,6 @@
 backend/tests/contracts/test_tech_compare.py
 
 职责: 测试 009 技术栈对比与智能体增强的契约（FC 对比 / 长期记忆 / Agent 评测 helpers）
-对应日程: 009-tech-compare-agent-enhance
 
 测试内容:
   - TestFunctionCallingAgent: FC 版工单 Agent（tools schema 结构 + 缺 phone 反问 +
@@ -102,9 +101,10 @@ class TestMemoryService:
         """LLM 抽取关键事实 -> 结构化列表。"""
         from app.services import memory_service
 
-        class MockResp:
-            choices = [type("c", (), {"message": type("m", (), {"content": '[{"fact_type":"plan","content":"企业版套餐"}]'})()})()]
-        monkeypatch.setattr("litellm.completion", lambda **kw: MockResp())
+        class MockOutput:
+            output = [type("F", (), {"fact_type": "plan", "content": "企业版套餐"})()]
+
+        monkeypatch.setattr(memory_service._extract_agent, "run_sync", lambda *a, **k: MockOutput())
 
         facts = memory_service.extract_facts("我是企业版套餐用户")
         assert len(facts) == 1
@@ -115,9 +115,10 @@ class TestMemoryService:
         """无关键事实 -> 空列表。"""
         from app.services import memory_service
 
-        class MockResp:
-            choices = [type("c", (), {"message": type("m", (), {"content": "[]"})()})()]
-        monkeypatch.setattr("litellm.completion", lambda **kw: MockResp())
+        class MockOutput:
+            output = []
+
+        monkeypatch.setattr(memory_service._extract_agent, "run_sync", lambda *a, **k: MockOutput())
 
         assert memory_service.extract_facts("今天天气不错") == []
 

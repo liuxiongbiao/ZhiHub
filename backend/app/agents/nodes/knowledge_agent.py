@@ -2,8 +2,6 @@
 backend/app/agents/nodes/knowledge_agent.py
 
 职责: 知识问答 Agent--调 retrieval_service 混合检索 -> LLM 生成带引用回答。
-分工: 🔴 强模型独立完成（查询改写逻辑直接影响检索命中率，是效果关键环节）
-对应日程: Day 4
 
 核心设计:
   知识咨询意图的执行节点。取用户消息调 hybrid_search 检索知识库，把检索片段格式化为来源文本，
@@ -92,7 +90,6 @@ def _generate_answer(query: str, sources_text: str, history: list[dict]) -> str:
         LLM 生成的回答文本
     """
     prompt_template = _load_prompt()
-    # 提取用户最后一条消息（兼容 Day 3 retrieval_service 的 rewrite_query 已有的改写逻辑）
     full_prompt = prompt_template.format(query=query, sources=sources_text)
 
     try:
@@ -161,7 +158,6 @@ def knowledge_agent_node(state: dict[str, Any]) -> dict[str, Any]:
 
     retrieval_result = []
 
-    # 1. 调用混合检索（Day 3 的 retrieval_service）
     try:
         from app.services.retrieval_service import hybrid_search
 

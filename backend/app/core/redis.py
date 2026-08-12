@@ -2,9 +2,6 @@
 backend/app/core/redis.py
 
 职责: Redis 连接池单例 + 登录失败计数状态机 + 令牌黑名单辅助
-分工: 🔴 强模型独立完成（失败计数原子性、黑名单 TTL 写错 = 安全防线失效）
-对应日程: Day 2 / 001-account-tenant（失败计数/黑名单，research R1/R4）
-         Day 6 将在此基础补充分布式锁
 
 核心设计:
   三个职责共用一个 Redis 连接（进程级单例，decode_responses=True 返回 str）。

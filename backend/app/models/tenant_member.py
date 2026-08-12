@@ -2,7 +2,6 @@
 backend/app/models/tenant_member.py
 
 职责: tenant_members 表 ORM 模型定义（租户-用户多对多关联，携带角色）
-对应日程: 001-account-tenant
 
 核心设计:
   多对多关系中间表，一个用户可加入多个租户，每次加入携带一个角色。

@@ -1,7 +1,4 @@
 <!-- frontend/src/components/trace/TraceTimeline.vue -->
-<!-- 职责: 【面试演示核心组件】Agent执行轨迹时间线 -->
-<!-- 分工: 🟡 UI结构弱模型可写，数据结构对齐MongoDB trace格式需强模型定 -->
-<!-- 对应日程: Day 7 -->
 <template>
   <div class="trace-timeline">
     <div v-if="!trace || trace.steps.length === 0" class="empty">暂无执行轨迹</div>

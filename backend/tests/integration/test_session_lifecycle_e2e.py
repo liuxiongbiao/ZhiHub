@@ -2,7 +2,6 @@
 backend/tests/integration/test_session_lifecycle_e2e.py
 
 职责: 007 会话生命周期与转人工增强的端到端 4 场景集成测试
-对应日程: 007-session-lifecycle-handoff
 
 测试内容:
   - TestE2ERoundsHandoff: 连续3轮可解决类意图 -> 转人工；知识咨询豁免

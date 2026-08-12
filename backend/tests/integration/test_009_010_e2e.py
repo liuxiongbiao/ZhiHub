@@ -2,7 +2,6 @@
 backend/tests/integration/test_009_010_e2e.py
 
 职责: 009 技术栈对比 + 010 业务闭环的端到端 smoke 测试（需 Docker 基础设施）
-对应日程: 009-tech-compare-agent-enhance + 010-business-streaming
 
 测试内容:
   - Test009E2E: FC agent tools schema + memory 降级 + agent_eval 测试集结构

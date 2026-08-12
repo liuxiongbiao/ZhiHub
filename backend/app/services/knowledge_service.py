@@ -3,8 +3,6 @@ backend/app/services/knowledge_service.py
 
 职责: 文档上传前置校验、状态流转管理（待处理->处理中->已就绪/解析失败）、
       重复上传版本策略（旧版本归档且不再进检索库）、重建索引任务发布、存储上限校验
-分工: 🟡 弱模型起草，强模型确认"旧版本不进检索库"规则落地正确
-对应日程: Day 3
 
 核心设计:
   知识库文档采用"版本归档 + 异步处理"模式：同名文件重新上传时，旧版本标记 is_latest=False
@@ -144,6 +142,10 @@ def upload(db: Session, *, file: UploadFile, tenant_id: int) -> dict:
         raise KnowledgeLimitExceeded(
             f"知识库数量已达套餐上限: {kb_check['current']}/{kb_check['limit']}（{kb_check['plan_type']} 套餐）"
         )
+
+    # P1-14: 存储配额校验（按套餐 MB，计入本次上传大小）
+    if not check_storage_limit(db, tenant_id, incoming_bytes=len(content)):
+        raise KnowledgeLimitExceeded("知识库存储空间已满，请升级套餐或删除部分旧文档")
 
     # 2. 校验 -- 映射底层 FileValidationError 为具体业务异常，便于 API 层返回精确状态码
     try:
@@ -290,28 +292,37 @@ def list_documents(
     }
 
 
-# 010 US3: 存储上限校验
-def check_storage_limit(db, tenant_id: int, limit: int = 50) -> bool:
-    """检查租户文档数是否超上限（010 US3）。
-
-    只统计 is_latest=True 的文档（旧版本不占配额），防止版本归档导致配额膨胀。
+# PRD 3.2 存储上限校验（P1-14：按套餐 MB 配额，基于 file_size 汇总）
+def check_storage_limit(db, tenant_id: int, incoming_bytes: int = 0) -> bool:
+    """检查租户知识库存储是否超限（配额 0=无限制；只统计 is_latest 文档）。
 
     Args:
         db: 数据库会话
         tenant_id: 租户 ID
-        limit: 文档数上限，默认 50
 
     Returns:
         bool: True 未超限（允许上传），False 超限（拒绝）
     """
     from app.models.knowledge_document import KnowledgeDocument
+    from app.models.tenant import Tenant
+    from app.config import settings
     from sqlalchemy import select, func
+    import json as _json
 
-    # 只统计 is_latest=True -- 旧版本已归档，不占配额
-    count = db.execute(
-        select(func.count()).select_from(KnowledgeDocument).where(
+    tenant = db.get(Tenant, tenant_id)
+    plan_type = tenant.plan_type if tenant else "trial"
+    try:
+        quotas = _json.loads(settings.storage_quota_mb) if settings.storage_quota_mb else {}
+    except Exception:
+        quotas = {}
+    quota_mb = quotas.get(plan_type, 500)
+    if quota_mb <= 0:
+        return True
+
+    used = db.execute(
+        select(func.coalesce(func.sum(KnowledgeDocument.file_size), 0)).where(
             KnowledgeDocument.tenant_id == tenant_id,
-            KnowledgeDocument.is_latest == True,  # noqa: E712  -- SQLAlchemy 需要显式 == True
+            KnowledgeDocument.is_latest == True,  # noqa: E712
         )
     ).scalar() or 0
-    return count < limit
+    return used + incoming_bytes < quota_mb * 1024 * 1024

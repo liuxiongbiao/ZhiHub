@@ -2,7 +2,6 @@
 backend/tests/unit/test_file_parser.py
 
 职责: 测试文件校验、文本提取、切片规则（知识库预处理管线）
-对应日程: 002-knowledge-base
 
 测试内容:
   - TestValidateFile: 扩展名校验（md/pdf/docx 通过，exe/无扩展名拒绝）/ 大小上限 / 空文件拒绝
@@ -101,7 +100,7 @@ class TestExtractText:
             def __init__(self, *a, **k):
                 self.pages = [_FakePage()]
 
-        monkeypatch.setattr("PyPDF2.PdfReader", _FakeReader)
+        monkeypatch.setattr("pypdf.PdfReader", _FakeReader)
         result = extract_text("test.pdf", b"%PDF-fake")
         assert "PDF 第一页内容" in result
 

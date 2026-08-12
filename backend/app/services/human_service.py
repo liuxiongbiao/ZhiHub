@@ -3,8 +3,6 @@ backend/app/services/human_service.py
 
 职责: 转人工条件汇总判断、坐席认领 Redis 分布式锁互斥、坐席退回给 Agent、
       无在线坐席时留言自动建单
-分工: 🔴 强模型独立完成（并发竞争条件，弱模型极易漏掉锁的原子性）
-对应日程: Day 6
 
 核心设计:
   转人工的核心难点是"两个坐席同时认领同一会话"的并发竞争。用 Redis SETNX（SET nx=True）
@@ -85,7 +83,7 @@ def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int
     if s is None:
         r.delete(lock_key)  # 释放锁 -- 会话不存在，不持有锁
         raise HumanHandoffError(f"会话不存在: {session_id}")
-    if s.status not in ("waiting_human", "agent_handling"):
+    if s.status != "waiting_human":
         r.delete(lock_key)  # 释放锁 -- 状态不支持认领
         raise HumanHandoffError(f"会话状态 {s.status} 不支持认领")
 

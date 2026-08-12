@@ -3,8 +3,6 @@ backend/app/services/billing_service.py
 
 职责: 配额计数器（Redis INCR + 套餐阈值）、80%/100% 预警、账单生成、mock 支付回调、
       用量导出 CSV、逾期账单降级标记
-分工: 🔴 强模型独立完成（计费逻辑错了=多扣费/少扣费）
-对应日程: Day 6
 
 核心设计:
   以 Redis INCRBYFLOAT 为配额计数器，按"模型权重"折算用量（贵模型权重高），
@@ -174,7 +172,9 @@ def incr_usage_for_tenant(db: Session, tenant_id: int) -> dict:
     except Exception as e:
         logger.warning(f"Read tenant.default_model failed, fallback to {model}: {e}")
 
-    return incr_usage(tenant_id, model)
+    # P0-2: 必须按租户套餐配额判定超额（此前漏传 quota，全部按 trial=100 计数）
+    quota = get_tenant_quota(db, tenant_id)
+    return incr_usage(tenant_id, model, quota=quota)
 
 
 def _notify(tenant_id: int, level: str, count: int, quota: int) -> None:
@@ -206,17 +206,17 @@ def check_quota(tenant_id: int, quota: int | None = None) -> dict:
 
 
 def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
-    """生成月度账单（mock: 基础费 99 + 超额每 10 次 10 元）。
+    """生成月度账单（公式见 specs/015-billing-accuracy/spec.md）。
 
     流程:
       1. 去重: 同 (tenant_id, period) 已有账单则直接返回（cached=True）
       2. 从 Redis 读当月配额计数
-      3. 计算超额费: 超出部分每 10 次收 10 元（阶梯向下取整）
+      3. 按套餐计算: base_fee = PLAN_BASE_FEES[plan_type]，
+         overage_fee = max(0, count - quota) * OVERAGE_PRICE
       4. 持久化账单记录，状态 unpaid
 
-    设计决策:
-      - 去重在前: 定时任务可能重复触发，避免生成多份账单
-      - 超额阶梯用整除: 避免零头计费，简化对账
+    业务公式示例（basic，月计数 2100）:
+      base_fee = 999；overage_cnt = 100；overage_fee = 100 * 0.5 = 50.00；total = 1049.00
 
     Args:
         db: 数据库会话
@@ -228,6 +228,8 @@ def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
     """
     from app.models.billing_invoice import BillingInvoice
     from sqlalchemy import select
+    from app.config import settings
+    from app.crud import tenant as tenant_crud
 
     # 去重：同租户同周期已有账单则返回已有（避免重复生成）
     existing = db.execute(
@@ -242,14 +244,18 @@ def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
             "base_fee": existing.base_fee, "overage_fee": existing.overage_fee, "cached": True,
         }
 
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    plan_type = tenant.plan_type if tenant else "trial"
+    base_fee = _plan_base_fee(plan_type)
+    quota = PLAN_QUOTA.get(plan_type, TRIAL_QUOTA)
+
     r = get_redis()
     # 按账期 period 取配额 key：月初生成上月账单时读上月计数（T9 修复，
     # 原来固定当前月导致月初账单超额费恒为 0）
     count = float(r.get(_quota_key(tenant_id, month=period)) or 0)
-    base_fee = 99.0
-    overage_count = max(0, count - TRIAL_QUOTA)
-    # 超额阶梯: 每 10 次收 10 元，整除取整避免零头
-    overage_fee = (overage_count // 10) * 10.0 if overage_count > 0 else 0.0
+    overage_count = max(0, count - quota)
+    # 公式: overage_fee = overage_cnt * OVERAGE_PRICE（默认 0.5 元/条，PRD 3.9）
+    overage_fee = round(overage_count * settings.billing_overage_price, 2)
 
     invoice = BillingInvoice(
         tenant_id=tenant_id, period=period, base_fee=base_fee,
@@ -485,6 +491,11 @@ def check_overdue(db: Session) -> dict:
 
     r = get_redis()
     for inv in overdue:
+        # P0-3: 试用租户默认不收费，历史遗留账单也不触发降级
+        from app.crud import tenant as tenant_crud
+        tenant = tenant_crud.get_by_id(db, inv.tenant_id)
+        if tenant is not None and tenant.plan_type == "trial" and not settings.billing_charge_trial:
+            continue
         # 降级标记 24h TTL -- 每日定时任务刷新；租户补缴后标记自然过期
         r.set(f"billing:degraded:{inv.tenant_id}", "1", ex=86400)
         logger.info(f"Tenant {inv.tenant_id} marked degraded (overdue invoice {inv.id})")
@@ -516,6 +527,13 @@ def get_tenant_quota(db: Session, tenant_id: int) -> int:
     return TRIAL_QUOTA
 
 
-def _plan_quota(db: Session, tenant_id: int) -> int:
-    """incr_usage_for_tenant 内部 helper：读取套餐配额（降级默认 trial）。"""
-    return get_tenant_quota(db, tenant_id)
+def _plan_base_fee(plan_type: str) -> float:
+    """读取套餐月基础费（015：从配置 JSON 读取，解析失败回退 0 并告警）。"""
+    import json as _json
+    try:
+        from app.config import settings
+        fees = _json.loads(settings.billing_plan_base_fees) if settings.billing_plan_base_fees else {}
+        return float(fees.get(plan_type, 0.0))
+    except Exception as e:
+        logger.warning(f"billing_plan_base_fees parse failed, fallback 0: {e}")
+        return 0.0

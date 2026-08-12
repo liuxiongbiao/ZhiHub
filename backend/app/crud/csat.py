@@ -2,7 +2,6 @@
 backend/app/crud/csat.py
 
 职责: csat_evaluations 表的数据库访问层（满意度评价创建、按会话查询去重）
-对应日程: 007-session-lifecycle
 
 核心设计:
   csat_evaluations 无 tenant_id 列，通过 join session.tenant_id 隔离（防御纵深：

@@ -3,7 +3,6 @@ backend/app/core/ws_manager.py
 
 职责: WebSocket 连接管理 -- 按 tenant_id 分组管理坐席工作台长连接，
       支持向某租户所有在线坐席广播实时事件（新转人工会话 / 新消息）。
-对应日程: PRD 3.7 -- WebSocket 实时推送坐席工作台
 
 核心设计:
   - 多租户隔离: 连接按 tenant_id 分桶到 set[WebSocket]，广播时只推该租户的坐席，

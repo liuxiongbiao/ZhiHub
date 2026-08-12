@@ -2,9 +2,7 @@
 backend/app/middlewares/rate_limit_middleware.py
 
 职责: 基于 tenant_id + user_id 双维度令牌桶限流
-对应日程: Day 6
 
-中间件链位置（面试点）:
   入站顺序 Auth -> Tenant -> RateLimit
   RateLimit 在最后: 依赖 Auth 注入的 user_id 和 Tenant 注入的 tenant_id。
   若在前两者之前，tenant_id/user_id 为 None -> 降级放行 -> 限流失效。

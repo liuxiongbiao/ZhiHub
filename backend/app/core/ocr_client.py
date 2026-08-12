@@ -2,7 +2,6 @@
 backend/app/core/ocr_client.py
 
 职责: 封装百度 OCR 文字识别（扫描件/图片型 PDF 文本提取失败时的兜底通道）
-对应日程: 019-ocr-fallback / PRD 3.3
 
 核心设计:
   - key 占位降级: settings.ocr_api_key 为空 -> mock 模式，recognize 返回固定占位文本，

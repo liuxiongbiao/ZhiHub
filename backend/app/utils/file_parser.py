@@ -2,7 +2,6 @@
 backend/app/utils/file_parser.py
 
 职责: 文件类型检测、大小校验、轻量文档切片（简化替代 RagFlow）
-对应日程: 002-knowledge-rag
 
 核心设计:
   切片规则: Markdown 按 ## 标题分段，标题作为上下文前缀；
@@ -129,11 +128,14 @@ def _extract_xlsx_text(content: bytes) -> str:
 def _extract_pdf_text(content: bytes) -> str:
     """从 PDF 文件提取文本.
 
-    使用 PyPDF2 提取文本（轻量，不依赖重型 OCR）。
+    使用 pypdf 提取文本（轻量，不依赖重型 OCR）。
     提取失败（扫描件/图片型 PDF 无文本层）时走 OCR 兜底（019）。
     """
     try:
-        from PyPDF2 import PdfReader
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            from PyPDF2 import PdfReader  # backward compat for venvs without pypdf
 
         reader = PdfReader(io.BytesIO(content))
         pages = []
@@ -154,7 +156,7 @@ def _extract_pdf_text(content: bytes) -> str:
         ocr_text = _ocr_fallback(content)
         if ocr_text:
             return ocr_text
-        raise FileParseError("PDF 解析库未安装 (PyPDF2)") from None
+        raise FileParseError("PDF 解析库未安装 (pypdf/PyPDF2)") from None
     except FileParseError:
         raise
     except Exception as e:

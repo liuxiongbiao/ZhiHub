@@ -2,7 +2,6 @@
 backend/app/crud/order.py
 
 职责: orders / refund_approvals 表的数据库访问层（订单查询、乐观锁更新、退款审批）
-对应日程: 004-ticket-order
 
 核心设计:
   订单查询强制 tenant_id 过滤（多租户隔离）；乐观锁 UPDATE ... WHERE version=expected 防并发覆写。

@@ -2,7 +2,6 @@
 backend/tests/integration/test_knowledge_tasks.py
 
 职责: 知识库异步任务测试（T34: 原 5 个无条件 skip 改为 mock 基础设施的真测试）
-对应日程: 002-knowledge-base / 第二轮审查 T34
 
 测试内容:
   - TestProcessDocument: pending->ready 状态流转 / embedding 失败标 failed / 临时文件缺失降级

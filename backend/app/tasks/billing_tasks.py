@@ -2,8 +2,6 @@
 backend/app/tasks/billing_tasks.py
 
 职责: 每日定时聚合 Redis 配额计数器落库至 usage_records、月初生成账单
-分工: 🟢 弱模型可独立完成
-对应日程: Day 6 / 005-billing
 
 核心设计:
   Celery Beat 定时触发: 每天 02:00 UTC 聚合用量，每月 1 号 03:00 UTC 生成账单。
@@ -91,10 +89,12 @@ def aggregate_daily_usage() -> dict:
             ).scalar_one_or_none()
 
             if not existing:
+                # P0-2: is_overage 必须按租户套餐配额判定（不能写死 TRIAL_QUOTA）
+                from app.services.billing_service import get_tenant_quota
                 db.add(UsageRecord(
                     tenant_id=tenant_id, date=today,
                     conversation_count=day_count,
-                    is_overage=cur_total >= TRIAL_QUOTA,
+                    is_overage=cur_total >= get_tenant_quota(db, tenant_id),
                 ))
                 # 仅插入成功路径更新快照；existing 命中（重复执行）不动快照，防止覆盖增量。
                 # DB 与 Redis 双写无事务：commit 失败会丢该日增量、set 失败会致下日重复计入，
@@ -136,6 +136,7 @@ def generate_monthly_invoices() -> dict:
     """
     from app.models.tenant import Tenant
     from app.services.billing_service import generate_invoice
+    from app.config import settings
     from sqlalchemy import select
 
     db = SessionLocal()
@@ -149,6 +150,9 @@ def generate_monthly_invoices() -> dict:
         tenants = db.execute(select(Tenant)).scalars().all()
         count = 0
         for tenant in tenants:
+            # P0-3: 试用租户默认不生成账单（业务决策项，配置可切换）
+            if tenant.plan_type == "trial" and not settings.billing_charge_trial:
+                continue
             generate_invoice(db, tenant_id=tenant.id, period=period)
             count += 1
 

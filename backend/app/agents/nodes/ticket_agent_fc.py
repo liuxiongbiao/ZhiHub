@@ -4,8 +4,6 @@ backend/app/agents/nodes/ticket_agent_fc.py
 职责: Function Calling 版工单 Agent（009-tech-compare-agent-enhance US1）-- 与 MCP ticket_agent 等价，
       但工具分发走 LLM 原生 tool_calls 而非 MCP 协议信封。复用 006 双因子/权限/熔断（工具执行仍调
       mcp_service.call_tool 信封入口）。
-分工: 🔴 强模型独立完成（面试对比点，FC vs MCP 差异必须踩对）
-对应日程: 009 US1
 
 核心设计:
   这是 MCP vs FC 对比的 FC 侧实现。两者槽位收集、双因子校验、工具执行完全一致（复用 ticket_agent
@@ -19,7 +17,6 @@ backend/app/agents/nodes/ticket_agent_fc.py
   - 复用 006 安全加固: 工具执行仍走 call_tool，双因子/权限/熔断完全一致
   - tool_choice="auto": 让 LLM 自主决定是否调工具
 
-关键差异（面试点）:
   MCP:  Agent 直接调 call_tool（信封标准化、与 LLM 解耦、可审计、跨 LLM 通用）
   FC:   LLM 返回 tool_calls -> Agent 执行（LLM 原生、简单但紧耦合、无标准信封、依赖特定 LLM 能力）
   两者工具执行层相同（复用 006 安全加固），仅分发方式不同。

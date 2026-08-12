@@ -1,7 +1,5 @@
 <!-- frontend/src/components/chat/MessageBubble.vue -->
 <!-- 职责: 消息气泡 - AI/用户/坐席/系统消息样式 + 引用来源展示 -->
-<!-- 分工: 🟢 弱模型可独立完成 -->
-<!-- 对应日程: Day 4 -->
 <template>
   <div :class="['message-bubble', role]">
     <div class="bubble-header">

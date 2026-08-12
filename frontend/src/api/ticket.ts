@@ -1,7 +1,5 @@
 // frontend/src/api/ticket.ts
 // 职责: 工单列表/详情接口
-// 分工: 🟢 弱模型可独立完成
-// 对应日程: Day 5
 
 import request from './request'
 

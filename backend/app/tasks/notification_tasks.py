@@ -2,11 +2,8 @@
 backend/app/tasks/notification_tasks.py
 
 职责: Mock 通知 - 配额预警/转人工提醒的站内信通知（demo 用日志 + Redis 计数占位）
-分工: 🟢 弱模型可独立完成
-对应日程: Day 6
 
 核心设计:
-  Demo 阶段通知只写日志 + Redis 计数（可观测性演示），不接真实推送通道。
   生产环境应接 WebSocket 实时推送 + 短信/邮件网关。
 
 关键技术点:
@@ -17,7 +14,6 @@ backend/app/tasks/notification_tasks.py
 
 简化说明:
   真实产品会接 WebSocket 推送/短信/邮件，demo 阶段写日志 + Redis 计数即可，
-  Day 10 演示时口头说明"生产环境接 WebSocket + 短信网关"。
 
 依赖关系:
   - 上游: app/services/billing_service（配额预警）、app/services/session_service（转人工）
@@ -30,7 +26,6 @@ from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
 
-# Redis 通知计数键前缀（仅用于演示可观测性）
 NOTIF_COUNT_PREFIX = "notif:count:"
 # 计数 key TTL: 7 天，过期自动清理，避免永久累积无用 key
 NOTIF_TTL = 7 * 24 * 3600
@@ -68,7 +63,6 @@ def notify_quota_warning(tenant_id: int, level: str, count: int, quota: int) -> 
     except Exception as e:
         logger.warning(f"Quota warning notification write failed (non-blocking): {e}")
 
-    # 记录通知计数（可观测性演示），带 TTL 防永久累积
     r = get_redis()
     key = f"{NOTIF_COUNT_PREFIX}quota_warning:{tenant_id}"
     r.incr(key)

@@ -2,7 +2,6 @@
 backend/tests/integration/test_alembic_from_scratch.py
 
 职责: 验证 alembic upgrade head 从全新空库跑通且产出与模型一致的 schema(无缺表/缺列)
-对应日程: 012-alembic-from-scratch-fix
 
 设计:
   - 用 MySQL root 建临时库 zhihub_alembic_test,subprocess 跑 alembic upgrade head

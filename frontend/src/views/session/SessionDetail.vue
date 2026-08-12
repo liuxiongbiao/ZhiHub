@@ -1,7 +1,5 @@
 <!-- frontend/src/views/session/SessionDetail.vue -->
 <!-- 职责: 会话详情 - 聊天记录 + Agent trace时间线 -->
-<!-- 分工: 🟡 面试演示重头戏，UI弱模型可写但信息层次需强模型把关 -->
-<!-- 对应日程: Day 7 -->
 <template>
   <div class="session-detail" v-loading="loading">
     <template v-if="session">

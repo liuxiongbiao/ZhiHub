@@ -1,7 +1,5 @@
 # backend/Dockerfile
 # 职责: 多阶段构建 — 安装依赖 → 复制源码 → 生产就绪
-# 分工: 🟢 弱模型可独立完成
-# 对应日程: Day 9
 
 # ─── 构建阶段: 安装依赖 ───
 FROM python:3.12-slim AS builder
@@ -17,4 +15,4 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 COPY . .
 EXPOSE 8000
 # 生产启动命令（无 --reload，单worker）
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

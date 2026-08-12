@@ -2,7 +2,6 @@
 backend/app/models/billing_invoice.py
 
 职责: billing_invoices 表 ORM 模型定义（月度账单）
-对应日程: 005-billing-csat
 
 核心设计:
   按月生成的账单，base_fee 套餐基础费 + overage_fee 超量费，支付成功后回填交易号与支付时间。

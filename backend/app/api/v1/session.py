@@ -3,7 +3,6 @@ backend/app/api/v1/session.py
 
 职责: 会话生命周期全流程 -- 创建/列表/详情、用户发消息驱动 Agent、SSE 流式输出、
       转人工（坐席认领/退回）、留言建单、Trace 查询、CSAT 满意度评价
-对应日程: Day 4（消息发送）-> Day 6（认领/回退）-> 007（生命周期）-> 010 US2（SSE 流式）
 
 端点概览:
   POST /                              创建会话                    -> session_service.create_session
@@ -165,49 +164,95 @@ def send_message(
     except session_service.SessionNotFound as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent 处理失败: {str(e)}")
-
-
-# ─── 010 US2: SSE 流式输出 ───
-def _sse_format(text: str):
-    """生成 SSE 格式行（逐字 + [DONE]），供流式端点使用。"""
-    for char in text:
-        yield f"data: {json.dumps({'chunk': char})}\n\n"
-    yield "data: [DONE]\n\n"
-
+        # P1-9: 不向客户端泄露内部异常原文（服务端日志保留）
+        import logging
+        logging.getLogger(__name__).exception("Agent handle_message failed: session=%s", body.session_id)
+        raise HTTPException(status_code=500, detail="Agent 处理失败，请稍后重试") from e
 
 @router.post("/message/stream")
 async def send_message_stream(body: SendMessageRequest, request: Request, db: DbSession = Depends(get_db)):
-    """SSE 流式输出端点（010 US2）。
+    """SSE 流式输出端点 -- 真 token 级流式（010 US2 / 架构完善）。
 
-    流式端点单独走 litellm stream=True yield SSE，不复用 graph.invoke 同步路径。
-    鉴权: _get_tenant_id + session 归属校验；持久化用户/assistant 消息。
+    流式端点复用 Agent 主链路能力（注入检测/RAG/安全/计费/trace）:
+      prepare_message_stream: 加载上下文 + 注入检测 + graph.invoke 获取路由/检索结果
+      llm_complete_stream:    基于检索结果逐 token 流式生成回答（litellm stream=True）
+      finalize_message_stream: 保存 assistant 消息 + 计费 + trace + 记忆抽取
     """
     from app.crud import session as session_crud
-    from app.services.agent_service import handle_message
+    from app.services.agent_service import prepare_message_stream, finalize_message_stream
 
     tenant_id = _get_tenant_id(request)
     if session_crud.get_by_id(db, body.session_id, tenant_id) is None:
         raise HTTPException(status_code=404, detail=f"会话不存在: {body.session_id}")
 
-    # 013 US6 (修复报告 6.2): 流式端点复用 Agent 主链路（handle_message 走 graph.invoke:
-    # 注入检测/RAG/MCP/安全/计费/trace），不再直接调 litellm.completion（裸 LLM）。
-    # handle_message 内部已持久化 user + assistant 消息并计费，此处仅流式输出其回复。
     async def generate():
         try:
-            # 013: handle_message 是同步阻塞调用（LLM/检索），async 生成器内直接调用会
-            # 阻塞事件循环，导致并发请求全部排队/超时；转线程池执行。
-            result = await asyncio.to_thread(
-                handle_message,
+            # 1. 预处理 + graph.invoke（线程池执行，不阻塞事件循环）
+            prep = await asyncio.to_thread(
+                prepare_message_stream,
                 db=db, session_id=body.session_id, tenant_id=tenant_id, user_message=body.content,
             )
-            content = result["content"] if isinstance(result, dict) else result.content
-            message_id = result.get("message_id") if isinstance(result, dict) else getattr(result, "message_id", None)
-            for char in content:
-                yield f"data: {json.dumps({'chunk': char})}\n\n"
-            # 013: 流结束前下发落库的 assistant message_id，前端据此关联本地气泡（一致契约）
-            if message_id is not None:
-                yield f"data: {json.dumps({'message_id': message_id})}\n\n"
+
+            if not prep["need_stream"]:
+                # 转人工/降级/无检索 -> 直接返回完整内容
+                content = prep["content"]
+                result = await asyncio.to_thread(
+                    finalize_message_stream,
+                    db=db, session_id=body.session_id, tenant_id=tenant_id,
+                    content=content, prep=prep,
+                )
+                yield f"data: {json.dumps({'chunk': content})}\n\n"
+                if result.get("message_id"):
+                    yield f"data: {json.dumps({'message_id': result['message_id']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # 2. 真流式: llm_complete_stream 逐 token yield（队列桥接 sync->async）
+            import queue as _queue
+            import threading as _threading
+            from app.core.llm_client import llm_complete_stream
+            from app.services.agent_service import build_stream_messages
+
+            messages = build_stream_messages(body.content, prep["retrieval_result"], prep["context"])
+            q = _queue.Queue()
+
+            def _stream_worker():
+                full = []
+                try:
+                    for chunk in llm_complete_stream(messages=messages, max_tokens=800, temperature=0.3):
+                        full.append(chunk)
+                        q.put(chunk)
+                except Exception as e:
+                    q.put(e)
+                finally:
+                    q.put(None)  # sentinel
+                    q.put("".join(full))
+
+            _threading.Thread(target=_stream_worker, daemon=True).start()
+
+            # 3. 逐 chunk 发送 SSE 事件
+            while True:
+                item = await asyncio.to_thread(q.get)
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    yield f"data: {json.dumps({'error': str(item)})}\n\n"
+                    break
+                yield f"data: {json.dumps({'chunk': item})}\n\n"
+
+            # 4. 获取完整内容（worker 在 sentinel 后放入）
+            full_content = await asyncio.to_thread(q.get)
+            if not full_content:
+                full_content = prep["content"]
+
+            # 5. 后处理: 保存 assistant 消息 + 计费 + trace
+            result = await asyncio.to_thread(
+                finalize_message_stream,
+                db=db, session_id=body.session_id, tenant_id=tenant_id,
+                content=full_content, prep=prep,
+            )
+            if result.get("message_id"):
+                yield f"data: {json.dumps({'message_id': result['message_id']})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -216,7 +261,6 @@ async def send_message_stream(body: SendMessageRequest, request: Request, db: Db
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-# ─── Day 6: 坐席认领 + 退回 ───
 @router.post("/{session_id}/claim")
 def claim_session(session_id: int, request: Request, db: DbSession = Depends(get_db)):
     """坐席认领会话: 调 human_service.claim_session（Redis SETNX 分布式锁，双坐席同时认领仅一人成功）。"""
@@ -242,7 +286,6 @@ def return_session(session_id: int, request: Request, db: DbSession = Depends(ge
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─── Day 7: Trace 查询 ───
 @router.get("/{session_id}/trace")
 async def get_session_trace(session_id: int, request: Request, db: DbSession = Depends(get_db)):
     """获取会话 Agent 执行轨迹（MongoDB trace）: 先校验会话归属再查 trace，防跨租户枚举。"""

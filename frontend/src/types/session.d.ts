@@ -1,7 +1,5 @@
 // frontend/src/types/session.d.ts
 // 职责: 会话/消息/状态枚举/情绪枚举类型（对齐 backend/app/models/session.py）
-// 分工: 🟢 弱模型可独立完成
-// 对应日程: Day 4
 
 /** 会话状态 */
 export type SessionStatus =

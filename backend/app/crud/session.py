@@ -2,7 +2,6 @@
 backend/app/crud/session.py
 
 职责: sessions / messages 表的数据库访问层（会话状态查询、消息持久化）
-对应日程: 003-session-routing
 
 核心设计:
   会话查询强制 tenant_id 过滤；消息表无 tenant_id 列，靠调用方先校验会话归属再查消息（间接隔离）。

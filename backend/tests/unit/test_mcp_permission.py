@@ -2,7 +2,6 @@
 backend/tests/unit/test_mcp_permission.py
 
 职责: 测试 MCP 权限矩阵 + 入参校验（角色 x 工具 + 工单号/订单号/退款金额格式）
-对应日程: 006-mcp-security
 
 测试内容:
   - TestPermissionMatrix: admin 可退款（审批不暴露于 MCP），agent 不可退款但可查工单，user/未知角色全拒
@@ -54,8 +53,8 @@ class TestParamValidation:
 
     def test_refund_amount_zero(self):
         with pytest.raises(InvalidParams, match="退款金额"):
-            validate_params("request_refund", {"order_no": "ORD-12345678", "amount": 0})
+            validate_params("request_refund", {"order_no": "ORD-12345678", "phone": "13800000001", "amount": 0})
 
     def test_refund_amount_negative(self):
         with pytest.raises(InvalidParams, match="退款金额"):
-            validate_params("request_refund", {"order_no": "ORD-12345678", "amount": -100})
+            validate_params("request_refund", {"order_no": "ORD-12345678", "phone": "13800000001", "amount": -100})

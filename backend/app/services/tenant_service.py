@@ -2,8 +2,6 @@
 backend/app/services/tenant_service.py
 
 职责: 配置向导状态推进、成员邀请
-分工: 🟢 弱模型可独立完成
-对应日程: Day 2（PRD 3.1）
 
 核心设计:
   租户入驻后的配置向导状态机管理（basic -> knowledge -> mcp -> team -> done），
@@ -312,3 +310,29 @@ def update_widget_config(
         "logo_url": tenant.widget_logo_url,
         "welcome_text": tenant.widget_welcome_text,
     }
+
+
+# ---------- 014 Widget 公共通道：API Key / 域名白名单 ----------
+def generate_widget_api_key(db: Session, tenant_id: int) -> dict:
+    """生成/轮换 Widget API Key：仅存储 SHA-256 哈希，原始 Key 只返回一次。"""
+    import hashlib
+    import secrets
+
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    raw_key = secrets.token_urlsafe(32)
+    tenant.widget_api_key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    db.commit()
+    return {"api_key": raw_key}
+
+
+def set_widget_allowed_domains(db: Session, tenant_id: int, domains: list[str]) -> dict:
+    """设置 Widget 域名白名单（逗号分隔存储；空列表=仅开发环境 localhost 可用）。"""
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    cleaned = [d.strip().lower().lstrip("*.") for d in domains if d and d.strip()]
+    tenant.widget_allowed_domains = ",".join(cleaned)
+    db.commit()
+    return {"allowed_domains": cleaned}

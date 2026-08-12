@@ -2,7 +2,6 @@
 backend/scripts/ragas_eval.py
 
 职责: RAGAS 量化评测 -- 纯向量 vs 混合检索三指标对比（Faithfulness / AR / Context Recall）
-对应日程: 008-observability-eval
 
 核心设计:
   为什么手动实现三指标而不用 ragas 包: ragas 包在 Python 3.14 上不可用

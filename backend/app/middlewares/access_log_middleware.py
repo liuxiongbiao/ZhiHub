@@ -2,7 +2,6 @@
 backend/app/middlewares/access_log_middleware.py
 
 职责: 为每个请求生成/透传 trace_id，记录方法/路径/状态码/耗时访问日志
-对应日程: Day 1
 
 中间件链位置:
   入站执行顺序: AccessLog -> Auth -> Tenant -> RateLimit -> CORS -> 路由

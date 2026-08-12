@@ -2,7 +2,6 @@
 backend/tests/unit/test_graph.py
 
 职责: 测试 LangGraph 图拓扑 + Router 条件边路由逻辑（纯逻辑，不调 LLM）
-对应日程: 003-agent-graph
 
 测试内容:
   - TestRouteIntent: 条件边路由（愤怒/敏感操作/低置信度 -> human_handoff；

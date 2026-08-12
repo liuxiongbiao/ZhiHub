@@ -2,7 +2,6 @@
 backend/tests/contracts/test_business_streaming.py
 
 职责: 测试 010 业务闭环与流式输出的契约（退款撤销/分级/SSE/知识库质量/计费折算）
-对应日程: 010-business-streaming
 
 测试内容:
   - TestRefundCancel: 退款撤销契约（pending 可撤，approved 不可撤）
@@ -162,12 +161,38 @@ class TestRefundOrderState:
 class TestSSEStreaming:
     """SSE 流式格式契约。"""
 
-    def test_sse_format(self):
-        """SSE 生成器产出 data: chunk + [DONE]。"""
-        from app.api.v1.session import _sse_format
-        lines = list(_sse_format("你好世界"))
-        assert any("data:" in l for l in lines)
-        assert any("[DONE]" in l for l in lines)
+    def test_sse_format(self, client, db, make_token, monkeypatch):
+        """SSE 端点产出 data: chunk + [DONE]（真实端点 + 桩 LLM 流）。"""
+        from app.crud import session as session_crud
+        from app.services import agent_service
+        from app.core import llm_client
+
+        s = session_crud.create_session(db, tenant_id=1, end_user_id="eu-sse")
+        db.commit()
+
+        def fake_prepare(db, *, session_id, tenant_id, user_message):
+            return {
+                "need_stream": True, "content": "", "retrieval_result": [],
+                "intent": "knowledge_consult", "confidence": 0.9, "sentiment": "normal",
+                "should_interrupt": False, "context": [], "session": s,
+                "end_user_id": "eu-sse", "final_state": {}, "elapsed_ms": 1,
+            }
+
+        def fake_finalize(db, *, session_id, tenant_id, content, prep):
+            return {"message_id": 1, "role": "assistant", "content": content, "sources": [], "metadata": {}}
+
+        monkeypatch.setattr(agent_service, "prepare_message_stream", fake_prepare)
+        monkeypatch.setattr(agent_service, "finalize_message_stream", fake_finalize)
+        monkeypatch.setattr(llm_client, "llm_complete_stream", lambda **kwargs: iter(["你", "好"]))
+
+        resp = client.post(
+            "/api/v1/session/message/stream",
+            headers={"Authorization": f"Bearer {make_token(role='admin')}"},
+            json={"session_id": s.id, "content": "你好"},
+        )
+        assert resp.status_code == 200
+        assert "data: " in resp.text
+        assert "[DONE]" in resp.text
 
 
 # ═══════════════════════════════════════════════════════════
@@ -191,17 +216,20 @@ class TestKnowledgeQuality:
     def test_storage_limit_under(self, db):
         """未超存储上限 -> 允许上传。"""
         from app.services.knowledge_service import check_storage_limit
-        assert check_storage_limit(db, tenant_id=1, limit=50) is True
+        from app.models.knowledge_document import KnowledgeDocument
+        db.add(KnowledgeDocument(tenant_id=1, filename="a.md", file_type="md",
+                                 file_size=1024, status="ready", is_latest=True))
+        db.commit()
+        assert check_storage_limit(db, tenant_id=1, incoming_bytes=1024) is True
 
     def test_storage_limit_exceeded(self, db):
         """超存储上限 -> 拒绝。"""
         from app.services.knowledge_service import check_storage_limit
         from app.models.knowledge_document import KnowledgeDocument
-        for i in range(51):
-            db.add(KnowledgeDocument(tenant_id=999, filename=f"f{i}.md", file_type="md",
-                                     file_size=100, status="ready", is_latest=True))
+        db.add(KnowledgeDocument(tenant_id=999, filename="big.md", file_type="md",
+                                 file_size=600 * 1024 * 1024, status="ready", is_latest=True))
         db.commit()
-        assert check_storage_limit(db, tenant_id=999, limit=50) is False
+        assert check_storage_limit(db, tenant_id=999) is False
 
 
 # ═══════════════════════════════════════════════════════════

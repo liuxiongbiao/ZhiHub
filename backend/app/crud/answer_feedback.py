@@ -2,7 +2,6 @@
 backend/app/crud/answer_feedback.py
 
 职责: answer_feedback 表的数据库访问层（单条消息 👍/👎 评价存取）
-对应日程: 021-answer-feedback / PRD 3.8
 
 核心设计:
   无 tenant_id 列，通过 join message->session.tenant_id 隔离（防御纵深：

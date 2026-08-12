@@ -2,12 +2,9 @@
 backend/app/services/trace_service.py
 
 职责: Agent 执行轨迹写入 MongoDB + 查询，记录意图识别 -> 检索 -> 工具调用 -> 生成回答全流程。
-分工: 🔴 强模型独立完成（trace 数据结构是 Day7 面试演示重头戏，字段设计必须清晰可讲）
-对应日程: Day 7 / 008 US3 脱敏 + TTL
 
 核心设计:
   把 LangGraph final_state 拆成 4 个步骤（router/retrieval/agent/generation）写入 MongoDB agent_traces，
-  供事后排查和面试演示。PII 字段（slots 的 phone、用户 query、回答预览）入库前 mask_pii 脱敏。
   TTL 90 天自动过期，避免 trace 无限膨胀。每次操作新建 MongoDB client，因为 save_trace 在子线程
   event loop 跑、查询在主 loop 跑，共享 client 会跨 loop 报 'Event loop is closed'。
 

@@ -2,7 +2,6 @@
 backend/tests/integration/test_mcp_security_e2e.py
 
 职责: 006 MCP 协议化与智能体安全加固的端到端 4 场景集成测试
-对应日程: 006-mcp-security
 
 测试内容:
   - TestE2ETwoFactor: 双因子校验（Agent 反问 phone + /tools/call 不匹配/匹配 + 客户端 tenant_id 被覆盖）

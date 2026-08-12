@@ -2,8 +2,6 @@
 backend/app/core/embedding_client.py
 
 职责: 文本向量化（硅基流动 bge-m3）+ Milvus/ES 存储结构初始化，是混合检索的底层基础设施。
-分工: 🟡 弱模型起草 + 强模型 review（API 调用重试策略影响数据完整性）
-对应日程: Day 3（检索引擎基础）/ 009（长期记忆 collection）
 
 核心设计:
   三件事：①调硅基流动 bge-m3 把文本变 1024 维向量（带重试）；②初始化 Milvus 的两个 collection--

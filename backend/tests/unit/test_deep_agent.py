@@ -2,7 +2,6 @@
 backend/tests/unit/test_deep_agent.py
 
 职责: 测试 DeepAgent 3 步固定骨架执行 + 熔断上限 + 降级
-对应日程: 010-business-streaming
 
 测试内容:
   - TestDeepAgent: execute 返回 DeepAgentResult / 3 步骨架 / task_id 保留 /
@@ -21,10 +20,19 @@ class TestDeepAgent:
         assert result.task_id == "test-1"
         assert result.status in ("completed", "failed")
 
-    def test_execute_has_3_steps(self):
-        """正常执行应有3个步骤."""
+    def test_execute_has_3_steps(self, monkeypatch):
+        """正常执行应有步骤（桩化 LLM，消除外网依赖）。"""
+        class FakeMessage:
+            content = "Thought: 完成\nAction: finish\nAction Input: {\"summary\": \"ok\"}"
+
+        class FakeChoice:
+            message = FakeMessage()
+
+        class FakeResp:
+            choices = [FakeChoice()]
+
+        monkeypatch.setattr("app.core.llm_client.llm_complete", lambda **kw: FakeResp())
         result = execute(task_id="test-2", goal="工单分析", tenant_id=1)
-        # 失败时step数可能少于3
         assert len(result.steps) > 0
 
     def test_task_id_preserved(self):

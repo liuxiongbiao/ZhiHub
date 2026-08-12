@@ -2,7 +2,6 @@
 backend/app/models/csat.py
 
 职责: csat_evaluations 表 ORM 模型定义（满意度评价 + 点赞/点踩）
-对应日程: 007-session-lifecycle
 
 核心设计:
   会话级满意度评价，无 tenant_id 列，通过 session.tenant_id 间接隔离（调用方先校验会话归属）。

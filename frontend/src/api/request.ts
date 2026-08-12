@@ -1,4 +1,4 @@
-/**
+﻿/**
  * src/api/request.ts
  *
  * Axios 实例封装：baseURL、请求拦截器注入 Bearer(从 localStorage 读，不 import store 以免循环依赖)、
@@ -64,6 +64,8 @@ request.interceptors.request.use((config) => {
       const stored = JSON.parse(raw) as { token?: string }
       if (stored.token) {
         config.headers.Authorization = `Bearer ${stored.token}`
+        // CSRF 防护: 状态变更请求携带 X-CSRF-Token 头（复用 JWT 令牌）
+        config.headers['X-CSRF-Token'] = stored.token
       }
     }
   } catch {

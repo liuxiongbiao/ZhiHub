@@ -2,7 +2,6 @@
 backend/app/models/audit_log.py
 
 职责: audit_logs 表 ORM 模型定义（系统审计日志，PRD 2.1）
-对应日程: handover-and-plan #28
 
 核心设计:
   关键业务操作（退款审批/撤销、登录/登出、向导推进、支付回调）落库审计，

@@ -2,7 +2,6 @@
 backend/tests/contracts/test_account_ext.py
 
 职责: 测试 PRD 3.1 账户体系扩展 8 项契约（#10-#17，不含#12微信）
-对应日程: PRD 3.1 账户体系扩展
 
 测试内容:
   - TestSendVerificationCode: 验证码发送 + 存储 Redis + 频率限制（1min/次、24h/10次）
@@ -14,7 +13,6 @@ backend/tests/contracts/test_account_ext.py
   - TestBindEmail: 账号绑定邮箱（验证码 + 唯一性校验）
   - TestEnterpriseApprove: 企业版审批（pending_review -> active）
 
-设计说明（面试点）:
   - 验证码写 Redis（demo mock 短信，不接阿里云），TTL 5min
   - 频率限制: 1min/次（vcode_freq key TTL=60s）、24h/10次（vcode_daily INCR + TTL=86400s）
   - 防爆破: 3 次错误验证码 -> 码失效（DEL vcode key）

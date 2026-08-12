@@ -2,7 +2,6 @@
 backend/tests/unit/test_validators.py
 
 职责: 测试 utils/validators.py 手机号格式与密码强度规则（TDD 先写测试）
-对应日程: 001-auth-tenant
 
 测试内容:
   - TestValidatePhone: 合法手机号通过 / 太短/太长/非1开头/含字母/空 拒绝

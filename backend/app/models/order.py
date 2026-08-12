@@ -2,7 +2,6 @@
 backend/app/models/order.py
 
 职责: orders 表 ORM 模型定义（订单，含乐观锁 version 字段）
-对应日程: 004-ticket-order（006-mcp-security 增补 phone 字段）
 
 核心设计:
   资金类数据，状态机 + 乐观锁防并发覆写：
@@ -22,7 +21,7 @@ from app.models.base import BaseModel
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "created": {"paid", "cancelled"},
     "paid": {"shipped", "refunding"},
-    "shipped": {"completed"},
+    "shipped": {"completed", "refunding"},  # 016: 已发货订单也可申请售后（PRD 3.6）
     "refunding": {"refunded", "paid"},  # paid 为退款拒绝/撤销的回退分支
     # 终态不可跃迁
     "completed": set(),

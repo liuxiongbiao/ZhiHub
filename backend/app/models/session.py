@@ -2,7 +2,6 @@
 backend/app/models/session.py
 
 职责: sessions 表 ORM 模型定义（会话状态机）
-对应日程: 003-session-routing（007-session-lifecycle 扩展人工接待状态）
 
 核心设计:
   一次用户与智能体的完整对话，状态机驱动流转：

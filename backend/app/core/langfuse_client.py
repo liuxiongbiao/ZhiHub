@@ -2,8 +2,6 @@
 backend/app/core/langfuse_client.py
 
 职责: Langfuse 可观测 SDK 的封装--单例懒加载 + 降级安全的 observe 装饰器。
-分工: 🔴 强模型定稿（降级逻辑错了会让可观测故障拖垮主对话流程）
-对应日程: 008-observability-eval (US2)
 
 核心设计:
   可观测是"锦上添花"而非主流程，必须满足"Langfuse 挂了对话照常跑"。因此本文件的核心是降级：

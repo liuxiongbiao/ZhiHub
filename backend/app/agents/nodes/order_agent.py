@@ -2,8 +2,6 @@
 backend/app/agents/nodes/order_agent.py
 
 职责: 订单 Agent--槽位检查（order_no + phone 双因子）-> MCP 调用订单工具 -> 生成回复。
-分工: 🟡 主流程弱模型起草，敏感操作判断分支由强模型确认
-对应日程: Day 5 / 006-mcp-security (User Story 1 双因子槽位 + User Story 2 协议化)
 
 核心设计:
   与 ticket_agent 同构：槽位收集循环（order_no + phone 双因子），缺槽位反问不调工具（FR-004），

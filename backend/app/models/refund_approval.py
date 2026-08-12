@@ -2,7 +2,6 @@
 backend/app/models/refund_approval.py
 
 职责: refund_approvals 表 ORM 模型定义（退款审批记录，只追加不覆写）
-对应日程: 004-ticket-order
 
 核心设计:
   退款审批流水，规则定稿禁止 UPDATE/DELETE，靠 client_request_id 做幂等去重。

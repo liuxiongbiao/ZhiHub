@@ -2,8 +2,6 @@
 backend/app/services/ticket_service.py
 
 职责: 工单创建前参数校验 + 幂等检查、状态机跃迁合法性校验
-分工: 🟢 弱模型可独立完成（工单是最简单的状态机）
-对应日程: Day 5
 
 核心设计:
   工单是最简单的状态机模型: open -> in_progress -> resolved -> closed。

@@ -2,7 +2,6 @@
 backend/tests/contracts/test_ocr.py
 
 职责: 测试 #19 OCR 兜底（百度 OCR mock 模式 + PDF 提取失败兜底）契约
-对应日程: 019-ocr-fallback / PRD 3.3
 
 测试内容:
   - TestOcrClient: mock 模式返回非空文本 / 单例重置 / PDF 页识别别名

@@ -2,7 +2,6 @@
 backend/tests/contracts/test_session_lifecycle.py
 
 职责: 测试 007 会话生命周期与转人工增强的契约（轮次转人工/空闲收尾/留言建单/CSAT/限流）
-对应日程: 007-session-lifecycle-handoff
 
 测试内容:
   - TestRoundBasedHandoff: 轮次计数（连续3轮可解决类意图相同 / 累计15轮转人工；

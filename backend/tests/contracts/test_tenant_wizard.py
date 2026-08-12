@@ -2,7 +2,6 @@
 backend/tests/contracts/test_tenant_wizard.py
 
 职责: 测试 PRD 3.1 配置向导4步推进 + 邀请坐席 + seat_limit 校验契约
-对应日程: Day 2（feature 001-account-tenant 扩展）
 
 测试内容:
   - TestWizardStateMachine: 向导状态机（basic->knowledge->mcp->team->done 逐步推进；
@@ -11,7 +10,6 @@ backend/tests/contracts/test_tenant_wizard.py
   - TestInviteAccept: 接受邀请创建 user + member(role=agent)；token 一次性，接受后失效
   - TestInviteTokenExpired: 过期/缺失 token 接受失败
 
-设计说明（面试点）:
   - 向导状态机用显式有序列表 WIZARD_STEPS，advance 校验当前 index +1，
     杜绝跳步（如 basic 直接到 team）
   - 邀请 token 写 Redis 带 TTL，接受后 DEL 一次性失效；过期 key 自然消失

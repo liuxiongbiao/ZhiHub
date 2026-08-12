@@ -1,8 +1,6 @@
 """
 backend/alembic/env.py
 职责: Alembic环境配置——数据库连接（从config.py读取）、自动发现ORM模型Metadata
-分工: 🟢 弱模型可独立完成（标准模板）
-对应日程: Day 1
 """
 
 import os

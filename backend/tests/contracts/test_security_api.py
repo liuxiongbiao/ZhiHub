@@ -2,7 +2,6 @@
 backend/tests/contracts/test_security_api.py
 
 职责: 测试 006 终端用户双因子身份校验 + Prompt 注入检测契约
-对应日程: 006-mcp-security
 
 测试内容:
   - TestEndUserTwoFactor: 双因子校验（SC-001 仅手机号查询 100% 被拒；

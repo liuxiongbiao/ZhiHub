@@ -2,8 +2,6 @@
 backend/app/services/rate_limit_service.py
 
 职责: 租户级 + 用户级双维度令牌桶限流，以及终端用户对话消息限流
-分工: 🟢 弱模型可独立完成
-对应日程: Day 6
 
 核心设计:
   用 Redis Sorted Set (ZSET) 实现滑动窗口限流：每个请求的时间戳作为 ZSET member，
@@ -123,6 +121,22 @@ def check_message_rate_limit(user_id: int) -> dict:
     allowed = count < MESSAGE_RATE
     if allowed:
         # member 用 time_ns 保证唯一（同一秒多次调用不会互相覆盖）
+        r.zadd(key, {str(time.time_ns()): now})
+        r.expire(key, MESSAGE_WINDOW_SECONDS + 10)
+    return {"allowed": allowed, "count": count}
+
+
+def check_widget_rate_limit(session_id: int) -> dict:
+    """014 Widget 匿名会话消息限流：单会话 10 次/分钟（与员工消息限流同阈值）。"""
+    r = get_redis()
+    now = int(time.time())
+    window_start = now - MESSAGE_WINDOW_SECONDS
+    key = f"rate:widget:{session_id}:minute"
+
+    r.zremrangebyscore(key, 0, window_start)
+    count = r.zcard(key)
+    allowed = count < MESSAGE_RATE
+    if allowed:
         r.zadd(key, {str(time.time_ns()): now})
         r.expire(key, MESSAGE_WINDOW_SECONDS + 10)
     return {"allowed": allowed, "count": count}

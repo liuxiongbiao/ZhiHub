@@ -2,7 +2,6 @@
 backend/tests/integration/test_knowledge_api.py
 
 职责: 测试知识库 API 端点集成（上传/列表/检索测试/重建的鉴权守卫）
-对应日程: 002-knowledge-base / T34（原 2 个无条件 skip 补为带认证的真测试）
 
 测试内容:
   - TestUploadEndpoint: 未认证 401 / 不支持格式 400 / 超大文件 400（认证后）

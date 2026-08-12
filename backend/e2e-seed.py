@@ -1,4 +1,4 @@
-"""e2e-seed.py — 为 UI 测试租户预置演示数据（工单/订单/账单/退款/等待会话/快捷回复）。
+"""e2e-seed.py — 为 UI 测试租户预置测试数据（工单/订单/账单/退款/等待会话/快捷回复）。
 运行: .venv/Scripts/python.exe e2e-seed.py <tenant_id>
 """
 import sys, os

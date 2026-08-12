@@ -2,7 +2,6 @@
 backend/tests/unit/test_ticket_agent.py
 
 职责: 测试工单/订单 Agent 的槽位补全与号码提取
-对应日程: 003-agent-graph
 
 测试内容:
   - TestTicketSlotFilling: 无工单号反问格式 / slots 含工单号跳过反问 / 从消息正则提取 TK- 号

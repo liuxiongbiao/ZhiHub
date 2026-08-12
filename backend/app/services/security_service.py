@@ -2,8 +2,6 @@
 backend/app/services/security_service.py
 
 职责: Prompt 注入检测（规则库 + 关键词正则）+ 安全事件记录（security_incidents 表）。
-分工: 🔴 强模型独立完成（安全检测规则漏判=注入放行，误判=正常用户被转人工）
-对应日程: 006-mcp-security (User Story 3)
 
 核心设计:
   轻量规则库检测，5 条规则覆盖典型注入手法（忽略指令/角色劫持/系统提示词泄露/越狱/角色扮演）。
@@ -142,7 +140,8 @@ def record_incident(
     from app.models.security_incident import SecurityIncident
 
     # 截断到 500 字作为 preview，防爆库 + 减少 PII 留存
-    preview = (user_message or "")[:500]
+    from app.utils.desensitize import mask_pii
+    preview = mask_pii((user_message or "")[:500])
     incident = SecurityIncident(
         tenant_id=tenant_id,
         session_id=session_id,

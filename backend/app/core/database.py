@@ -2,8 +2,6 @@
 backend/app/core/database.py
 
 职责: 同步 SQLAlchemy 引擎、SessionLocal 工厂、get_db() 依赖生成器、init_db 建表兜底
-分工: 🔴 强模型定稿（全项目数据访问底座）
-对应日程: Day 2 / 001-account-tenant（research R2）
 
 核心设计:
   同步 SQLAlchemy 2.0 + pymysql（匹配 requirements.txt 同步驱动，避免 async 复杂度）。

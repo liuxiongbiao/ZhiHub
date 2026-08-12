@@ -1,7 +1,5 @@
 <!-- frontend/src/components/chat/FeedbackButtons.vue -->
 <!-- 职责: 👍/👎反馈按钮（收集满意度+bad case标记） -->
-<!-- 分工: 🟢 弱模型可独立完成 -->
-<!-- 对应日程: Day 7 -->
 <template>
   <div class="feedback-buttons">
     <el-button

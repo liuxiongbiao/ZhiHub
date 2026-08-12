@@ -2,8 +2,6 @@
 backend/app/core/circuit_breaker.py
 
 职责: MCP 工具调用的熔断状态机，保护后端在工具持续故障时不被拖垮。
-分工: 🔴 强模型独立完成（熔断状态机错了会导致工具永久不可用或永不熔断）
-对应日程: 006-mcp-security (User Story 4)
 
 核心设计:
   经典三态熔断：closed（正常放行）-> open（熔断，直接返回兜底，不调工具）-> half_open（放一个

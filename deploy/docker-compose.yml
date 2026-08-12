@@ -1,25 +1,17 @@
 # deploy/docker-compose.yml
-# 职责: 七个中间件容器编排（mysql/mongo/redis/rabbitmq/milvus/es）+ 前后端服务
-# 分工: 🟡 弱模型写初版，强模型排版本兼容/网络配置坑
-# 对应日程: Day 1（起中间件）→ Day 9（补前后端服务+Nginx，完整定稿）
-#
-# 内存预算（16GB物理内存机器实测参考，mem_limit 为硬上限，容器超限会被OOM kill）：
-#   mysql ~512MB / mongo ~512MB / redis ~256MB / rabbitmq ~512MB
-#   elasticsearch ~1.5GB（ES_JAVA_OPTS 强制限制堆，否则会吃满可用内存）
-#   milvus ~2GB / etcd ~256MB / minio ~512MB（milvus standalone 的两个隐藏依赖，缺了起不来）
-#   合计约 6GB 容器占用 + Docker Desktop/WSL2自身开销，16GB机器留有余量。
-#
-# Windows 前置: Docker Desktop 必须启用 WSL2 backend，Settings->Resources->Memory 建议给到 10-12GB。
+# 职责: 中间件 + 前后端 + Nginx 编排
+# 凭据策略: 全部通过环境变量注入（见同目录 .env.example）。
+#   开发环境可使用 .env.example 提供的默认值；生产部署必须显式覆盖，禁止沿用默认值。
 
 services:
   mysql:
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: zhihub
-      MYSQL_USER: zhihub
-      MYSQL_PASSWORD: zhihub
-    ports: ["3307:3306"]  # 本机3306被已安装的MySQL服务占用，容器内部仍是3306，宿主机侧改用3307
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-zhihub}
+      MYSQL_USER: ${MYSQL_USER:-zhihub}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhihub}
+    ports: ["3307:3306"]
     mem_limit: 512m
     volumes:
       - mysql_data:/var/lib/mysql
@@ -42,20 +34,18 @@ services:
     mem_limit: 512m
 
   elasticsearch:
-    image: elasticsearch:8.13.0  # docker.elastic.co国内不可达且daocloud代理不支持该源(403)，改用Elastic官方在Docker Hub发布的同版本镜像
+    image: elasticsearch:8.13.0
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      # 强制限制JVM堆，不加这个ES默认会吃掉一半可用内存，16GB机器上极易把预算打爆
       - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
     ports: ["9200:9200"]
     mem_limit: 1.5g
     volumes:
       - es_data:/usr/share/elasticsearch/data
 
-  # ---- Milvus standalone 的两个隐藏依赖，缺了 milvus 容器会直接崩溃退出 ----
   etcd:
-    image: quay.nju.edu.cn/coreos/etcd:v3.5.5  # daocloud代理对quay.io限流不稳定，改用南京大学quay.io镜像站
+    image: quay.nju.edu.cn/coreos/etcd:v3.5.5
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
@@ -69,8 +59,8 @@ services:
   minio:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
     command: minio server /minio_data
     mem_limit: 512m
     volumes:
@@ -90,13 +80,12 @@ services:
     volumes:
       - milvus_data:/var/lib/milvus
 
-  # ─── 008: Langfuse 自托管可观测（langfuse + postgres + clickhouse）───
   langfuse-db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: langfuse
-      POSTGRES_PASSWORD: langfuse
-      POSTGRES_DB: langfuse
+      POSTGRES_USER: ${LANGFUSE_DB_USER:-langfuse}
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-langfuse}
+      POSTGRES_DB: ${LANGFUSE_DB_NAME:-langfuse}
     mem_limit: 256m
     volumes:
       - langfuse_db_data:/var/lib/postgresql/data
@@ -104,9 +93,9 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.1
     environment:
-      CLICKHOUSE_DB: langfuse
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-langfuse}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
     mem_limit: 512m
     volumes:
       - clickhouse_data:/var/lib/clickhouse
@@ -114,13 +103,14 @@ services:
   langfuse:
     image: langfuse/langfuse:3
     environment:
-      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
-      CLICKHOUSE_URL: clickhouse://clickhouse:8123/langfuse
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
-      NEXTAUTH_SECRET: langfuse-demo-secret-2026
-      SALT: langfuse-demo-salt-2026
-      NEXTAUTH_URL: http://localhost:3000
+      DATABASE_URL: postgresql://${LANGFUSE_DB_USER:-langfuse}:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-db:5432/${LANGFUSE_DB_NAME:-langfuse}
+      CLICKHOUSE_URL: clickhouse://${CLICKHOUSE_USER:-clickhouse}:${CLICKHOUSE_PASSWORD:-clickhouse}@clickhouse:8123/${CLICKHOUSE_DB:-langfuse}
+      CLICKHOUSE_MIGRATION_URL: clickhouse://${CLICKHOUSE_USER:-clickhouse}:${CLICKHOUSE_PASSWORD:-clickhouse}@clickhouse:8123/${CLICKHOUSE_DB:-langfuse}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-langfuse-demo-secret-2026}
+      SALT: ${LANGFUSE_SALT:-langfuse-demo-salt-2026}
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
       TELEMETRY_ENABLED: "false"
     ports: ["3000:3000"]
     mem_limit: 512m
@@ -128,18 +118,34 @@ services:
       - langfuse-db
       - clickhouse
 
-  # ─── Day 9: 前后端 + Nginx ───
   backend:
     build: ../backend
     ports: ["8000:8000"]
     environment:
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - REDIS_HOST=redis
-      - MONGO_URI=mongodb://mongo:27017/zhihub
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - MILVUS_HOST=milvus
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - APP_ENV=${APP_ENV:-development}
+      - APP_SECRET_KEY=${APP_SECRET_KEY:-change-me}
+      - MYSQL_HOST=${MYSQL_HOST:-mysql}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_USER=${MYSQL_USER:-zhihub}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-zhihub}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-zhihub}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017/zhihub}
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      - MILVUS_HOST=${MILVUS_HOST:-milvus}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-http://langfuse:3000}
+      - ALIPAY_APP_ID=${ALIPAY_APP_ID:-}
+      - ALIPAY_APP_PRIVATE_KEY=${ALIPAY_APP_PRIVATE_KEY:-}
+      - ALIPAY_PUBLIC_KEY=${ALIPAY_PUBLIC_KEY:-}
+      - WECHAT_APP_ID=${WECHAT_APP_ID:-}
+      - WECHAT_APP_SECRET=${WECHAT_APP_SECRET:-}
+      - OCR_API_KEY=${OCR_API_KEY:-}
+      - OCR_SECRET_KEY=${OCR_SECRET_KEY:-}
     depends_on:
       - mysql
       - redis

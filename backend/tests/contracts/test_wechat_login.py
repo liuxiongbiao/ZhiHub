@@ -2,7 +2,6 @@
 backend/tests/contracts/test_wechat_login.py
 
 职责: 测试 PRD 3.1 微信扫码登录的 mock 契约（key 占位，真实验证待用户填 key）
-对应日程: PRD 3.1 #12
 
 测试内容（mock 契约，monkeypatch wechat_client）:
   - TestWechatMockMode: key 为空时 client 自动走 mock 模式

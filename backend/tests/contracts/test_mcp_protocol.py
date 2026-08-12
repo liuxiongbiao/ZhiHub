@@ -2,7 +2,6 @@
 backend/tests/contracts/test_mcp_protocol.py
 
 职责: 测试 006 MCP JSON-RPC 2.0 标准协议信封 + 熔断降级契约
-对应日程: 006-mcp-security
 
 测试内容:
   - TestJSONRPCEnevelope: JSON-RPC 2.0 信封结构（成功 result / -32601 方法不存在 /

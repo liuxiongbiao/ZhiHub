@@ -30,7 +30,6 @@ export function sendMessage(sessionId: number, content: string) {
   return request.post<SendMessageResponse>('/session/message', { session_id: sessionId, content })
 }
 
-/** 坐席认领会话（Day 6） */
 export function claimSession(sessionId: number) {
   return request.post<{ session_id: number; agent_id: number; status: string }>(`/session/${sessionId}/claim`)
 }
@@ -65,6 +64,13 @@ export function createQuickReply(content: string, shortcut?: string) {
   return request.post<QuickReplyItem>('/session/quick-replies', { content, shortcut })
 }
 
+
+/** 提交回复反馈（021 PRD 3.8） */
+export function submitFeedback(messageId: number, score: number, comment?: string) {
+  return request.post<{ id: number; message_id: number; score: number; bad_case: boolean }>(
+    `/session/message/${messageId}/feedback`, { score, comment }
+  )
+}
 
 // ---- 013 US7: SSE 流式响应 ----
 

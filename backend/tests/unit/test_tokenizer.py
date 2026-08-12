@@ -2,7 +2,6 @@
 backend/tests/unit/test_tokenizer.py
 
 职责: 测试 Token 估算与消息截断（上下文窗口管理）
-对应日程: 003-agent-graph
 
 测试内容:
   - TestEstimateTokens: 空串 0 / 英文约 4 chars/token / 中文约 1.5 chars/token / 中英混合

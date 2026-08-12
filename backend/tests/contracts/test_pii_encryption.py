@@ -2,7 +2,6 @@
 backend/tests/contracts/test_pii_encryption.py
 
 职责: 测试 PRD 3.1/4.3 PII 字段静态加密契约（AES-GCM + EncryptedString TypeDecorator）
-对应日程: handover-and-plan #6
 
 测试内容:
   - test_encrypt_decrypt_roundtrip: 加解密往返一致，且同一明文两次密文不同（nonce 随机）

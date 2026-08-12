@@ -1,7 +1,5 @@
 <!-- frontend/src/views/knowledge/SearchTest.vue -->
 <!-- 职责: 检索测试台 - 纯向量 vs 混合检索结果对比展示 -->
-<!-- 分工: 🟡 展示层弱模型可写，但数据结构需对齐retrieval_service输出，强模型review -->
-<!-- 对应日程: Day 3 -->
 <template>
   <div class="search-test">
     <div class="search-header">

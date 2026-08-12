@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="chat-window">
     <div class="messages-area" ref="messagesRef">
       <el-alert
@@ -14,14 +14,19 @@
         </template>
       </el-alert>
       <div v-if="messages.length === 0" class="empty-hint">发送一条消息开始对话</div>
-      <MessageBubble
-        v-for="msg in messages"
-        :key="msg.message_id || msg._localId"
-        :role="msg.role"
-        :content="msg.content"
-        :sources="msg.sources"
-        :created-at="msg.created_at"
-      />
+      <div v-for="msg in messages" :key="msg.message_id || msg._localId">
+        <MessageBubble
+          :role="msg.role"
+          :content="msg.content"
+          :sources="msg.sources"
+          :created-at="msg.created_at"
+        />
+        <FeedbackButtons
+          v-if="msg.role === 'assistant' && msg.message_id"
+          :message-id="msg.message_id"
+          @feedback="handleFeedback"
+        />
+      </div>
       <div v-if="loading" class="typing-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
     </div>
     <div class="input-area">
@@ -41,8 +46,9 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getSessionDetail, sendMessage as sendMessageApi, sendMessageStream } from '@/api/session'
+import { getSessionDetail, sendMessage as sendMessageApi, sendMessageStream, submitFeedback } from '@/api/session'
 import MessageBubble from './MessageBubble.vue'
+import FeedbackButtons from './FeedbackButtons.vue'
 import CsatDialog from './CsatDialog.vue'
 import LeaveMessageDialog from './LeaveMessageDialog.vue'
 import type { Message, SourceItem } from '@/types/session'
@@ -138,6 +144,17 @@ async function handleSend() {
     ElMessage.error(e?.message || '发送失败')
     messages.value.push({ _localId: `error-${Date.now()}`, role: 'system', content: '消息发送失败，请重试。' })
   } finally { loading.value = false; scrollToBottom() }
+}
+
+/** 处理回复反馈（021 PRD 3.8） */
+async function handleFeedback(data: { messageId: number; type: string }) {
+  try {
+    const score = data.type === 'like' ? 1 : -1
+    await submitFeedback(data.messageId, score)
+    ElMessage.success(data.type === 'like' ? '感谢反馈' : '已标记为无用回复')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '反馈提交失败')
+  }
 }
 
 defineExpose({ loadHistory })

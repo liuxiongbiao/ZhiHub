@@ -2,7 +2,6 @@
 backend/app/crud/user.py
 
 职责: users 表的数据库访问层（平台账号存取）
-对应日程: 001-account-tenant / PRD 3.1 账户体系扩展
 
 核心设计:
   纯数据存取无业务判断，只 flush 不 commit，事务边界由 Service 层统一控制。

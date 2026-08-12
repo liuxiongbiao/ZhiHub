@@ -2,7 +2,6 @@
 backend/app/schemas/tenant.py
 
 职责: 租户信息、后台首页响应 Pydantic 模型
-对应日程: 001-account-tenant
 """
 
 from pydantic import BaseModel, Field

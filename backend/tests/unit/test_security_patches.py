@@ -2,7 +2,6 @@
 backend/tests/unit/test_security_patches.py
 
 职责: 测试安全补丁（坐席越权拦截 + 退款金额二次确认 + 幂等机制）
-对应日程: 006-mcp-security
 
 测试内容:
   - TestAgentPermissionBoundary: agent 角色访问 admin 端点 403 / admin 通过 / 租户 closed 拦截
@@ -71,13 +70,13 @@ class TestRefundAmountDoubleCheck:
         """退款金额=0 -> 拒绝."""
         from app.services.mcp_service import validate_params, InvalidParams
         with pytest.raises(InvalidParams, match="退款金额"):
-            validate_params("request_refund", {"order_no": "ORD-12345678", "amount": 0})
+            validate_params("request_refund", {"order_no": "ORD-12345678", "phone": "13800000001", "amount": 0})
 
     def test_amount_negative_blocked(self):
         """退款金额<0 -> 拒绝."""
         from app.services.mcp_service import validate_params, InvalidParams
         with pytest.raises(InvalidParams, match="退款金额"):
-            validate_params("request_refund", {"order_no": "ORD-12345678", "amount": -50})
+            validate_params("request_refund", {"order_no": "ORD-12345678", "phone": "13800000001", "amount": -50})
 
     def test_amount_exceeds_paid_blocked(self, db):
         """退款超额 -> order_service 抛 RefundExceedsPaid."""
@@ -102,11 +101,11 @@ class TestRefundAmountDoubleCheck:
     def test_valid_refund_params_pass(self):
         """合法退款参数应通过校验."""
         from app.services.mcp_service import validate_params
-        validate_params("request_refund", {"order_no": "ORD-12345678", "amount": 100, "client_request_id": "REQ-001"})
+        validate_params("request_refund", {"order_no": "ORD-12345678", "phone": "13800000001", "amount": 100, "client_request_id": "REQ-001"})
 
 
 class TestIdempotencyDemo:
-    """幂等演示: 同client_request_id重复请求只创建一条记录."""
+    """幂等校验: 同 client_request_id 重复请求只创建一条记录。"""
 
     def test_idempotency_key_generation(self):
         """幂等键唯一性 + 命名空间隔离."""

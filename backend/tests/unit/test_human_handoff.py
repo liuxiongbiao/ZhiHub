@@ -2,7 +2,6 @@
 backend/tests/unit/test_human_handoff.py
 
 职责: 测试转人工触发条件 + 坐席认领分布式锁 + 限流/计费配额常量
-对应日程: 003-agent-graph
 
 测试内容:
   - TestHumanHandoff: 愤怒/敏感操作/低置信度触发转人工 + 多原因叠加

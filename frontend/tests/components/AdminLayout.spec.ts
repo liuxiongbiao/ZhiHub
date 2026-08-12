@@ -54,7 +54,7 @@ describe('AdminLayout.vue', () => {
     ;(getTenantHome as any).mockResolvedValue({
       data: {
         tenant_id: 1,
-        tenant_name: '演示公司',
+        tenant_name: '测试公司',
         plan_type: 'trial',
         status: 'active',
         current_user: { user_id: 1, role: 'admin' },
@@ -62,7 +62,7 @@ describe('AdminLayout.vue', () => {
     })
     const w = mountLayout()
     await flushPromises()
-    expect(w.html()).toContain('演示公司')
+    expect(w.html()).toContain('测试公司')
   })
 
   it('renders sidebar menu', () => {

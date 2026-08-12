@@ -1,6 +1,5 @@
 // frontend/src/api/order.ts
 // 职责: 订单列表/详情/退款审批/发货/撤销 接口
-// 对应日程: Day 5 + 013 US6（发货）
 
 import request from './request'
 

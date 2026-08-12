@@ -3,8 +3,6 @@ backend/app/agents/nodes/ticket_agent.py
 
 职责: 工单 Agent--槽位检查（ticket_no + phone 双因子，缺槽位反问不调工具）-> MCP 调用工单工具
       -> 结构化结果转自然语言回复。
-分工: 🟡 多轮澄清对话逻辑弱模型起草，边界条件（何时判定"齐全"）由强模型定
-对应日程: Day 5 / 006-mcp-security (User Story 1 双因子槽位)
 
 核心设计:
   典型的槽位收集循环：先从 slots 和消息正则提取 ticket_no 和 phone，缺哪个反问哪个，

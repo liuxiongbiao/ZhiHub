@@ -2,8 +2,6 @@
 backend/app/services/order_service.py
 
 职责: 【资金安全核心】订单状态机跃迁校验 + 乐观锁 + 退款金额上限校验 + 大额退款分级审批
-分工: 🔴 强模型独立完成（状态机漏一个分支=可被越权跳转的资金漏洞）
-对应日程: Day 5
 
 核心设计:
   退款是资金逆流操作，本模块用"三道防线 + 分级审批"兜底：
@@ -64,7 +62,7 @@ def _check_transition(from_status: str, to_status: str) -> None:
 
 def request_refund(
     db: Session, *, tenant_id: int, order_no: str, amount: float,
-    reason: str | None, client_request_id: str,
+    reason: str | None, client_request_id: str, phone: str | None = None,
 ) -> dict:
     """申请退款（资金逆流入口，三道防线兜底）。
 
@@ -72,10 +70,11 @@ def request_refund(
       1. 幂等检查: 命中 client_request_id 直接返回缓存结果，拦截网络重试
       2. 查询订单: 按 (tenant_id, order_no) 定位，租户隔离
       3. 金额校验: amount 必须 >0 且 <= paid_amount（实付金额）
-      4. 状态机校验: 仅 paid 状态可发起退款 -> refunding
-      5. 乐观锁更新: CAS 把订单状态从 paid 改为 refunding，并发只有一个成功
-      6. 创建退款审批记录: 只追加不覆写，保留审计轨迹
-      7. 记录幂等键: 绑定 client_request_id -> approval.id
+      4. 身份校验（016）: 提供 phone 时后 4 位必须与订单绑定手机号一致
+      5. 状态机校验: paid/shipped 可发起退款 -> refunding
+      6. 乐观锁更新: CAS 把订单状态改为 refunding，并发只有一个成功
+      7. 创建退款审批记录: 只追加不覆写，保留审计轨迹
+      8. 记录幂等键: 绑定 client_request_id -> approval.id
 
     设计决策:
       - 幂等检查在最前：即使后续校验失败，重复请求也不会重复扣减
@@ -98,6 +97,12 @@ def request_refund(
     order = order_crud.get_by_order_no(db, tenant_id, order_no)
     if order is None:
         raise OrderError(f"订单不存在: {order_no}")
+
+    # 016: 双因子身份校验（phone 后 4 位与订单绑定手机号一致）
+    if phone is not None:
+        from app.utils.validators import verify_phone_suffix
+        if not verify_phone_suffix(phone, order.phone):
+            raise OrderError("身份校验未通过：手机号与订单绑定信息不匹配")
 
     # 2. 幂等检查 —— key 粒度 = (order_id, client_request_id)：
     #    同一订单重试命中缓存；跨租户/跨订单同 id 互不干扰（防跨租户碰撞）
@@ -129,21 +134,21 @@ def request_refund(
             f"退款金额({amount})超过订单实付金额({order.paid_amount})"
         )
 
-    # 4. 状态机校验: 只有 paid 状态可以退款 —— 防止已发货/已退款订单二次退款
+    # 5. 状态机校验: paid/shipped 可退款，终态/已退款订单拒绝
     _check_transition(order.status, "refunding")
 
-    # 5. 乐观锁更新状态 —— CAS 保证并发下只有一个退款请求能成功推进状态
+    # 6. 乐观锁更新状态 —— CAS 保证并发下只有一个退款请求能成功推进状态
     ok = order_crud.update_status_optimistic(db, order, "refunding")
     if not ok:
         raise VersionConflict("订单状态已变更，请刷新重试")
 
-    # 6. 创建退款审批（只追加不覆写）—— 保留完整审计流水
+    # 7. 创建退款审批（只追加不覆写）—— 保留完整审计流水
     approval = order_crud.create_refund_approval(
         db, order_id=order.id, amount=amount, reason=reason, client_request_id=client_request_id,
     )
     db.commit()
 
-    # 7. 记录幂等 —— 业务成功后才回写，失败操作不记录（允许重试）
+    # 8. 记录幂等 —— 业务成功后才回写，失败操作不记录（允许重试）
     record_idempotency(order.id, client_request_id, "refund", approval.id)
 
     return {
@@ -281,7 +286,7 @@ def _invoke_alipay_refund(db: Session, order, amount: float) -> bool:
         return False
 
 
-def cancel_refund(db: Session, *, approval_id: int, tenant_id: int) -> dict:
+def cancel_refund(db: Session, *, approval_id: int, tenant_id: int, phone: str | None = None) -> dict:
     """撤销售后申请（010 US1）。
 
     仅 pending 状态可撤销 -> cancelled。通过关联订单校验租户归属。
@@ -313,6 +318,12 @@ def cancel_refund(db: Session, *, approval_id: int, tenant_id: int) -> dict:
     order = order_crud.get_by_id(db, approval.order_id, tenant_id)
     if order is None:
         raise OrderError(f"退款审批不存在或无权操作: {approval_id}")
+
+    # 016: Widget 撤单需双因子（phone 后 4 位与订单绑定手机号一致）
+    if phone is not None:
+        from app.utils.validators import verify_phone_suffix
+        if not verify_phone_suffix(phone, order.phone):
+            raise OrderError("身份校验未通过：手机号与订单绑定信息不匹配")
 
     _check_transition(order.status, "paid")
     ok = order_crud.update_status_optimistic(db, order, "paid")

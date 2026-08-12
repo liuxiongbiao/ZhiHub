@@ -2,8 +2,6 @@
 backend/app/core/idempotency.py
 
 职责: 幂等键 Redis 读写基础封装（SETNX 防重复提交）
-分工: 🟢 弱模型可独立完成
-对应日程: Day 5
 
 核心设计:
   客户端为每个请求生成唯一 client_request_id，首次请求时服务端用 SETNX 写入 Redis。

@@ -2,7 +2,6 @@
 backend/app/crud/quick_reply.py
 
 职责: quick_replies 表的数据库访问层（坐席快捷回复模板存取）
-对应日程: 022-quick-reply / PRD 3.7
 
 核心设计:
   按租户隔离，所有查询强制带 tenant_id。只 flush 不 commit，事务由调用方控制。

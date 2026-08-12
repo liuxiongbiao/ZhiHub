@@ -2,7 +2,6 @@
 backend/app/models/knowledge_document.py
 
 职责: knowledge_documents 表 ORM 模型定义（知识库文档元数据）
-对应日程: 002-knowledge-rag（010-business-closed-loop 增补生命周期字段）
 
 核心设计:
   知识库文档元数据，status 驱动异步处理流水线，version/is_latest 解决矛盾片段。

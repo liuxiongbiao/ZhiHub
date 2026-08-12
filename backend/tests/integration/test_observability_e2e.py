@@ -2,7 +2,6 @@
 backend/tests/integration/test_observability_e2e.py
 
 职责: 008 可观测性与效果评测的端到端集成测试（脱敏集成 + Langfuse 降级）
-对应日程: 008-observability-eval
 
 测试内容:
   - TestTraceDesensitization: trace_service._build_steps 集成 mask_pii

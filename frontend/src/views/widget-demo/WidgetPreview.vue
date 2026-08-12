@@ -1,7 +1,5 @@
 <!-- frontend/src/views/widget-demo/WidgetPreview.vue -->
 <!-- 职责: 终端用户对话Widget（demo简化为独立页面，非真实嵌入script） -->
-<!-- 分工: 🟡 交互细节（打字状态/过渡提示）弱模型起草，体验由强模型把关 -->
-<!-- 对应日程: Day 4 -->
 <template>
   <div class="widget-preview">
     <div class="widget-header">

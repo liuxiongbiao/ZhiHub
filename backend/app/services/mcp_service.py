@@ -3,8 +3,6 @@ backend/app/services/mcp_service.py
 
 职责: MCP 工具调用的中枢代理--权限矩阵校验、熔断检查、入参校验、双因子校验、
       JSON-RPC 2.0 信封封装、业务异常映射，是 Agent 与 MCP Server 之间的"守门人"。
-分工: 🔴 强模型独立完成（幂等/权限写错=重复扣款/越权访问，生产事故级逻辑）
-对应日程: Day 5 / 006-mcp-security (User Story 2 协议化 + User Story 4 熔断)
 
 核心设计:
   call_tool 是唯一的工具调用入口，接收 JSON-RPC 请求信封，返回响应信封。流程严格分层：
@@ -29,6 +27,7 @@ backend/app/services/mcp_service.py
 
 import logging
 import math
+from decimal import Decimal, InvalidOperation
 
 from app.core.circuit_breaker import is_broken, record_failure, record_success
 from app.mcp_servers.base_server import (
@@ -144,6 +143,9 @@ def validate_params(tool_name: str, params: dict) -> None:
             if not ono or not ono.startswith("ORD-"):
                 raise InvalidParams(f"订单号格式错误: {ono}，应为 ORD-XXXXXXXX")
     if tool_name == "request_refund":
+        # 016: 退款申请必须携带手机号做双因子校验（PRD 3.1.3）
+        if not params.get("phone"):
+            raise InvalidParams("参数缺失: phone")
         amount = params.get("amount", 0)
         # 类型防御（T14）: 金额必须是有限数值——str/NaN/Inf/bool 全部拒绝。
         # 原 `amount <= 0` 对 "abc" 抛 TypeError 误映射 -32603（应 -32602）；
@@ -152,6 +154,19 @@ def validate_params(tool_name: str, params: dict) -> None:
             raise InvalidParams(f"退款金额必须是有限数值: {amount!r}")
         if amount <= 0:
             raise InvalidParams(f"退款金额必须大于 0: {amount}")
+        # P1-16: 金额小数位不得超过 2 位（PRD 3.5 入参校验）
+        try:
+            decimal_amount = Decimal(str(amount))
+            if decimal_amount.as_tuple().exponent < -2:
+                raise InvalidParams("退款金额小数位不能超过 2 位")
+        except InvalidOperation:
+            raise InvalidParams(f"退款金额格式错误: {amount!r}")
+
+    # P1-16: 字符串参数长度上限（对齐 DB 字段长度，防超长冲击数据库）
+    for field, max_len in (("order_no", 30), ("ticket_no", 30), ("client_request_id", 100), ("reason", 500)):
+        value = params.get(field)
+        if value is not None and len(str(value)) > max_len:
+            raise InvalidParams(f"参数 {field} 长度超过上限（{max_len}）")
 
 
 def call_tool(

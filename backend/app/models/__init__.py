@@ -2,8 +2,6 @@
 backend/app/models/__init__.py
 
 职责: 汇总导入所有 ORM 模型，确保 Base.metadata 收集到全部表定义（alembic autogenerate依赖此文件）
-分工: 🟢 弱模型可独立完成
-对应日程: Day 1
 """
 
 # 必须在这里把每个模型都 import 一遍——即使代码里没有直接用到

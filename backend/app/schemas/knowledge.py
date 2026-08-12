@@ -2,7 +2,6 @@
 backend/app/schemas/knowledge.py
 
 职责: 文档上传响应、检索测试请求/响应、文档列表 Pydantic 模型
-对应日程: 002-knowledge-rag
 """
 
 from datetime import datetime

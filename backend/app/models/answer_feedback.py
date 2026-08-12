@@ -2,7 +2,6 @@
 backend/app/models/answer_feedback.py
 
 职责: answer_feedback 表 ORM 模型定义（单条消息的回答反馈 👍/👎 + bad_case 标记）
-对应日程: 021-answer-feedback / PRD 3.8
 
 核心设计:
   终端用户对 Agent 回复打分（like/dislike），👎 标记 bad_case 供后续人工复盘与模型调优。

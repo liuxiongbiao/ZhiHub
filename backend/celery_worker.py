@@ -2,20 +2,26 @@
 backend/celery_worker.py
 
 职责: Celery Worker 启动入口，创建 app 实例并自动发现 app/tasks/ 下的任务模块
-分工: 🟢 弱模型可独立完成
-对应日程: Day 5（随知识库异步任务一起搭建）
 """
 
 from celery import Celery
 from celery.schedules import crontab
 
+# broker 从统一配置读取（避免与 docker-compose 注入的 RABBITMQ_URL 不一致）
+from app.config import settings
+
 celery_app = Celery(
     "zhihub",
-    broker="amqp://guest:guest@localhost:5672/",
+    broker=settings.rabbitmq_url,
     backend=None,
 )
 
-celery_app.autodiscover_tasks(["app.tasks"])
+# 显式导入任务模块，确保 worker 注册全部任务（include/autodiscover 在 Windows+solo 下不可靠）
+import app.tasks.deep_agent_tasks  # noqa: F401
+import app.tasks.billing_tasks  # noqa: F401
+import app.tasks.cleanup_tasks  # noqa: F401
+import app.tasks.knowledge_tasks  # noqa: F401
+import app.tasks.notification_tasks  # noqa: F401
 
 # 计费定时调度（T20）: 与 main.py 的 _run_billing_scheduler 同款 crontab——
 # demo 直接跑应用用线程调度；生产用 Celery Beat 部署时此配置生效

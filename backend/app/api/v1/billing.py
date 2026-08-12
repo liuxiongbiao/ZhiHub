@@ -2,7 +2,6 @@
 backend/app/api/v1/billing.py
 
 职责: 配额查询、月度账单列表、用量概览
-对应日程: Day 6
 
 端点概览:
   GET /quota     Redis 实时配额使用情况      -> billing_service.check_quota
@@ -48,7 +47,7 @@ def list_invoices(request: Request, db: Session = Depends(get_db)):
     invoices = db.execute(
         select(BillingInvoice).where(BillingInvoice.tenant_id == tenant_id).order_by(BillingInvoice.created_at.desc())
     ).scalars().all()
-    return {"items": [{"id": i.id, "period": i.period, "base_fee": i.base_fee, "overage_fee": i.overage_fee, "status": i.status} for i in invoices]}
+    return {"items": [{"id": i.id, "period": i.period, "base_fee": i.base_fee, "overage_fee": i.overage_fee, "status": i.status, "paid_at": i.paid_at} for i in invoices]}
 
 
 @router.get("/usage", dependencies=[Depends(require_role("admin"))])

@@ -2,7 +2,6 @@
 backend/app/core/crypto.py
 
 职责: PII 字段静态加密（AES-GCM）+ 确定性哈希（HMAC-SHA256，用于手机号等值查询）
-对应日程: PRD 3.1/4.3 PII 静态加密（handover-and-plan #6）
 
 核心设计:
   手机号等 PII 字段在 DB 中必须以密文存储，防止 DB 泄露时明文外流。

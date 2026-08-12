@@ -274,7 +274,7 @@ c=httpx.Client(timeout=90); base='http://127.0.0.1:8000'
 
 ## 阶段二：关键缺口
 
-### 2.1 Langfuse 可观测性（⭐⭐⭐ 面试核心）
+### 2.1 Langfuse 可观测性
 
 > ✅ 已完成（008-observability-eval, 2026-08-06）：langfuse_client.py 封装（@observe 装饰器 + 降级 no-op）+ handle_message/router/knowledge_agent/ticket_agent/order_agent/hybrid_search 接入 @observe + 自托管 langfuse+postgres（docker-compose，验证待 Docker 启动）。capture_input/output=False 避免 PII 上报 Langfuse。
 
@@ -298,7 +298,7 @@ c=httpx.Client(timeout=90); base='http://127.0.0.1:8000'
 
 ---
 
-### 2.2 RAGAS 效果评测（⭐⭐⭐ 面试核心）
+### 2.2 RAGAS 效果评测
 
 > ✅ 已完成（008-observability-eval, 2026-08-06）：scripts/ragas_eval.py 实现 Faithfulness/Answer Relevancy/Context Recall 三指标，复用 hybrid_search 的 vector/hybrid contexts 对比，结果写入 retrieval_comparison.md。
 > ⚠️ 适配：ragas 包在 Python 3.14 不可用（scikit-network 需 MSVC 编译 + langchain_community.vertexai 缺失），改手动实现 RAGAS 指标定义（DeepSeek LLM-as-judge，温度 0），指标定义对齐 RAGAS。跑评测产真实数据待 Docker（Milvus/ES）。
@@ -356,16 +356,15 @@ c=httpx.Client(timeout=90); base='http://127.0.0.1:8000'
 
 ## 阶段三：技术栈补充
 
-### 3.1 Function Calling 对比实现（⭐ 面试对比亮点）
+### 3.1 Function Calling 对比实现
 
-> ✅ 已完成（009-tech-compare-agent-enhance, 2026-08-06）：ticket_agent_fc.py（litellm tools 参数，复用 006 双因子/权限/熔断 via mcp_service.call_tool）+ graph.py 按 AGENT_TOOL_MODE 切换 + docs/interview_qa.md MCP vs FC 对比文档（≥3 差异 + 选型理由）。
+> ✅ 已完成（009-tech-compare-agent-enhance, 2026-08-06）：ticket_agent_fc.py（litellm tools 参数，复用 006 双因子/权限/熔断 via mcp_service.call_tool）+ graph.py 按 AGENT_TOOL_MODE 切换。
 
-**目的**：在 MCP 旁实现一个 OpenAI Function Calling 版本的 ticket_agent，面试讲"为什么选 MCP"。
+**目的**：在 MCP 旁实现一个 OpenAI Function Calling 版本的 ticket_agent，用于对比两种工具调用范式的差异与选型依据。
 
 | 文件 | 动作 |
 |---|---|
 | `app/agents/nodes/ticket_agent_fc.py`（新建） | 用 litellm function calling 实现工单查询 |
-| `docs/interview_qa.md` | 补"MCP vs Function Calling"对比 |
 
 **连通性测试点**：ticket_agent_fc 调 litellm.completion 的 tools 参数格式
 

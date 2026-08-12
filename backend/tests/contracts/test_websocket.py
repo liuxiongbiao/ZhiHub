@@ -2,7 +2,6 @@
 backend/tests/contracts/test_websocket.py
 
 职责: 测试 PRD 3.7 WebSocket 实时推送坐席工作台契约
-对应日程: PRD 3.7 -- WebSocket 实时推送
 
 测试内容:
   - TestWSConnect: 有效 agent/admin token 成功建立 WS 连接

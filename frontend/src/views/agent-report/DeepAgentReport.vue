@@ -1,7 +1,5 @@
 <!-- frontend/src/views/agent-report/DeepAgentReport.vue -->
 <!-- 职责: DeepAgent开放任务 - 发起报告生成/查看执行步骤/查看报告 -->
-<!-- 分工: 🟢 弱模型可独立完成 -->
-<!-- 对应日程: Day 8 -->
 <template>
   <div class="deep-agent-report">
     <h2>DeepAgent 报告生成</h2>
@@ -106,8 +104,21 @@ const presets = [
 ]
 
 /** 极简 Markdown 渲染（换行/标题/列表项） */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/** 极简 Markdown 渲染（换行/标题/列表项），先 HTML 转义再替换，防存储型 XSS */
 function renderMarkdown(text: string): string {
-  return text.replace(/\n/g, '<br>').replace(/## (.+)/g, '<h4>$1</h4>').replace(/- (.+)/g, '• $1')
+  return escapeHtml(text)
+    .replace(/\n/g, '<br>')
+    .replace(/## (.+)/g, '<h4>$1</h4>')
+    .replace(/- (.+)/g, '• $1')
 }
 
 /** 提交任务目标，调 /agent/deep-task 执行并展示结果 */

@@ -3,8 +3,6 @@ backend/app/tasks/cleanup_tasks.py
 
 职责: 空闲会话定时收尾（007-session-lifecycle US2）、退款超时取消、文档过期摘除、
       订单超时流转（PRD 3.6）、试用版到期降级只读（PRD 3.1）
-分工: 🟡 弱模型起草 + 强模型 review 竞态/阈值
-对应日程: Day 8 / 007 US2、010 US1/US3、PRD 3.6/3.1
 
 核心设计:
   后台线程每 5min 扫描，用 Core UPDATE WHERE 条件原子更新状态。

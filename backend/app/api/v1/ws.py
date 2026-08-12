@@ -2,7 +2,6 @@
 backend/app/api/v1/ws.py
 
 职责: WebSocket 坐席工作台端点 -- 实时推送转人工/认领事件给在线坐席
-对应日程: PRD 3.7 -- WebSocket 实时推送坐席工作台
 
 核心设计:
   - 鉴权用 JWT query 参数 (?token=xxx): 浏览器原生 WebSocket API 不支持自定义请求头，

@@ -2,7 +2,6 @@
 backend/tests/unit/test_order_state_machine.py
 
 职责: 测试订单状态机合法跃迁 + 非法跃迁拦截 + 退款金额校验
-对应日程: 010-business-streaming
 
 测试内容:
   - TestValidTransitions: created->paid/cancelled, paid->shipped/refunding,

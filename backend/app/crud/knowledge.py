@@ -2,7 +2,6 @@
 backend/app/crud/knowledge.py
 
 职责: knowledge_documents 表的数据库访问层（文档元数据 CRUD、版本管理查询）
-对应日程: 002-knowledge-rag
 
 核心设计:
   所有查询强制 tenant_id 过滤（多租户隔离）；版本管理通过 is_latest 标记只检索最新版本。

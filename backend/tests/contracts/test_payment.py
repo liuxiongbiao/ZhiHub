@@ -2,7 +2,6 @@
 backend/tests/contracts/test_payment.py
 
 职责: 测试 PRD 3.10 支付宝沙箱支付的 mock 契约（key 占位，真实验证待用户填 key）
-对应日程: 010 业务闭环 / PRD 3.10
 
 测试内容（mock 契约，monkeypatch alipay_client）:
   - TestCreatePayment: 生成支付链接 + trade_no

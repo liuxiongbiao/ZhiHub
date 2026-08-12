@@ -2,7 +2,6 @@
 backend/app/models/user.py
 
 职责: users 表 ORM 模型定义（平台账号：管理员/坐席）
-对应日程: 001-account-tenant / PRD 3.1 账户体系扩展
 
 核心设计:
   平台账号表，支持手机号+密码、手机验证码、邮箱+密码三种登录方式，一个 User 可通过

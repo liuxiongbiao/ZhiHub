@@ -3,8 +3,6 @@ backend/app/tasks/knowledge_tasks.py
 
 职责: 消费 RabbitMQ 队列 -> 文档解析(规则切片，非 RagFlow) -> 调用云端 embedding API 向量化
       -> 并行写入 Milvus + ES -> 双写不一致重试 -> 更新文档状态
-分工: 🟡 主流程弱模型能写，双写不一致重试的边界由强模型定
-对应日程: Day 3 / 003-knowledge-base
 
 核心设计:
   文档异步处理流水线: 上传 API 发布 MQ 消息 -> worker 消费 -> 解析切片 -> embedding -> 双写。

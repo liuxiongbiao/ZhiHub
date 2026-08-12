@@ -2,7 +2,6 @@
 backend/app/crud/tenant.py
 
 职责: tenants / tenant_members 表的数据库访问层（租户与成员关联存取）
-对应日程: 001-account-tenant
 
 核心设计:
   纯数据存取无业务判断，只 flush 不 commit，事务由 auth_service.register() 统一 commit/rollback。
@@ -13,6 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.models.tenant import Tenant
 from app.models.tenant_member import TenantMember
+
+
+def get_by_widget_key_hash(db: Session, digest: str) -> Tenant | None:
+    """按 Widget API Key 的 SHA-256 哈希查找租户（014，仅存哈希不存明文）。"""
+    from sqlalchemy import select
+    return db.execute(
+        select(Tenant).where(Tenant.widget_api_key_hash == digest)
+    ).scalar_one_or_none()
 
 
 def create_tenant(

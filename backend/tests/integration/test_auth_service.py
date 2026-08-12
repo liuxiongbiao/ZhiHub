@@ -2,7 +2,6 @@
 backend/tests/integration/test_auth_service.py
 
 职责: 测试 auth_service 层业务集成（注册事务编排、登录校验、失败锁定、登出黑名单）
-对应日程: 001-auth-tenant
 
 测试内容:
   - TestRegister: 注册建 user+tenant+member 三表 / 重复手机号拒绝 / 弱密码拒绝 /

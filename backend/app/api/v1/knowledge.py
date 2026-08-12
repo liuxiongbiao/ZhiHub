@@ -2,7 +2,6 @@
 backend/app/api/v1/knowledge.py
 
 职责: 知识库文档上传、列表查询、重建索引、检索测试台
-对应日程: Day 3
 
 端点概览:
   POST /upload              上传文档 -> knowledge_service.upload -> 投递 RabbitMQ 异步处理

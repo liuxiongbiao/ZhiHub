@@ -2,14 +2,12 @@
 backend/app/main.py
 
 职责: FastAPI 应用入口 -- 创建实例、注册中间件/路由/生命周期事件
-对应日程: Day 1（最小可用）-> Day 2 起逐步挂载各模块路由
 
 核心设计:
   - 中间件链入站顺序: AccessLog -> Auth -> Tenant -> RateLimit（-> CORS -> 路由）
   - Starlette add_middleware 后注册者在外层先执行入站，故注册顺序需逆序写
   - lifespan 生命周期: 知识库消费者、建表兜底、空闲会话收尾三个 startup 任务
 
-中间件注册顺序（面试点）:
   注册代码顺序（从先到后）:
     1. CORSMiddleware   -- 最先注册 = 最内层，最后执行入站
     2. RateLimitMiddleware
@@ -36,6 +34,7 @@ backend/app/main.py
 """
 
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -44,6 +43,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import get_db
+from app.config import settings
 
 from app.api.v1 import agent as agent_router
 from app.api.v1 import auth as auth_router
@@ -55,6 +55,7 @@ from app.api.v1 import order as order_router
 from app.api.v1 import session as session_router
 from app.api.v1 import tenant as tenant_router
 from app.api.v1 import ticket as ticket_router
+from app.api.v1 import widget as widget_router
 from app.api.v1 import ws as ws_router
 from app.middlewares.access_log_middleware import AccessLogMiddleware
 from app.middlewares.auth_middleware import AuthMiddleware
@@ -158,9 +159,10 @@ async def lifespan(app: FastAPI):
     合并原三个 @on_event("startup")：知识库消费者、init_db、空闲会话收尾。
     用 lifespan 替代已废弃的 on_event（FastAPI 新版推荐）。
     """
-    # 知识库消费者后台线程
-    threading.Thread(target=_run_knowledge_consumer, daemon=True).start()
-    logger.info("Knowledge consumer thread started")
+    # 知识库消费者后台线程（测试环境跳过，避免 RabbitMQ 连接阻塞测试进程）
+    if os.environ.get("APP_ENV") != "test":
+        threading.Thread(target=_run_knowledge_consumer, daemon=True).start()
+        logger.info("Knowledge consumer thread started")
 
     # 建表兜底: alembic 未覆盖的表在此创建，已存在的跳过。失败不阻断启动
     try:
@@ -170,13 +172,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"init_db failed (non-blocking): {e}")
 
-    # 空闲会话收尾后台线程
-    threading.Thread(target=_run_idle_cleanup, daemon=True).start()
-    logger.info("Idle session cleanup thread started")
+    # 空闲会话收尾后台线程（测试环境跳过）
+    if os.environ.get("APP_ENV") != "test":
+        threading.Thread(target=_run_idle_cleanup, daemon=True).start()
+        logger.info("Idle session cleanup thread started")
 
-    # 计费定时调度后台线程（T20: 每日用量聚合 + 月度账单生成）
-    threading.Thread(target=_run_billing_scheduler, daemon=True).start()
-    logger.info("Billing scheduler thread started")
+    # 计费定时调度后台线程（测试环境跳过）
+    if os.environ.get("APP_ENV") != "test":
+        threading.Thread(target=_run_billing_scheduler, daemon=True).start()
+        logger.info("Billing scheduler thread started")
 
     yield
     # shutdown: daemon 线程随进程退出自动终止，无需显式清理
@@ -185,9 +189,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ZhiHub API", version="0.1.0", lifespan=lifespan)
 
 # CORS: 仅放开前端开发服务器 origin；allow_credentials=True 时规范不允许 allow_origins=["*"]
+# P-011: CORS 来源从配置读取（逗号分隔 -> 列表）
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -215,6 +221,7 @@ app.include_router(order_router.router, prefix="/api/v1/order", tags=["order"])
 app.include_router(session_router.router, prefix="/api/v1/session", tags=["session"])
 app.include_router(tenant_router.router, prefix="/api/v1/tenant", tags=["tenant"])
 app.include_router(ticket_router.router, prefix="/api/v1/ticket", tags=["ticket"])
+app.include_router(widget_router.router, prefix="/api/v1/widget", tags=["widget"])
 # WebSocket 坐席工作台（PRD 3.7）: prefix 拼出 /api/v1/ws/agent，WS 不走 HTTP 中间件链
 app.include_router(ws_router.router, prefix="/api/v1/ws", tags=["websocket"])
 

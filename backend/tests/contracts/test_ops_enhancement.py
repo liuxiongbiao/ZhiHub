@@ -2,7 +2,6 @@
 backend/tests/contracts/test_ops_enhancement.py
 
 职责: 测试 #20-#26 运营增强 7 项契约
-对应日程: 020-widget-brand ~ 026-multi-model-billing
 
 测试内容:
   - TestWidgetBrand: POST /widget 更新品牌 + GET /widget/embed-code 嵌入代码
@@ -68,7 +67,7 @@ class TestWidgetBrand:
         assert r.json()["logo_url"] == "https://cdn.example.com/logo.png"
 
     def test_get_embed_code(self, client, db, make_token):
-        """GET /widget/embed-code 返回含 tenant_id 与主题色的 script 片段。"""
+        """GET /widget/embed-code 返回自托管 widget.js + API Key 占位 + 主题色。"""
         tenant = tenant_crud.create_tenant(db, name="w3", plan_type="basic")
         db.commit()
         token = make_token(tenant_id=tenant.id, role="admin")
@@ -79,8 +78,10 @@ class TestWidgetBrand:
         )
         assert r.status_code == 200
         code = r.json()["embed_code"]
-        assert "script" in code
-        assert f'data-tenant-id="{tenant.id}"' in code
+        assert '/widget.js' in code
+        assert 'data-api-key' in code
+        assert 'data-endpoint="/api/v1/widget"' in code
+        assert 'data-theme-color="#1890ff"' in code
 
     def test_non_admin_widget_forbidden(self, client, db, make_token):
         """非 admin 角色 POST /widget -> 403。"""

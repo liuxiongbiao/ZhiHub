@@ -2,7 +2,6 @@
 backend/app/models/security_incident.py
 
 职责: security_incidents 表 ORM 模型定义（Prompt 注入拦截记录）
-对应日程: 006-mcp-security
 
 核心设计:
   命中注入规则的事件落库，供事后审查与规则优化；用户输入脱敏后截断存储。
