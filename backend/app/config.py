@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     billing_charge_trial: bool = False
     # PRD 3.2 知识库存储上限（MB/月）：0=无限制（enterprise 议价）
     storage_quota_mb: str = '{"trial": 500, "basic": 5120, "pro": 51200, "enterprise": 0}'
+    # 待决策项：知识库上传文件大小上限（MB）。实现默认 10（PRD 写 50，安全优先）；
+    # 产品确认后仅改配置，无需发版。
+    upload_max_file_size_mb: int = 10
     # 014 Widget 公共通道：Widget 会话令牌有效期（分钟）
     widget_token_expire_minutes: int = 30
     # 007/PRD 3.4: 单会话最大轮次（原硬编码 50 与 PRD 15 不符）

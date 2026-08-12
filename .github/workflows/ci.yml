@@ -1,7 +1,5 @@
 # .github/workflows/ci.yml
-# 职责: 基础CI — lint + 单元测试 + 健康检查
-# 分工: 🟢 弱模型可独立完成
-# 对应日程: Day 9
+# 职责: 企业级 CI 门禁 —— 全新安装 / 语法 / 单测+契约+覆盖率 / 安全审计 / 迁移一致性
 
 name: CI
 
@@ -21,6 +19,19 @@ jobs:
       rabbitmq:
         image: rabbitmq:3.12-management
         ports: ["5672:5672"]
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: zhihub
+          MYSQL_USER: zhihub
+          MYSQL_PASSWORD: zhihub
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -uroot -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -32,29 +43,47 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend
-          pip install -r requirements.txt
-          pip install fakeredis pytest
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Syntax check (compileall)
         run: |
           cd backend
-          python -m compileall app/ -q
+          python -m compileall app/ scripts/ tests/ -q
 
-      - name: Run unit tests
+      - name: Dependency security audit (pip-audit)
         run: |
           cd backend
-          python -m pytest tests/unit/ -v --tb=short
+          pip-audit -r requirements.txt --disable-pip --severity high
+
+      - name: Migration consistency (alembic upgrade + check)
+        run: |
+          cd backend
+          alembic upgrade head
+          alembic check
         env:
+          APP_ENV: test
+          APP_SECRET_KEY: ci-only-secret-key
+          MYSQL_HOST: localhost
+          MYSQL_PORT: "3306"
+          MYSQL_USER: zhihub
+          MYSQL_PASSWORD: zhihub
+          MYSQL_DATABASE: zhihub
+
+      - name: Run unit + contract tests with coverage
+        run: |
+          cd backend
+          python -m pytest tests/unit tests/contracts -q --tb=short \
+            --cov=app --cov-report=term-missing
+        env:
+          APP_ENV: test
+          APP_SECRET_KEY: ci-only-secret-key
           REDIS_HOST: localhost
           MYSQL_HOST: localhost
-
-      - name: Run contract tests
-        run: |
-          cd backend
-          python -m pytest tests/contracts/ -q --tb=short
-        env:
-          REDIS_HOST: localhost
           RABBITMQ_URL: amqp://guest:guest@localhost:5672/
+          ALIPAY_APP_ID: ""
+          WECHAT_APP_ID: ""
+          OCR_API_KEY: ""
 
   frontend:
     runs-on: ubuntu-latest
@@ -71,6 +100,11 @@ jobs:
           cd frontend
           npm ci
 
+      - name: Dependency security audit (npm audit)
+        run: |
+          cd frontend
+          npm audit --audit-level=high
+
       - name: Type check (vue-tsc)
         run: |
           cd frontend
@@ -80,3 +114,8 @@ jobs:
         run: |
           cd frontend
           npx vitest run
+
+      - name: Production build
+        run: |
+          cd frontend
+          npm run build

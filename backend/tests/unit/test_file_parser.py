@@ -21,8 +21,12 @@ from app.utils.file_parser import (
     chunk_text,
     parse_and_chunk,
     ALLOWED_EXTENSIONS,
-    MAX_FILE_SIZE,
 )
+
+
+def _max_file_size() -> int:
+    from app.config import settings
+    return settings.upload_max_file_size_mb * 1024 * 1024
 
 
 class TestValidateFile:
@@ -55,7 +59,7 @@ class TestValidateFile:
 
     def test_file_too_large(self):
         """超过 10MB 的文件应被拒绝."""
-        big_content = b"x" * (MAX_FILE_SIZE + 1)
+        big_content = b"x" * (_max_file_size() + 1)
         with pytest.raises(FileValidationError, match="文件大小超过限制"):
             validate_file("test.md", big_content)
 
@@ -66,7 +70,7 @@ class TestValidateFile:
 
     def test_file_at_size_limit(self):
         """恰好等于 10MB 的文件应通过."""
-        content = b"x" * MAX_FILE_SIZE
+        content = b"x" * _max_file_size()
         validate_file("test.md", content)  # 不抛异常
 
 

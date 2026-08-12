@@ -37,6 +37,7 @@ from app.models import notification as _notification  # noqa: F401
 from app.models import order as _order  # noqa: F401
 from app.models import quick_reply as _quick_reply  # noqa: F401
 from app.models import refund_approval as _ra  # noqa: F401
+from app.models import refund_outbox as _ro  # noqa: F401
 from app.models import session as _sess  # noqa: F401
 from app.models import billing_invoice as _bi  # noqa: F401
 from app.models import csat as _csat  # noqa: F401

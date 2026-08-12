@@ -17,8 +17,10 @@ from dataclasses import dataclass
 
 # 支持的文件格式白名单
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".xlsx"}
-# 文件大小上限：10 MB
-MAX_FILE_SIZE = 10 * 1024 * 1024
+# 文件大小上限：由配置驱动（默认 10MB；产品确认后仅改 UPLOAD_MAX_FILE_SIZE_MB）
+def _max_file_size() -> int:
+    from app.config import settings
+    return settings.upload_max_file_size_mb * 1024 * 1024
 # 解压后文本上限（T32 压缩炸弹防护）: 10MB 原始文件限制不覆盖解压后膨胀
 # （docx zip/PDF 解压后可放大数倍），提取后统一校验
 MAX_TEXT_LENGTH = 5 * 1024 * 1024
@@ -52,9 +54,10 @@ def validate_file(filename: str, content: bytes) -> None:
         raise FileValidationError(
             f"不支持的文件格式: {ext}，仅支持 {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
-    if len(content) > MAX_FILE_SIZE:
+    max_bytes = _max_file_size()
+    if len(content) > max_bytes:
         size_mb = len(content) / (1024 * 1024)
-        raise FileValidationError(f"文件大小超过限制: {size_mb:.1f}MB (上限 10MB)")
+        raise FileValidationError(f"文件大小超过限制: {size_mb:.1f}MB (上限 {max_bytes // (1024 * 1024)}MB)")
     if len(content) == 0:
         raise FileValidationError("文件为空")
 

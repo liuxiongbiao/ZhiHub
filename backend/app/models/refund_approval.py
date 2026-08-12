@@ -36,3 +36,5 @@ class RefundApproval(BaseModel):
     # 否则 autogenerate 持续报"缺 ix_refund_approvals_client_request_id"漂移）
     client_request_id: Mapped[str] = mapped_column(String(100), nullable=False)
     approver_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", name="fk_refund_approvals_approver_id"), nullable=True)  # 审批人 ID
+    # P1-1: 审批链只追加记录（JSON 数组），禁止覆写已有审批结论
+    review_history: Mapped[str | None] = mapped_column(Text, nullable=True)

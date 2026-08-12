@@ -145,6 +145,9 @@ def _run_idle_cleanup() -> None:
                 cleanup_expired_orders(db)
                 cleanup_expired_docs(db)  # T22: 到期知识文档摘除（含检索库切片删除）
                 cleanup_trial_degradation(db)
+                # P1-2: 退款 Outbox 重试（外部退款失败后由后台任务补投）
+                from app.services.order_service import process_refund_outbox_batch
+                process_refund_outbox_batch(db)
             finally:
                 db.close()
         except Exception as e:

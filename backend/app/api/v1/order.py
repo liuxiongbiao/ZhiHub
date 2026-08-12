@@ -123,7 +123,7 @@ def create_refund_request(body: RefundRequestCreate, request: Request, db: Sessi
 @router.post("/refunds/{approval_id}/approve", dependencies=[Depends(require_role("admin"))])
 def approve_refund(approval_id: int, request: Request, body: ApproveRefundRequest, db: Session = Depends(get_db)):
     """退款审批: 调 order_service.approve_refund，role 从 request.state 取（service 层校验权限）。"""
-    from app.services.order_service import approve_refund, OrderError
+    from app.services.order_service import approve_refund, OrderError, RefundError
     tenant_id = _get_tenant_id(request)
     approver_id = getattr(request.state, "user_id", 0)
     if body.decision not in ("approved", "rejected"):
@@ -135,7 +135,11 @@ def approve_refund(approval_id: int, request: Request, body: ApproveRefundReques
             approver_id=approver_id, tenant_id=tenant_id, role=role,
         )
         return result
+    except RefundError as e:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(e)) from e
     except OrderError as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
 

@@ -18,6 +18,7 @@ from app.models.notification import Notification
 from app.models.order import Order
 from app.models.quick_reply import QuickReply
 from app.models.refund_approval import RefundApproval
+from app.models.refund_outbox import RefundOutbox
 from app.models.security_incident import SecurityIncident
 from app.models.session import Session
 from app.models.tenant import Tenant
@@ -26,4 +27,4 @@ from app.models.ticket import Ticket
 from app.models.usage_record import UsageRecord
 from app.models.user import User
 
-__all__ = ["AnswerFeedback", "AuditLog", "Base", "BillingInvoice", "CsatEvaluation", "KnowledgeDocument", "Message", "Order", "QuickReply", "RefundApproval", "SecurityIncident", "Session", "Tenant", "TenantMember", "Ticket", "UsageRecord", "User"]
+__all__ = ["AnswerFeedback", "AuditLog", "Base", "BillingInvoice", "CsatEvaluation", "KnowledgeDocument", "Message", "Order", "QuickReply", "RefundApproval", "RefundOutbox", "SecurityIncident", "Session", "Tenant", "TenantMember", "Ticket", "UsageRecord", "User"]

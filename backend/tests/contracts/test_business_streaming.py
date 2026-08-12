@@ -122,37 +122,43 @@ class TestRefundOrderState:
         db.expire_all()
         assert db.get(Order, order.id).status == "paid"
 
-    def test_cas_failure_does_not_invoke_external_refund(self, db, monkeypatch):
-        """CAS 失败（并发冲突）-> VersionConflict 且不调外部退款（T7 防双重退款核心）。"""
+    def test_money_moved_cas_conflict_does_not_duplicate_refund(self, db, monkeypatch):
+        """P1-2: 资金已动但订单 CAS 冲突 -> outbox 置 success 防重复退款，标记人工复核。"""
         from app.services import order_service as osvc
+        from app.models.refund_outbox import RefundOutbox
         order, approval = _make_refund(db, amount=100.0, status="pending")
         db.commit()
 
         invoked: list = []
         monkeypatch.setattr(osvc, "_invoke_alipay_refund",
-                            lambda db_, order_, amount: invoked.append(1) or True)
+                            lambda db_, order_, amount, trade_no=None: invoked.append(1) or True)
         monkeypatch.setattr(osvc.order_crud, "update_status_optimistic",
                             lambda db_, order_, s: False)
-        with pytest.raises(osvc.VersionConflict):
+        with pytest.raises(osvc.RefundError):
             osvc.approve_refund(db, approval_id=approval.id, decision="approved",
                                 approver_id=1, tenant_id=1, role="admin")
-        assert invoked == [], "CAS 失败时不应调用外部退款（防止双重退款）"
+        assert len(invoked) == 1, "资金只允许动一次"
+        outbox = db.query(RefundOutbox).filter_by(approval_id=approval.id).one()
+        assert outbox.status == "success"
+        assert "manual review" in (outbox.last_error or "")
 
-    def test_external_refund_failure_keeps_refunding_and_pending(self, db, monkeypatch):
-        """外部退款失败 -> RefundError，订单保持 refunding、审批回 pending（可重试）。"""
+    def test_external_refund_failure_keeps_outbox_pending(self, db, monkeypatch):
+        """P1-2: 外部退款失败 -> RefundError；审批 approved、订单 refunding、outbox pending（后台可重试）。"""
         from app.models.order import Order
         from app.models.refund_approval import RefundApproval
+        from app.models.refund_outbox import RefundOutbox
         from app.services import order_service as osvc
         order, approval = _make_refund(db, amount=100.0, status="pending")
         db.commit()
 
-        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount: False)
+        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None: False)
         with pytest.raises(osvc.RefundError):
             osvc.approve_refund(db, approval_id=approval.id, decision="approved",
                                 approver_id=1, tenant_id=1, role="admin")
         db.expire_all()
         assert db.get(Order, order.id).status == "refunding"
-        assert db.get(RefundApproval, approval.id).status == "pending"
+        assert db.get(RefundApproval, approval.id).status == "approved"
+        assert db.query(RefundOutbox).filter_by(approval_id=approval.id).one().status == "pending"
 
 
 # ═══════════════════════════════════════════════════════════

@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.core.idempotency import check_idempotency, record_idempotency
 from app.crud import order as order_crud
-from app.models.order import VALID_TRANSITIONS
+from app.models.order import Order, VALID_TRANSITIONS
 from app.services.audit_service import log_audit
 
 logger = logging.getLogger(__name__)
@@ -200,51 +200,185 @@ def approve_refund(db: Session, *, approval_id: int, decision: str,
         raise OrderError(f"退款审批不存在或无权操作: {approval_id}")
 
     # 010: 大额退款分级审批（非 admin 批准大额 -> 保持 pending 待二次审批）
-    # 延迟 import 避免循环依赖
     from app.config import settings
     if (decision == "approved"
             and approval.amount > settings.refund_approval_threshold
             and role != "admin"):
         logger.info(f"Large refund {approval_id} ({approval.amount}) approved by {role}, pending admin review")
-        approval.approver_id = approver_id  # 保留审批人，待 admin 二次审批
+        # P1-1: 只追加审批链，不再覆写 approver_id（终审时写入最终审批人）
+        _append_review(approval, "pre_approve", approver_id, "大额退款需管理员二次审批")
         db.commit()
         return {"id": approval.id, "status": "pending", "message": "大额退款需管理员二次审批"}
 
     approval.status = decision
     approval.approver_id = approver_id
+    _append_review(approval, decision, approver_id, f"decision={decision}")
 
-    # 状态机校验: approved -> refunded, rejected -> paid
-    target = "refunded" if decision == "approved" else "paid"
-    _check_transition(order.status, target)
-
-    # 先 CAS 推进订单状态，再调外部退款（防双重退款）:
-    # 原顺序（先外部退款后 CAS）在 CAS 失败/网络超时时，外部钱已退而订单仍 refunding，
-    # 重试会再次退款。CAS 先行保证并发下只有一个请求推进状态，失败即中止、不调外部。
-    ok = order_crud.update_status_optimistic(db, order, target)
-    if not ok:
-        raise VersionConflict("订单状态已变更，请刷新重试")
-
-    if decision == "approved":
-        # 调支付宝退款接口（mock 模式直接成功）。失败则回滚整个事务:
-        # 订单回 refunding、审批回 pending，待人工处理；重试不会重复退款
-        # （CAS 已保证只有本事务推进过状态）。注: 网络超时假失败（钱实际已退但返回 False）
-        # 需生产端退款对账兜底，demo mock 模式退款恒成功不受影响。
-        ok_refund = _invoke_alipay_refund(db, order, approval.amount)
-        if not ok_refund:
-            db.rollback()
-            raise RefundError("支付宝退款调用失败，订单保持退款中状态")
-
-    # PRD 2.1 审计日志: 退款审批操作落库（同事务，commit 时一并持久化）
+    # PRD 2.1 审计日志: 退款审批操作落库
     log_audit(
         db, tenant_id=tenant_id, user_id=approver_id, action="refund_approve",
         target_type="refund_approval", target_id=approval.id,
         detail=f"decision={decision}, amount={approval.amount}, order_no={order.order_no}",
     )
+
+    if decision == "rejected":
+        # 拒绝: CAS 订单 refunding -> paid，不触达外部资金
+        _check_transition(order.status, "paid")
+        ok = order_crud.update_status_optimistic(db, order, "paid")
+        if not ok:
+            raise VersionConflict("订单状态已变更，请刷新重试")
+        db.commit()
+        return {"id": approval.id, "status": decision}
+
+    # P1-2 Outbox: 先落队列再提交事务，外部退款与 DB 状态解耦
+    trade_no = _resolve_refund_trade_no(db, order)
+    from app.models.refund_outbox import RefundOutbox
+    outbox = RefundOutbox(
+        approval_id=approval.id, order_id=order.id,
+        amount=approval.amount, trade_no=trade_no, status="pending",
+    )
+    db.add(outbox)
     db.commit()
+
+    # 同步尽力执行（mock/单实例部署）；失败进入 pending 由后台任务重试
+    ok = process_refund_outbox(db, approval.id)
+    if ok is False:
+        raise RefundError("支付宝退款调用失败，已进入重试队列（订单保持退款中状态）")
     return {"id": approval.id, "status": decision}
 
 
-def _invoke_alipay_refund(db: Session, order, amount: float) -> bool:
+def _append_review(approval, action: str, approver_id: int | None, detail: str | None = None) -> None:
+    """P1-1: 审批链只追加（JSON 数组），历史记录不可覆写。"""
+    import json
+    from datetime import datetime, timezone
+
+    history: list = []
+    if approval.review_history:
+        try:
+            history = json.loads(approval.review_history)
+        except (json.JSONDecodeError, TypeError):
+            history = []
+    history.append({
+        "action": action,
+        "approver_id": approver_id,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "detail": detail,
+    })
+    approval.review_history = json.dumps(history, ensure_ascii=False)
+
+
+def _resolve_refund_trade_no(db: Session, order) -> str:
+    """退款流水解析（T8 防退错账）：订单流水 > 租户最近已付账单流水 > order_no 兜底。"""
+    from app.models.billing_invoice import BillingInvoice
+    from sqlalchemy import select
+
+    if order.payment_trade_no:
+        return order.payment_trade_no
+    logger.warning(
+        f"Order {order.order_no} has no payment_trade_no, falling back to tenant's "
+        "latest paid invoice (demo fallback; may refund wrong flow in production)"
+    )
+    invoice = db.execute(
+        select(BillingInvoice).where(
+            BillingInvoice.tenant_id == order.tenant_id,
+            BillingInvoice.status == "paid",
+            BillingInvoice.payment_trade_no.is_not(None),
+        ).order_by(BillingInvoice.paid_at.desc())
+    ).scalars().first()
+    return invoice.payment_trade_no if invoice else order.order_no
+
+
+def process_refund_outbox(db: Session, approval_id: int) -> bool | None:
+    """P1-2: 执行一条待处理退款（原子认领，防并发重复退款）。
+
+    返回: True=成功；False=外部退款失败（可重试）；None=无待处理记录或已被认领。
+    资金语义: 外部退款成功即视为资金已动（outbox 置 success，杜绝重复执行）；
+    本地订单状态 CAS 冲突时标记人工复核，不再重复调退款。
+    """
+    from sqlalchemy import select, update as sa_update
+    from app.models.refund_outbox import RefundOutbox
+
+    outbox = db.execute(
+        select(RefundOutbox).where(
+            RefundOutbox.approval_id == approval_id,
+            RefundOutbox.status == "pending",
+        ).order_by(RefundOutbox.id.desc())
+    ).scalars().first()
+    if outbox is None:
+        return None
+
+    # 原子认领: pending -> processing（其他 Worker/请求不会再执行同一笔）
+    claimed = db.execute(
+        sa_update(RefundOutbox)
+        .where(RefundOutbox.id == outbox.id, RefundOutbox.status == "pending")
+        .values(status="processing", attempts=RefundOutbox.attempts + 1)
+    )
+    if claimed.rowcount == 0:
+        return None
+    db.commit()
+
+    order = db.get(Order, outbox.order_id)
+    if order is None:
+        db.execute(
+            sa_update(RefundOutbox)
+            .where(RefundOutbox.id == outbox.id)
+            .values(status="failed", last_error="order missing")
+        )
+        db.commit()
+        return False
+
+    ok_refund = _invoke_alipay_refund(db, order, float(outbox.amount), outbox.trade_no)
+    if not ok_refund:
+        # 失败: 释放回 pending，后续后台任务重试
+        db.execute(
+            sa_update(RefundOutbox)
+            .where(RefundOutbox.id == outbox.id, RefundOutbox.status == "processing")
+            .values(status="pending", last_error="alipay refund rejected")
+        )
+        db.commit()
+        return False
+
+    # 资金已动: outbox 置 success（防重复退款）；再同步订单状态
+    db.execute(
+        sa_update(RefundOutbox)
+        .where(RefundOutbox.id == outbox.id, RefundOutbox.status == "processing")
+        .values(status="success")
+    )
+    cas_ok = order_crud.update_status_optimistic(db, order, "refunded")
+    if not cas_ok:
+        # 订单被并发变更（理论极低）: 标记人工复核，不重复退款
+        db.execute(
+            sa_update(RefundOutbox)
+            .where(RefundOutbox.id == outbox.id)
+            .values(last_error="order CAS conflict, manual review required")
+        )
+    db.commit()
+    return cas_ok
+
+
+def process_refund_outbox_batch(db: Session, max_attempts: int = 10) -> dict:
+    """P1-2: 后台任务批量重试 pending 退款（main 清理循环 / Celery 调用）。"""
+    from sqlalchemy import select
+    from app.models.refund_outbox import RefundOutbox
+
+    rows = db.execute(
+        select(RefundOutbox).where(
+            RefundOutbox.status == "pending",
+            RefundOutbox.attempts < max_attempts,
+        )
+    ).scalars().all()
+    approval_ids = [r.approval_id for r in rows]
+    result = {"success": 0, "failed": 0}
+    for approval_id in approval_ids:
+        ok = process_refund_outbox(db, approval_id)
+        if ok is True:
+            result["success"] += 1
+        elif ok is False:
+            result["failed"] += 1
+    return result
+
+
+def _invoke_alipay_refund(db: Session, order, amount: float, trade_no: str | None = None) -> bool:
     """调支付宝退款接口（私有 helper）。
 
     退款流水优先级（T8 防退错账）:
@@ -257,27 +391,9 @@ def _invoke_alipay_refund(db: Session, order, amount: float) -> bool:
     """
     try:
         from app.core.alipay_client import get_alipay_client
-        from app.models.billing_invoice import BillingInvoice
-        from sqlalchemy import select
 
-        if order.payment_trade_no:
-            trade_no = order.payment_trade_no  # 正常路径: 订单自身流水
-        else:
-            # 降级路径: 租户最近已支付账单的 trade_no（订单与账单仅经 tenant_id 关联）
-            logger.warning(
-                f"Order {order.order_no} has no payment_trade_no, falling back to tenant's "
-                "latest paid invoice (demo fallback; may refund wrong flow in production)"
-            )
-            invoice = db.execute(
-                select(BillingInvoice).where(
-                    BillingInvoice.tenant_id == order.tenant_id,
-                    BillingInvoice.status == "paid",
-                    BillingInvoice.payment_trade_no.is_not(None),
-                    # 真实 MySQL 修复: nulls_last() 是 PG/SQLite 语法, MySQL 报 1064;
-                    # MySQL 的 DESC 默认 NULL 排最后, 直接 desc() 即可
-                ).order_by(BillingInvoice.paid_at.desc())
-            ).scalars().first()
-            trade_no = invoice.payment_trade_no if invoice else order.order_no
+        if trade_no is None:
+            trade_no = _resolve_refund_trade_no(db, order)
 
         client = get_alipay_client()
         return client.refund(trade_no, amount)
@@ -330,6 +446,7 @@ def cancel_refund(db: Session, *, approval_id: int, tenant_id: int, phone: str |
     if not ok:
         raise VersionConflict("订单状态已变更，请刷新重试")
     approval.status = "cancelled"
+    _append_review(approval, "cancel", None, "用户/管理员撤销售后申请")
     # PRD 2.1 审计日志: 退款撤销操作落库（同事务）
     log_audit(
         db, tenant_id=tenant_id, user_id=None, action="refund_cancel",
