@@ -107,8 +107,10 @@ class Settings(BaseSettings):
     billing_plan_base_fees: str = '{"trial": 0, "basic": 999, "pro": 4999, "enterprise": 0}'
     # 超额单价（元/条）：PRD 3.9 默认 0.5；账单公式 overage_fee = overage_cnt * price
     billing_overage_price: float = 0.5
-    # 试用租户是否生成账单：默认 false（业务决策项，见修复清单待决策区；产品可改配置切换）
-    billing_charge_trial: bool = False
+    # 试用租户计费口径（2026-08-12 产品决策 B）：免费但超额按单价计费。
+    # true=生成账单，base_fee=0，超额部分按 BILLING_OVERAGE_PRICE 计费；
+    # 逾期未付的超额账单按既有规则降级只读。
+    billing_charge_trial: bool = True
     # PRD 3.2 知识库存储上限（MB/月）：0=无限制（enterprise 议价）
     storage_quota_mb: str = '{"trial": 500, "basic": 5120, "pro": 51200, "enterprise": 0}'
     # 待决策项：知识库上传文件大小上限（MB）。实现默认 10（PRD 写 50，安全优先）；

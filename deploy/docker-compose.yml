@@ -146,6 +146,10 @@ services:
       - WECHAT_APP_SECRET=${WECHAT_APP_SECRET:-}
       - OCR_API_KEY=${OCR_API_KEY:-}
       - OCR_SECRET_KEY=${OCR_SECRET_KEY:-}
+      - BILLING_CHARGE_TRIAL=${BILLING_CHARGE_TRIAL:-true}
+      - BILLING_OVERAGE_PRICE=${BILLING_OVERAGE_PRICE:-0.5}
+      - BILLING_PLAN_BASE_FEES=${BILLING_PLAN_BASE_FEES:-{"trial": 0, "basic": 999, "pro": 4999, "enterprise": 0}}
+      - UPLOAD_MAX_FILE_SIZE_MB=${UPLOAD_MAX_FILE_SIZE_MB:-10}
     depends_on:
       - mysql
       - redis

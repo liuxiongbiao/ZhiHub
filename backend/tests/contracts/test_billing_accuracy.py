@@ -62,7 +62,8 @@ class TestInvoiceFormula:
         assert float(inv["base_fee"]) == 4999.0
         assert float(inv["overage_fee"]) == 250.0
 
-    def test_trial_no_invoice_by_default(self, db, fake_redis, monkeypatch):
+    def test_trial_no_invoice_when_disabled(self, db, fake_redis, monkeypatch):
+        """决策开关关闭时，试用租户不生成账单（保留配置逃生口）。"""
         monkeypatch.setattr(settings, "billing_charge_trial", False)
         t = _mk_tenant(db, "trial")
         for _ in range(150):
@@ -75,8 +76,8 @@ class TestInvoiceFormula:
         rows = db.execute(select(BillingInvoice).where(BillingInvoice.tenant_id == t.id)).scalars().all()
         assert rows == []
 
-    def test_trial_invoice_when_configured(self, db, fake_redis, monkeypatch):
-        monkeypatch.setattr(settings, "billing_charge_trial", True)
+    def test_trial_invoice_by_decision(self, db, fake_redis):
+        """2026-08-12 决策 B：试用免费但超额按单价计费（默认开启）。"""
         t = _mk_tenant(db, "trial")
         for _ in range(150):
             billing_service.incr_usage_for_tenant(db, t.id)
