@@ -1,0 +1,33 @@
+批次 4：契约落点、权限与部署可靠性
+
+PAYMENT_ENABLED=false
+说明：支付宝支付功能开关；production 启用时要求 ALIPAY_APP_ID、ALIPAY_APP_PRIVATE_KEY、ALIPAY_PUBLIC_KEY、ALIPAY_NOTIFY_URL。
+
+SMS_ENABLED=false
+说明：阿里云短信功能开关；production 启用时要求 AccessKey、Secret、签名和模板 Code。
+
+WECHAT_ENABLED=false
+说明：微信登录功能开关；production 启用时要求 AppID、AppSecret 和回调地址。
+
+EMAIL_ENABLED=false
+说明：邮件能力开关；与 EMAIL_VERIFY_REQUIRED 同时启用时，production 要求完整 SMTP 配置及外部 HTTPS 激活地址。
+
+LLM_ENABLED=false
+说明：LLM 在线调用开关；production 启用 DeepSeek provider 时要求 DEEPSEEK_API_KEY。
+
+EMBEDDING_ENABLED=false
+说明：云端 embedding 能力开关；production 启用时要求 EMBEDDING_API_KEY。
+
+INVITE_LINK_BASE=http://localhost:5173/accept-invite
+说明：邀请链接前端落点；production 应改为真实外部域名。
+
+UPLOAD_STORAGE_DIR=./data/uploads
+说明：API 与 Celery knowledge worker 共享的原始上传文件目录；容器部署示例为 /data/uploads。
+
+WS_PUBSUB_CHANNEL=zhihub:ws:broadcast
+说明：多 API worker WebSocket 广播使用的 Redis Pub/Sub channel。
+
+批次 5：JWT Refresh Token
+
+JWT_REFRESH_TOKEN_EXPIRE_DAYS=30
+说明：refresh token 有效天数；每次刷新都会轮换新 token，旧 token 复用将撤销整个家族。

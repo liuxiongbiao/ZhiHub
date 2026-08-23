@@ -1,0 +1,111 @@
+# API Contracts: LangGraph 智能体主链路骨架
+
+**Phase 1 Output** | **Date**: 2026-08-04
+
+## Base URL
+
+`/api/v1/session`
+
+## Endpoints
+
+### POST /api/v1/session
+
+Create a new session.
+
+**Request** (empty body or initial message):
+```json
+{"initial_message": "如何升级套餐？"}
+```
+
+**Response** `201 Created`:
+```json
+{
+  "session_id": 1,
+  "status": "created",
+  "created_at": "2026-08-04T12:00:00Z"
+}
+```
+
+---
+
+### POST /api/v1/session/message
+
+Send a user message to the agent.
+
+**Request**:
+```json
+{
+  "session_id": 1,
+  "content": "如何升级套餐？"
+}
+```
+
+**Response** `200 OK`:
+```json
+{
+  "message_id": 5,
+  "role": "assistant",
+  "content": "升级套餐：在个人中心点击「套餐管理」，选择目标套餐并确认支付即可完成升级。\n\n来源：《产品使用手册》- 如何升级套餐",
+  "sources": [
+    {"doc": "产品使用手册.pdf", "chunk_index": 2, "text": "升级套餐：在个人中心点击「套餐管理」..."}
+  ],
+  "metadata": {
+    "intent": "knowledge_consult",
+    "confidence": 0.92,
+    "sentiment": "normal",
+    "elapsed_ms": 2340
+  }
+}
+```
+
+**Error —兜底意图**:
+```json
+{
+  "message_id": 6,
+  "role": "assistant",
+  "content": "抱歉，该功能（工单查询）即将上线，当前可先为您解答产品使用问题。",
+  "sources": [],
+  "metadata": {"intent": "ticket_query", "confidence": 0.85}
+}
+```
+
+**Errors**:
+- `400` — content empty or >2000 chars
+- `404` — session not found or wrong tenant
+
+---
+
+### GET /api/v1/session/list
+
+List sessions for current tenant.
+
+**Query Params**: `page` (default 1), `page_size` (default 20), `status` (optional filter)
+
+**Response** `200 OK`:
+```json
+{
+  "items": [
+    {"session_id": 1, "status": "agent_handling", "intent": "knowledge_consult", "message_count": 5, "created_at": "...", "updated_at": "..."}
+  ],
+  "total": 15, "page": 1, "page_size": 20
+}
+```
+
+---
+
+### GET /api/v1/session/{id}
+
+Get session detail with message history.
+
+**Response** `200 OK`:
+```json
+{
+  "session_id": 1,
+  "status": "agent_handling",
+  "intent": "knowledge_consult",
+  "messages": [
+    {"message_id": 1, "role": "user", "content": "如何升级套餐？", "created_at": "..."},
+    {"message_id": 2, "role": "assistant", "content": "升级套餐：...", "sources": [...], "created_at": "..."}
+  ]
+}
+```

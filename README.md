@@ -1,4 +1,4 @@
-# 智枢 ZhiHub
+﻿# 智枢 ZhiHub
 
 智枢 ZhiHub 是一套多智能体客服与运营中枢系统，面向企业级客服场景，提供「智能问答 + 业务系统集成 + 人工介入」的完整闭环能力。核心链路基于 LangGraph 显式状态图编排，确保每个业务动作可控、可审计。
 
@@ -28,7 +28,9 @@
 ```bash
 # 1. 启动全部中间件
 cd zhihub/deploy
-docker compose up -d
+cp .env.example .env   # 按环境填写凭据，生产必须覆盖全部默认值
+docker compose up -d --build
+#    数据库迁移由 migration 服务自动执行；计费调度由 celery-beat 负责
 
 # 2. 初始化 Milvus + ES
 docker compose exec backend python -c "
@@ -36,8 +38,8 @@ from app.core.embedding_client import init_milvus_collection, init_es_index
 init_milvus_collection(); init_es_index()
 "
 
-# 3. 数据库迁移
-docker compose exec backend alembic upgrade head
+# 3. 数据库迁移（已由 migration 服务自动执行；如需手动补跑）
+docker compose run --rm migration
 
 # 4. 预置测试数据
 docker compose exec backend python scripts/seed_data.py
@@ -75,7 +77,7 @@ zhihub/
 │   ├── components/      # 聊天 / 检索 / Trace / 反馈等组件
 │   └── api/             # API 客户端模块
 ├── deploy/              # Docker Compose + Nginx
-├── specs/               # 特性规格文档（Spec-Kit）
+├── docs/specs/          # 特性规格文档（Spec-Kit，已入版本控制）
 └── docs/                # 配置指南、评测集与评测报告
 ```
 

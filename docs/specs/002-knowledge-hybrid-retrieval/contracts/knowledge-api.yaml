@@ -1,0 +1,171 @@
+# API Contracts: 知识库上传 + 混合检索引擎
+
+**Phase 1 Output** | **Date**: 2026-08-04
+
+## Base URL
+
+`/api/v1/knowledge`
+
+All endpoints require `Authorization: Bearer <JWT>` header. Tenant context is extracted from token claims by middleware.
+
+## Endpoints
+
+### POST /upload
+
+Upload a document to the knowledge base.
+
+**Request**: `multipart/form-data`
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | file | yes | Document file (.pdf/.docx/.md), max 10MB |
+
+**Response** `201 Created`:
+```json
+{
+  "doc_id": 42,
+  "filename": "产品手册_v2.pdf",
+  "file_type": "pdf",
+  "file_size": 1048576,
+  "status": "pending",
+  "version": 2,
+  "is_latest": true,
+  "uploaded_at": "2026-08-04T10:30:00Z"
+}
+```
+
+**Errors**:
+- `400` — file format not supported / file too large (>10MB) / empty file
+- `401` — not authenticated
+- `403` — tenant closed
+
+---
+
+### GET /list
+
+List knowledge documents for current tenant.
+
+**Query Params**:
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `status` | string | — | Filter: pending / processing / ready / failed |
+| `page` | int | 1 | Page number |
+| `page_size` | int | 20 | Items per page (max 100) |
+
+**Response** `200 OK`:
+```json
+{
+  "items": [
+    {
+      "doc_id": 42,
+      "filename": "产品手册_v2.pdf",
+      "file_type": "pdf",
+      "file_size": 1048576,
+      "status": "ready",
+      "version": 2,
+      "is_latest": true,
+      "chunk_count": 35,
+      "uploaded_at": "2026-08-04T10:30:00Z"
+    }
+  ],
+  "total": 15,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+---
+
+### POST /{doc_id}/rebuild
+
+Rebuild index for a document (reset to pending and re-process).
+
+**Path Params**:
+| Param | Type | Description |
+|---|---|---|
+| `doc_id` | int | Document ID |
+
+**Response** `202 Accepted`:
+```json
+{
+  "doc_id": 42,
+  "status": "pending",
+  "message": "重建索引任务已提交"
+}
+```
+
+**Errors**:
+- `404` — document not found or belongs to different tenant
+- `409` — document is currently processing
+
+---
+
+### POST /test
+
+Retrieval test bench — compare pure vector vs hybrid retrieval results.
+
+**Request Body**:
+```json
+{
+  "query": "如何升级套餐",
+  "history": [
+    {"role": "user", "content": "我想改套餐"},
+    {"role": "assistant", "content": "您想升级还是降级套餐？"}
+  ]
+}
+```
+
+**Response** `200 OK`:
+```json
+{
+  "query": "如何升级套餐",
+  "rewritten_query": "用户想要将当前套餐升级到更高级别套餐的操作方法",
+  "vector_results": [
+    {
+      "doc_id": 42,
+      "doc_filename": "产品手册_v2.pdf",
+      "chunk_index": 12,
+      "chunk_text": "升级套餐：在个人中心点击「套餐管理」...",
+      "score": 0.82,
+      "source": "vector"
+    }
+  ],
+  "hybrid_results": [
+    {
+      "doc_id": 42,
+      "doc_filename": "产品手册_v2.pdf",
+      "chunk_index": 12,
+      "chunk_text": "升级套餐：在个人中心点击「套餐管理」...",
+      "score": 0.91,
+      "source": "hybrid"
+    },
+    {
+      "doc_id": 15,
+      "doc_filename": "FAQ_常见问题.md",
+      "chunk_index": 3,
+      "chunk_text": "Q: 如何更改我的订阅套餐？A: 登录后...",
+      "score": 0.78,
+      "source": "bm25"
+    }
+  ],
+  "hyde_fallback": false,
+  "empty_knowledge": false,
+  "elapsed_ms": 1234
+}
+```
+
+**Empty Knowledge Base Response** `200 OK`:
+```json
+{
+  "query": "如何升级套餐",
+  "rewritten_query": null,
+  "vector_results": [],
+  "hybrid_results": [],
+  "hyde_fallback": false,
+  "empty_knowledge": true,
+  "elapsed_ms": 5
+}
+```
+
+**Errors**:
+- `400` — query is empty or too long (>500 chars)
+- `401` — not authenticated
