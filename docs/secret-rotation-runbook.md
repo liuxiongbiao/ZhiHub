@@ -125,3 +125,22 @@ docker compose exec backend python scripts/verify_sms.py --phone <验收手机�
 脚本只在真实模式运行，不输出验证码或凭据；阿里云返回成功且网关调用耗时低于 3000ms 才会输出 `PASS`。最后还必须由验收手机号人工确认实际收码，因为网关成功回执不等于终端必达。
 
 若凭据未配置，development/test 保留 mock 路径；production 或 `SMS_ENABLED=true` 但配置不全时显式失败，禁止静默伪装发送成功。
+
+## 八、支付宝沙箱付款与回调验收
+
+1. 在支付宝开放平台沙箱确认应用处于可用状态，应用公钥已上传；复制沙箱 AppID、应用 RSA2 私钥和支付宝公钥到受控密钥存储。
+2. 准备支付宝可访问的公网 HTTPS 地址，把 `https://<域名>/api/v1/billing/alipay/notify` 配为 `ALIPAY_NOTIFY_URL`；本机 `localhost`、内网 IP 或仅端口映射不能接收支付宝异步通知。
+3. 在 `deploy/.env` 设置 `PAYMENT_ENABLED=true`、`ALIPAY_SANDBOX=true` 及上述四项配置，重建 backend 后先执行只读预检：
+
+```powershell
+cd C:\Users\Lenovo\Desktop\Three\zhihub\deploy
+docker compose exec backend python scripts/verify_alipay.py
+```
+
+预检只生成 ¥0.01 的 RSA2 参数但不会访问支付页或创建付款；`ready_for_real_callback=true` 才进入下一步。脚本不会输出密钥、签名或完整 URL。
+
+4. 管理员进入“账单列表”，选择一张 `unpaid` 账单并点击“支付”，使用支付宝沙箱买家账号完成付款；不得使用真实付款账号。
+5. 观察 backend 日志出现支付回调成功，并从后台确认该账单变为 `paid`、`paid_at` 与 `payment_trade_no` 已回填，租户欠费降级标记已清除，同时 Mongo `invoice_paid` 事件存在。
+6. 保存支付宝原始回调表单，在隔离验收环境向同一 notify URL 重放一次；预期接口仍返回 `success`，账单保持同一交易号且不重复入账。再执行一笔已绑定 `payment_trade_no` 的沙箱退款，确认 `refunding → refunded`，同一 `out_request_no` 重试不重复退款。
+
+任一步不具备外部条件时必须保持“半程验证”状态：可以确认 SDK 密钥解析和 RSA2 签名参数，但不能把未实际付款、未收到支付宝签名通知或未真实退款描述为闭环完成。

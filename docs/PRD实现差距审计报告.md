@@ -40,7 +40,7 @@
 | 坐席与运营后台 | ✅ | 23 个前端页面全部存在；trace 时间线可视化在会话详情/工作台 |
 | 计量与计费 | ✅ | Redis 配额 + 超额不拒 + 日聚合 + 月账单 + 80/100 预警 + CSV 导出 + 多模型折算 |
 | DeepAgent 开放式任务 | ✅ | 自主规划 + Mongo 持久化 + 通知 + 工具 5 次上限 + 50 万 token/600 秒墙钟双预算，超限原因持久化并在前端展示 |
-| 支付闭环 | ⚠️ | 真实模式已半程验证：密钥 PEM 修复后生成真实沙箱签名支付链接 ✅；付款与回调闭环待沙箱应用核对+公网环境（§3.10） |
+| 支付闭环 | ⚠️ | 真实模式已半程验证：密钥 PEM 修复后生成真实沙箱签名支付链接 ✅；2026-08-24 预检再次确认 SDK/RSA2 参数正常，但支付开关未启用且无公网 HTTPS 回调地址，付款与回调闭环保持外部条件阻塞（§3.10） |
 | 可观测性（Langfuse） | ✅ | `@observe` 埋点 + 自托管 compose + **云端真实上报已验证**（2233 条 trace，与实测对话时间戳一致） |
 | RAG 效果评测（RAGAS） | ✅ | 2026-08-23 已复跑：F 全 1.00、混合 CR 0.69 vs 纯向量 0.61（+8.3pp，详见 §3.12） |
 | Agent 安全层 | ✅ | Prompt 注入检测 + 工具权限矩阵 + 敏感操作强制人工 + 熔断 |
@@ -215,8 +215,8 @@
 
 | PRD 要求 | 状态 | 证据 |
 |---|---|---|
-| 账单支付发起（跳沙箱） | ✅ | 2026-08-23 真实模式验证：修复 .env 密钥 PEM 格式后，SDK 成功加载并生成**真实沙箱签名支付链接**（method=alipay.trade.page.pay，RSA2 sign，金额 ¥112.5）；网关探活：DNS 可达、裸请求秒回 502、完整链接超时无响应——判定为沙箱应用侧状态问题（需在支付宝沙箱控制台核对应用启用/公钥上传），链接格式与签名生成经代码审查+30 项契约测试确认无误 |
-| 异步回调验签 + payment_trade_no 幂等 | ✅ | 验签/幂等/伪造回调拒绝由契约测试背书（test_payment.py）；本地无公网 URL，支付宝回调无法到达本机——**待部署后做最终闭环验证** |
+| 账单支付发起（跳沙箱） | ✅ | 2026-08-23 真实模式生成 ¥112.5 沙箱签名链接；2026-08-24 用 `scripts/verify_alipay.py` 再次只读预检：三项密钥均已配置、真实客户端与 SDK 初始化成功，`alipay.trade.page.pay`/RSA2/sign/biz_content/AppID 全部成立，网关为 `openapi.alipaydev.com`。脚本不输出签名、完整 URL 或密钥，也不访问支付页 |
+| 异步回调验签 + payment_trade_no 幂等 | ⚠️ | 验签/幂等/伪造回调拒绝由契约测试背书（test_payment.py）；运行环境实查 `PAYMENT_ENABLED=false` 且 `ALIPAY_NOTIFY_URL` 不是公网 HTTPS，支付宝无法回调本机，故不把契约测试写成真实闭环完成 |
 | 支付成功自动恢复降级状态 | ✅ | 回调处理含套餐恢复 |
 | 退款场景复用沙箱接口 | ⚠️ | order_service 退款调用 alipay refund；mock 可跑 |
 
@@ -229,8 +229,8 @@
 | 中间步骤实时写 MongoDB、轮询/WS 展示 | ✅ | deep_agent_store + DeepAgentReport.vue |
 | 完成通知 + 报告查看/下载 | ✅ | deep_agent_tasks 通知 + 报告下载端点 |
 | 单任务工具调用上限 5 次强制终止 | ✅ | planner 工具计数熔断 |
-| token 消耗预算 | ❌ | PRD 自认"后续迭代"；store 无 token_consumed 字段 |
-| 任务级执行超时（10 分钟） | ❌ | PRD 自认"尚未设置" |
+| token 消耗预算 | ✅ | 默认 500,000 token；优先累计模型真实 usage，缺失时本地估算；Mongo/API/前端均透出 `token_consumed`、预算与终止原因 |
+| 任务级执行超时（10 分钟） | ✅ | 默认 600 秒墙钟预算；规划、模型与工具调用边界均检查，超限立即停止并标记“资源超限失败” |
 
 ### 3.12 可观测性与效果评测
 
@@ -377,7 +377,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 密钥配置完整且不入库 | ⚠️ .env 已 gitignore；真实密钥从未配置验证（DeepSeek/阿里云/微信/支付宝/硅基流动） |
+| 密钥配置完整且不入库 | ⚠️ `.env` 已 gitignore；DeepSeek/硅基流动/支付宝沙箱/微信/OCR/SMTP 仅在本机运行环境配置并做过对应预检，阿里云短信凭据未配置；真实密钥均不进入仓库 |
 | Nginx 反代 + 静态资源部署 | ✅ deploy/nginx.conf + frontend/nginx.conf 存在，未运行时验证 |
 | 迁移脚本幂等可重复执行 | ✅ alembic 从零建库测试（test_alembic_from_scratch，2 跳过需 MySQL 密码） |
 | 演示租户/示例数据预置 | ✅ scripts/seed_data.py + demo_seed.py |
@@ -416,7 +416,7 @@
 | ✅ 已修复 | 备份灾备实操脚本 | §4.4 | 2026-08-23 日备恢复与周备快照均实跑成功 |
 | 🟡 低 | 等待时长估算（无坐席场景） | §3.7 | 有静态提示代替 |
 
-**⚠️ mock/降级清单（答辩必须主动交代的边界）**：短信发送、微信登录、支付宝支付/退款、OCR、RagFlow 解析、LLM/Embedding/Rerank 调用——全部有 mock/降级代码路径，但**真实外部服务模式从未在真实凭据下运行过**。MCP 背后的工单/订单系统是 PRD 明示允许的自建 mock 业务库（不算缺口）。
+**⚠️ mock/降级清单（答辩必须主动交代的边界）**：短信发送、微信登录、支付宝支付/退款、OCR、RagFlow 解析、LLM/Embedding/Rerank 调用均保留 mock/降级路径；其中 LLM/Embedding/Rerank、Langfuse 与支付宝真实密钥解析/RSA2 参数已在真实配置下运行，支付宝付款/回调/退款和短信真实收码仍未运行。MCP 背后的工单/订单系统是 PRD 明示允许的自建 mock 业务库（不算缺口）。
 
 ---
 
@@ -441,7 +441,7 @@
 12. **工程化**：758 项测试（unit/contracts/integration）+ CI（语法/安全审计/迁移一致性/覆盖率/前端构建）+ Docker Compose 全栈
 
 **答辩时主动交代的边界（坦诚反而加分）**：
-- 支付宝沙箱真实付款闭环待公网环境验证；短信/微信/OCR 为 mock/降级模式（凭据已配但真实发送未验证）
+- 支付宝沙箱真实付款闭环待支付开关与公网 HTTPS 回调环境；短信因凭据未配置保留 mock，微信/OCR 已配置但本轮未做终端侧真实验收
 - 会话状态流转已完成 100 条真实状态链基准；Chrome/Edge/Firefox 核心页面与第三方 widget.js 均已实测通过；数据埋点运营看板已于 2026-08-24 补齐
 - MCP 背后是自建 mock 业务库（PRD 明示的设计选择，协议层标准可替换真实系统）
 
@@ -518,15 +518,19 @@
 - 退款审批事件日常仍由 ORM + MySQL 触发器保持不可变，仅在显式租户物理删除会话变量下允许清理；Alembic `d37_tenant_cancellation` 已在真实 MySQL 升级到 head；
 - `scripts/verify_tenant_cancellation.py` 初次在隔离临时租户 77 写入 MySQL、Mongo 两集合、Milvus 两集合、ES、Redis 与上传文件后执行到期删除，10/10 通过；P2-4 新增运营事件集合后已在容器同配置下用临时租户 79 复验，**MySQL、Mongo 三集合、Milvus 两集合、ES、Redis 与上传文件 11/11 全部清零**，中断夹具也由到期任务自动清理，未留下审计测试数据。
 
-### 待用户后续执行的剩余项（不急，随时可做）
+### 外部条件具备后执行的验收项
 
 ```powershell
 # B. RAGAS 评测复跑（PRD §3.12.2）——需 demo 租户（tenant 1）知识库已上传，消耗少量真实 token
 cd C:\Users\Lenovo\Desktop\Three\zhihub\backend
 .venv\Scripts\python.exe scripts\ragas_eval.py
 
-# C. 支付宝沙箱真实支付（PRD §3.10）——手动操作：登录后台 → 账单页发起支付 → 沙箱账号付款 → 观察回调与状态流转
+# C. 支付宝沙箱真实支付（PRD §3.10）——预检通过后按 Runbook 第八节完成付款、回调重放与退款
+cd C:\Users\Lenovo\Desktop\Three\zhihub\deploy
+docker compose exec backend python scripts/verify_alipay.py
 ```
+
+支付宝的完整分步操作与验收断言见 `docs/secret-rotation-runbook.md` 第八节；短信真实发送见同文档第七节。两项均不得把 mock 或仅参数生成记作真实业务闭环。
 
 **审计产生的测试数据**：评测与冒烟产生的数据已通过 `backend/scripts/cleanup_eval_data.py --execute` 清理完毕（108 个评测会话 + 冒烟租户 75 全量，含 MySQL/Mongo/Milvus/ES 四层）；注销验收临时租户 76/77 也已跨存储物理清零；demo 租户（tenant 1）的 25 篇评测知识库文档**保留**（演示/答辩资产，如需清空加 `--seeded-kb`）。
 
@@ -538,7 +542,7 @@ cd C:\Users\Lenovo\Desktop\Three\zhihub\backend
 
 | # | 项 | 状态 | 需要的条件 |
 |---|---|---|---|
-| 1 | 支付宝沙箱真实付款 + 回调闭环 | ⏸ 半程（真实签名链接已生成；网关对该请求超时无响应） | 核对沙箱应用启用/公钥上传；部署到公网可达环境配 `ALIPAY_NOTIFY_URL` |
+| 1 | 支付宝沙箱真实付款 + 回调闭环 | ⏸ 外部条件阻塞，文档闭环已完成 | 2026-08-24 运行 `scripts/verify_alipay.py`：三项密钥、真实 SDK、RSA2 签名页面支付参数和沙箱网关均通过；环境实查 `PAYMENT_ENABLED=false`、公网 HTTPS `ALIPAY_NOTIFY_URL` 缺失，退出码 2 准确标识外部前置未满足。付款、签名回调、重复回调幂等与真实退款均未伪报；可重复预检及完整操作/断言见 Runbook 第八节 |
 | 2 | Langfuse 真实上报链路 | ✅ 已验证 | 2026-08-23 真实对话后查 cloud.langfuse.com API：共 2233 条 trace，最新时间戳与当轮对话一致——全链路真实上报（§8.1-10 运行时部分达成） |
 | 3 | MCP 工具调用 <2s 单项压测 | ✅ 已实测（P50 1.0ms / P99 6.5ms，大幅达标） | 详见 `docs/p1_bench_report.md` A 节 |
 | 4 | 会话状态流转 <200ms | ✅ **达标**：完整状态链 P50 30.204ms / P95 37.508ms / P99 40.274ms / Max 150.516ms | 真实 MySQL+Redis 100 条 `created→waiting_human→human_handling→resolved→closed`；可重复脚本自动清理 MySQL/Redis/Mongo 测试数据，详见 `docs/p1_bench_report.md` D 节 |
