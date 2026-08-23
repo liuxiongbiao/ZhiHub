@@ -1,4 +1,4 @@
-"""add tracking_no to orders (013 US6 订单发货)
+"""add tracking_no to orders (规格 013 US6 订单发货)
 
 Revision ID: d21_order_tracking_no
 Revises: d20_money_fields_numeric

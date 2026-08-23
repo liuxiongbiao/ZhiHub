@@ -14,5 +14,7 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY . .
 EXPOSE 8000
-# 生产启动命令（无 --reload，单worker）
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 生产启动命令（无 --reload，单 worker）
+# --proxy-headers: 信任 nginx 注入的 X-Forwarded-For 获取真实客户端 IP（P1-8）
+# 注意: backend 端口已收敛为 127.0.0.1 映射，仅 nginx 可经内网访问
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]

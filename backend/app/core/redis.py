@@ -84,6 +84,7 @@ def get_redis() -> redis.Redis:
             host=settings.redis_host,
             port=settings.redis_port,
             db=settings.redis_db,
+            password=settings.redis_password or None,
             decode_responses=True,
         )
     return _redis_client
@@ -95,7 +96,7 @@ def _login_fail_key(phone: str) -> str:
 
 
 def _login_fail_ip_key(ip: str) -> str:
-    """构造 IP 维度登录失败计数的 Redis key（T16 防刷锁他人账号）。
+    """构造 IP 维度登录失败计数的 Redis key（ 防刷锁他人账号）。
 
     攻击者对一个已知手机号故意输错 5 次可锁定对方账号 15min（账号 DoS）；
     IP 维度让攻击者 5 次失败先锁住自己的 IP。
@@ -108,7 +109,7 @@ def _blocklist_key(jti: str) -> str:
     return f"token:blocklist:{jti}"
 
 
-# ---------- 登录失败计数与锁定 ----------
+# ────────── 登录失败计数与锁定 ──────────
 def incr_login_fail(phone: str) -> int:
     """失败次数 +1（原子 INCR），返回当前累计次数，并按状态机阶段设置 TTL。
 
@@ -131,7 +132,7 @@ def incr_login_fail(phone: str) -> int:
 
 
 def _incr_login_fail_key(key: str) -> int:
-    """失败计数自增 + 按状态机阶段设置 TTL（phone 与 IP 维度共用，T16）。"""
+    """失败计数自增 + 按状态机阶段设置 TTL（phone 与 IP 维度共用，）。"""
     r = get_redis()
     count = r.incr(key)
     if count == 1:
@@ -144,7 +145,7 @@ def _incr_login_fail_key(key: str) -> int:
 
 
 def incr_login_fail_ip(ip: str) -> int:
-    """IP 维度失败次数 +1（T16），与 incr_login_fail 同阈值/同锁定时长。"""
+    """IP 维度失败次数 +1，与 incr_login_fail 同阈值/同锁定时长。"""
     return _incr_login_fail_key(_login_fail_ip_key(ip))
 
 
@@ -188,7 +189,7 @@ def clear_login_fail(phone: str) -> None:
 
 
 def get_lock_ttl_ip(ip: str) -> int:
-    """IP 维度剩余锁定秒数（0 表示未锁定，T16）。"""
+    """IP 维度剩余锁定秒数（0 表示未锁定，）。"""
     r = get_redis()
     key = _login_fail_ip_key(ip)
     val = r.get(key)
@@ -199,11 +200,11 @@ def get_lock_ttl_ip(ip: str) -> int:
 
 
 def clear_login_fail_ip(ip: str) -> None:
-    """IP 维度失败计数清零（登录成功时，T16）。"""
+    """IP 维度失败计数清零（登录成功时，）。"""
     get_redis().delete(_login_fail_ip_key(ip))
 
 
-# ---------- 登录 IP 频率限制（T16） ----------
+# ────────── 登录 IP 频率限制 ──────────
 IP_RATE_LIMIT_PER_MINUTE = 30  # 登录端点每 IP 每分钟最多尝试次数
 
 
@@ -229,7 +230,7 @@ def check_ip_rate_limit(ip: str, limit: int = IP_RATE_LIMIT_PER_MINUTE) -> bool:
     return count <= limit
 
 
-# ---------- 令牌黑名单 ----------
+# ────────── 令牌黑名单 ──────────
 def blocklist_token(jti: str, ttl: int) -> None:
     """将令牌 jti 加入黑名单，存活 ttl 秒（=令牌剩余有效期）。
 

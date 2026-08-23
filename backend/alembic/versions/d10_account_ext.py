@@ -10,7 +10,7 @@ PRD 3.1 账户体系扩展（#10-#17，不含 #12 微信）:
   - users 新增 email_hash 列（HMAC-SHA256 hex=64，unique+index，用于邮箱等值查询/唯一约束）
 
 注意: 本迁移假设 demo 空表（无已有数据需回填 email_hash）。
-wechat_openid 不在本迁移添加（012-alembic-from-scratch-fix 去重）：由 d10_wx_oid 统一添加
+wechat_openid 不在本迁移添加（规格 012 去重）：由 d10_wx_oid 统一添加
   String(128) unique 版本，与模型 user.py 最终定义一致；原 d10_account_ext 重复添加
   String(64) 非 unique 版本会导致从零 upgrade duplicate column，故移除。
 """

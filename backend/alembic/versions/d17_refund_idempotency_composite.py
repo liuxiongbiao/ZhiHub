@@ -4,7 +4,7 @@ Revision ID: d17_refund_idempotency_composite
 Revises: d16_unique_constraints
 Create Date: 2026-08-10
 
-T6: client_request_id 全局唯一 -> (order_id, client_request_id) 复合唯一。
+: client_request_id 全局唯一 -> (order_id, client_request_id) 复合唯一。
 背景: 全局唯一键跨租户碰撞——租户 B 用与租户 A 相同的 client_request_id 申请退款时
       撞唯一约束导致功能 DoS（Redis 幂等 key 已同步改为 order_id 粒度，见 core/idempotency.py）。
 安全: 原约束保证 client_request_id 全局唯一，故复合键必然无重复数据，无需清理。

@@ -15,6 +15,18 @@ export default defineConfig({
       '/api': { target: 'http://localhost:8000', changeOrigin: true }
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // -5: 拆分框架/UI/HTTP 库，降低首屏主包体积
+        manualChunks: {
+          vue: ['vue', 'vue-router', 'pinia'],
+          element: ['element-plus', '@element-plus/icons-vue'],
+          http: ['axios'],
+        },
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     include: ['tests/**/*.spec.ts'],
@@ -22,5 +34,7 @@ export default defineConfig({
     globals: false,
     css: false,
     restoreMocks: true,
+    // 组件测试在并行 jsdom 环境下偶发超时（机器负载相关），放宽默认超时
+    testTimeout: 20000,
   },
 })

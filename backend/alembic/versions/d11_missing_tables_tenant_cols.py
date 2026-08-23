@@ -4,7 +4,7 @@ Revision ID: d11_missing_cols
 Revises: 36e0613c0a65
 Create Date: 2026-08-10
 
-补齐从零建库缺口(012-alembic-from-scratch-fix):
+补齐从零建库缺口(规格 012):
   - 建 7 张无建表迁移的业务表:quick_replies / refund_approvals / billing_invoices /
     csat_evaluations / usage_records / answer_feedback / security_incidents
     (原靠 init_db create_all 兜底,alembic 链未覆盖,从零 upgrade 后缺表)
@@ -28,7 +28,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # ── 7 张业务表(列定义对齐 app/models)───
 
-    # quick_replies: 坐席快捷回复模板(022-quick-reply)
+    # quick_replies: 坐席快捷回复模板(规格 )
     op.create_table(
         "quick_replies",
         sa.Column("tenant_id", sa.BigInteger(), nullable=False),
@@ -41,7 +41,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_quick_replies_tenant_id", "quick_replies", ["tenant_id"])
 
-    # refund_approvals: 退款审批流水(004-ticket-order),client_request_id 幂等唯一
+    # refund_approvals: 退款审批流水(规格 004),client_request_id 幂等唯一
     op.create_table(
         "refund_approvals",
         sa.Column("order_id", sa.BigInteger(), nullable=False),
@@ -60,7 +60,7 @@ def upgrade() -> None:
         "ix_refund_approvals_client_request_id", "refund_approvals", ["client_request_id"], unique=True
     )
 
-    # billing_invoices: 月度账单(005-billing-csat),payment_trade_no 唯一
+    # billing_invoices: 月度账单(规格 005),payment_trade_no 唯一
     op.create_table(
         "billing_invoices",
         sa.Column("tenant_id", sa.BigInteger(), nullable=False),
@@ -80,7 +80,7 @@ def upgrade() -> None:
         "ix_billing_invoices_payment_trade_no", "billing_invoices", ["payment_trade_no"], unique=True
     )
 
-    # csat_evaluations: 满意度评价(007-session-lifecycle),无 tenant_id(经 session 间接隔离)
+    # csat_evaluations: 满意度评价(规格 007),无 tenant_id(经 session 间接隔离)
     op.create_table(
         "csat_evaluations",
         sa.Column("session_id", sa.BigInteger(), nullable=False),
@@ -95,7 +95,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_csat_evaluations_session_id", "csat_evaluations", ["session_id"])
 
-    # usage_records: 按天聚合用量(005-billing-csat)
+    # usage_records: 按天聚合用量(规格 005)
     op.create_table(
         "usage_records",
         sa.Column("tenant_id", sa.BigInteger(), nullable=False),
@@ -109,7 +109,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_usage_records_tenant_id", "usage_records", ["tenant_id"])
 
-    # answer_feedback: 单条消息回答反馈(021-answer-feedback),无 tenant_id(经 message 间接隔离)
+    # answer_feedback: 单条消息回答反馈(规格 ),无 tenant_id(经 message 间接隔离)
     op.create_table(
         "answer_feedback",
         sa.Column("message_id", sa.BigInteger(), nullable=False),
@@ -123,7 +123,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_answer_feedback_message_id", "answer_feedback", ["message_id"])
 
-    # security_incidents: Prompt 注入拦截记录(006-mcp-security)
+    # security_incidents: Prompt 注入拦截记录(规格 006)
     op.create_table(
         "security_incidents",
         sa.Column("tenant_id", sa.BigInteger(), nullable=False),
@@ -139,7 +139,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_security_incidents_tenant_id", "security_incidents", ["tenant_id"])
 
-    # ── tenants 补 4 列(020 widget 品牌定制 + 026 默认模型)───
+    # ── tenants 补 4 列( widget 品牌定制 +  默认模型)───
     # NOT NULL 列带 server_default 兼容已有行(同 d8 wizard_step 模式)
     op.add_column(
         "tenants",
@@ -157,7 +157,7 @@ def upgrade() -> None:
         ),
     )
 
-    # ── sessions 补 end_user_id 列(009 长期记忆修复:访客 ID,按用户隔离长期记忆)───
+    # ── sessions 补 end_user_id 列(规格 009 长期记忆修复:访客 ID,按用户隔离长期记忆)───
     # d4 建表时无此列,模型后续新增但未补迁移
     op.add_column("sessions", sa.Column("end_user_id", sa.String(length=64), nullable=True))
     op.create_index("ix_sessions_end_user_id", "sessions", ["end_user_id"])

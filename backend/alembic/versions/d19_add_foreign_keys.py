@@ -4,7 +4,7 @@ Revision ID: d19_add_foreign_keys
 Revises: d18_order_payment_trade_no
 Create Date: 2026-08-10
 
-T27-A: 强关联列补 FK（此前 8+ 处无约束，孤儿数据无兜底）。
+-A: 强关联列补 FK（此前 8+ 处无约束，孤儿数据无兜底）。
 不设 ON DELETE（项目无级联删除业务，默认 RESTRICT 防误删被引用行）。
 
 安全: 加 FK 前逐表检查孤儿数据（LEFT JOIN 无匹配），存在则中止迁移

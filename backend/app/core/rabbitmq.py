@@ -71,33 +71,14 @@ def declare_queues():
 
 
 def publish_knowledge_task(doc_id: int, tenant_id: int) -> None:
-    """发布文档处理任务到 knowledge_processing 队列。
+    """通过 Celery 协议投递到独立 knowledge 队列。"""
+    from celery_worker import celery_app
 
-    流程: 新建连接 -> 幂等声明 exchange/queue -> 发送持久化消息 -> 关闭连接。
-    每次新建连接而非复用: BlockingConnection 非线程安全，API 请求线程独立连接更安全；
-    生产环境可用连接池优化性能。
-
-    Args:
-        doc_id: 文档 ID
-        tenant_id: 租户 ID
-    """
-    conn = _get_connection()
-    channel = conn.channel()
-
-    # 幂等声明 exchange/queue，确保发布前拓扑存在（RabbitMQ 重启后可能丢失）
-    channel.exchange_declare(exchange=EXCHANGE_NAME, exchange_type="topic", durable=True)
-    channel.queue_declare(queue=KNOWLEDGE_QUEUE, durable=True)
-    channel.queue_bind(exchange=EXCHANGE_NAME, queue=KNOWLEDGE_QUEUE, routing_key=KNOWLEDGE_ROUTING_KEY)
-
-    message = json.dumps({"task": "process_document", "doc_id": doc_id, "tenant_id": tenant_id})
-    channel.basic_publish(
-        exchange=EXCHANGE_NAME,
-        routing_key=KNOWLEDGE_ROUTING_KEY,
-        body=message,
-        properties=pika.BasicProperties(delivery_mode=2),  # persistent：消息持久化到磁盘
+    celery_app.send_task(
+        "app.tasks.knowledge_tasks.process_document",
+        args=[doc_id, tenant_id],
+        queue="knowledge",
     )
-
-    conn.close()
 
 
 def consume_knowledge_tasks(callback: Callable[[int, int], None]) -> None:
@@ -134,7 +115,7 @@ def consume_knowledge_tasks(callback: Callable[[int, int], None]) -> None:
             callback(doc_id, tenant_id)
             ch.basic_ack(delivery_tag=method.delivery_tag)
         except Exception:
-            # 解析失败或回调异常 -> 拒绝消息且不重新入队（避免毒消息死循环）
+            # 解析失败或回调异常 → 拒绝消息且不重新入队（避免毒消息死循环）
             # ⚠️ 潜在问题: requeue=False 会直接丢弃消息，生产环境应配死信队列（DLX）兜底
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 

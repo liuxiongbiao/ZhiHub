@@ -31,9 +31,25 @@ logger = logging.getLogger(__name__)
 
 # 默认模型（config 为空时使用）
 _DEFAULT_MODEL = "deepseek/deepseek-chat"
-# LLM 调用超时（T24）: litellm 默认 600s，同步 invoke 架构下挂起会阻塞整个请求线程；
+# LLM 调用超时: litellm 默认 600s，同步 invoke 架构下挂起会阻塞整个请求线程；
 # 60s 覆盖正常生成，超时快速失败走调用方兜底
 LLM_TIMEOUT_SECONDS = 60
+
+
+def _log_model_fallback(primary: str, backup: str) -> None:
+    """PRD 3.14：模型切换事件写入 Langfuse（失败仅告警，不影响主流程）。"""
+    try:
+        from app.core.langfuse_client import get_langfuse
+
+        lf = get_langfuse()
+        if lf is not None:
+            lf.log_event(
+                name="model_fallback",
+                input={"primary_model": primary},
+                output={"backup_model": backup},
+            )
+    except Exception as e:
+        logger.warning(f"Langfuse model fallback event failed: {e}")
 
 
 def llm_complete(messages: list[dict], **kwargs) -> Any:
@@ -47,7 +63,7 @@ def llm_complete(messages: list[dict], **kwargs) -> Any:
 
     设计决策:
       - 一次切换不重试: 重试会增加延迟且可能打满配额，一次切备用已足够
-      - 主备模型相同不切换（T24）: 相同模型重试无意义，直接抛异常；
+      - 主备模型相同不切换: 相同模型重试无意义，直接抛异常；
         备用模型应在 config 配置不同模型（llm_backup_model）
       - 不吞异常: 调用方（如 _generate_answer）有自己的 try/except 兜底回复，
         llm_complete 只负责切换，不负责兜底文案
@@ -82,7 +98,9 @@ def llm_complete(messages: list[dict], **kwargs) -> Any:
         logger.warning(
             f"Primary model {primary} failed: {e}, switching to backup {backup}"
         )
-        return litellm.completion(model=backup, messages=messages, timeout=timeout, **kwargs)
+        result = litellm.completion(model=backup, messages=messages, timeout=timeout, **kwargs)
+        _log_model_fallback(primary, backup)
+        return result
 
 
 def llm_complete_stream(messages: list[dict], **kwargs):
@@ -123,6 +141,7 @@ def llm_complete_stream(messages: list[dict], **kwargs):
         response = litellm.completion(
             model=backup, messages=messages, timeout=timeout, stream=True, **kwargs
         )
+        _log_model_fallback(primary, backup)
         for chunk in response:
             delta = chunk.choices[0].delta
             if delta and delta.content:

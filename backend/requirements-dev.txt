@@ -6,3 +6,6 @@ pytest-asyncio==1.4.0
 fakeredis==2.37.0
 pytest-cov==7.1.0
 pip-audit>=2.7  # CI 安全审计工具（随发布滚动）
+
+# 可选：OCR 真实模式依赖（PRD 3.2 扫描件兜底，需系统级 poppler；当前环境未安装验证）
+# pdf2image==1.17.0

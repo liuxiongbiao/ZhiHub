@@ -37,12 +37,12 @@ from pymilvus import (
 
 from app.config import settings
 
-# ---------- 常量 ----------
+# ────────── 常量 ──────────
 EMBEDDING_DIM = 1024  # bge-m3 向量维度，决定 Milvus FLOAT_VECTOR 的 dim
 BATCH_SIZE = 16       # 批量 embedding 每批切片数，控制单次 API 请求体大小
 MAX_RETRIES = 3       # embedding API 调用最大重试次数
 COLLECTION_NAME = "knowledge_chunks"             # 知识库切片 collection
-MEMORY_COLLECTION_NAME = "user_memories"  # 009 长期记忆 collection
+MEMORY_COLLECTION_NAME = "user_memories"  # 规格 009 长期记忆 collection
 
 
 def _get_embedding_url() -> str:
@@ -58,7 +58,7 @@ def _get_headers() -> dict[str, str]:
     }
 
 
-# ---------- Embedding API ----------
+# ────────── Embedding API ──────────
 def embed_texts(texts: Sequence[str]) -> list[list[float]]:
     """批量调用 bge-m3 embedding API，返回与 texts 等长的向量列表。
 
@@ -138,7 +138,7 @@ def embed_batches(texts: Sequence[str]) -> list[list[float]]:
     return all_vectors
 
 
-# ---------- Milvus Collection 管理 ----------
+# ────────── Milvus Collection 管理 ──────────
 def _connect_milvus():
     """建立 Milvus 连接（幂等，重复调用不会创建重复连接）。"""
     connections.connect(
@@ -207,7 +207,7 @@ def get_milvus_collection() -> Collection:
     return Collection(COLLECTION_NAME)
 
 
-# ---------- 009: 长期记忆 Collection ----------
+# ────────── 规格 009: 长期记忆 Collection ──────────
 def init_memory_collection():
     """创建 user_memories Collection（如已存在则跳过）。
 
@@ -264,7 +264,7 @@ def get_memory_collection() -> Collection:
     return Collection(MEMORY_COLLECTION_NAME)
 
 
-# ---------- ES Index 管理 ----------
+# ────────── ES Index 管理 ──────────
 ES_INDEX_NAME = "knowledge_chunks"
 
 

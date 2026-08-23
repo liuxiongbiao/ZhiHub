@@ -23,8 +23,19 @@ def seed():
             ("TK-E2E-0001", "登录页加载缓慢", "用户反馈登录页需要 5 秒以上才能打开", "high"),
             ("TK-E2E-0002", "套餐升级后未生效", "已支付但套餐仍显示旧版本", "urgent"),
         ]:
-            if not db.query(Ticket).filter_by(ticket_no=tno).first():
+            t = db.query(Ticket).filter_by(ticket_no=tno).first()
+            if t is None:
                 db.add(Ticket(tenant_id=TENANT_ID, ticket_no=tno, title=title, description=desc, priority=prio, status="open", phone="13800000001", category="general"))
+            else:
+                # 全局唯一单号被旧租户占用时，认领并改归当前租户（幂等、可跨租户重复执行）
+                t.tenant_id = TENANT_ID
+                t.title = title
+                t.description = desc
+                t.priority = prio
+                t.status = "open"
+                t.phone = "13800000001"
+                t.category = "general"
+                t.assignee_id = None
         # paid 订单 x2（可发货）
         for ono, st, amount in [("ORD-E2E-0001", "paid", 299.0), ("ORD-E2E-0002", "paid", 99.0)]:
             o = db.query(Order).filter_by(order_no=ono).first()
@@ -35,6 +46,8 @@ def seed():
                 o.status = st
                 o.tracking_no = None
                 o.version = 1
+                o.tenant_id = TENANT_ID
+                o.phone = "13800000001"
         db.flush()
         # 退款审批（pending，关联 ORD-E2E-0001）
         o1 = db.query(Order).filter_by(order_no="ORD-E2E-0001").first()

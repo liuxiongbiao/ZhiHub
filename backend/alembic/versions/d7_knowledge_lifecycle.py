@@ -4,7 +4,7 @@ Revision ID: d7_knowledge
 Revises: d6_ticket_cat
 Create Date: 2026-08-06
 
-给 knowledge_documents 加 expires_at + quality_status 列（010 业务闭环 US3 知识库生命周期）。
+给 knowledge_documents 加 expires_at + quality_status 列（规格 010 业务闭环 US3 知识库生命周期）。
 """
 
 from collections.abc import Sequence

@@ -4,11 +4,11 @@ Revision ID: d5_ticket_phone
 Revises: d4b_ticket_order_base
 Create Date: 2026-08-05
 
-给 tickets 和 orders 表加 phone 列（006-mcp-security US1 双因子校验：
+给 tickets 和 orders 表加 phone 列（规格 006 US1 双因子校验：
 终端用户查询工单/订单前校验手机号后4位与业务数据绑定手机号匹配）。
 nullable=True：向后兼容已有数据，未绑定手机号的记录视为不可查询（防枚举）。
 
-down_revision 从 d4_session_msg 改接 d4b_ticket_order_base（012-alembic-from-scratch-fix）：
+down_revision 从 d4_session_msg 改接 d4b_ticket_order_base（规格 012）：
 d4b 已建出 tickets/orders 基表，本迁移方可对其加 phone 列，否则从零 upgrade 崩溃。
 """
 

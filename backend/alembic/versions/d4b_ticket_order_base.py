@@ -4,7 +4,7 @@ Revision ID: d4b_ticket_order_base
 Revises: d4_session_msg
 Create Date: 2026-08-10
 
-建 tickets / orders 基表(012-alembic-from-scratch-fix)。
+建 tickets / orders 基表(规格 012)。
 
 为什么需要: 原迁移链 d5 直接给 tickets/orders 加 phone 列,但从未建这两张表(靠
 init_db create_all 兜底),导致从零 `alembic upgrade head` 在 d5 崩溃

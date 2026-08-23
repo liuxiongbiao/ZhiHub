@@ -1,6 +1,6 @@
-﻿"""app/middlewares/metrics_middleware.py
+"""app/middlewares/metrics_middleware.py
 
-Prometheus HTTP 指标中间件（企业标准监控探针，审查 P2 补齐）。
+Prometheus HTTP 指标中间件（企业标准监控探针，审计复核补齐）。
 记录每个请求的方法/路径/状态码计数与耗时直方图，供 /metrics 抓取。
 """
 
@@ -13,7 +13,7 @@ from app.core import metrics
 
 
 def _normalize_path(request: Request) -> str:
-    """P-007: 归一化路径标签 -- 优先使用路由模板（{param}），防止基数爆炸。"""
+    """归一化路径标签：优先使用路由模板（{param}），防止基数爆炸。"""
     route = request.scope.get("route")
     if route and hasattr(route, "path_format"):
         return route.path_format

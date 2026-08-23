@@ -1,6 +1,6 @@
 """app/core/metrics.py
 
-Prometheus 指标注册表（企业标准监控探针，审查 P2 补齐）。
+Prometheus 指标注册表（企业标准监控探针，审查  补齐）。
 
 指标:
   http_requests_total            HTTP 请求计数（method/path/status）

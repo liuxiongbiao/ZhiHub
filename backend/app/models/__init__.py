@@ -10,6 +10,7 @@ backend/app/models/__init__.py
 from app.models.answer_feedback import AnswerFeedback
 from app.models.audit_log import AuditLog
 from app.models.base import Base
+from app.models.billing_event import BillingEvent
 from app.models.billing_invoice import BillingInvoice
 from app.models.csat import CsatEvaluation
 from app.models.knowledge_document import KnowledgeDocument
@@ -17,7 +18,9 @@ from app.models.message import Message
 from app.models.notification import Notification
 from app.models.order import Order
 from app.models.quick_reply import QuickReply
+from app.models.refresh_token import RefreshToken
 from app.models.refund_approval import RefundApproval
+from app.models.refund_approval_event import RefundApprovalEvent
 from app.models.refund_outbox import RefundOutbox
 from app.models.security_incident import SecurityIncident
 from app.models.session import Session
@@ -27,4 +30,4 @@ from app.models.ticket import Ticket
 from app.models.usage_record import UsageRecord
 from app.models.user import User
 
-__all__ = ["AnswerFeedback", "AuditLog", "Base", "BillingInvoice", "CsatEvaluation", "KnowledgeDocument", "Message", "Order", "QuickReply", "RefundApproval", "RefundOutbox", "SecurityIncident", "Session", "Tenant", "TenantMember", "Ticket", "UsageRecord", "User"]
+__all__ = ["AnswerFeedback", "AuditLog", "Base", "BillingEvent", "BillingInvoice", "CsatEvaluation", "KnowledgeDocument", "Message", "Order", "QuickReply", "RefreshToken", "RefundApproval", "RefundApprovalEvent", "RefundOutbox", "SecurityIncident", "Session", "Tenant", "TenantMember", "Ticket", "UsageRecord", "User"]

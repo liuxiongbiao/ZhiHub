@@ -24,7 +24,7 @@ from app.models.refund_approval import RefundApproval
 def seed():
     db = SessionLocal()
     try:
-        # 工单（006-mcp-security: 绑定终端用户手机号，供双因子校验比对后4位）
+        # 工单（规格 006: 绑定终端用户手机号，供双因子校验比对后4位）
         # phone 统一绑定为测试账号 13800000001，双因子 happy-path 用此号查询通过
         tickets = [
             ("TK-20240001", "登录页面加载缓慢", "用户反馈登录页需要5秒以上才能打开", "high"),
@@ -60,7 +60,7 @@ def seed():
         # 退款审批（给退款审批页提供数据）
         order1 = db.query(Order).filter_by(order_no="ORD-20240001").first()
         if order1:
-            # 模拟 request_refund 后的订单状态（paid -> refunding），供 approve_refund 测试
+            # 模拟 request_refund 后的订单状态（paid → refunding），供 approve_refund 测试
             if order1.status == "paid":
                 order1.status = "refunding"
             existing_refund = db.query(RefundApproval).filter_by(order_id=order1.id).first()

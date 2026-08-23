@@ -30,7 +30,7 @@ def upgrade() -> None:
     op.add_column("users", sa.Column("phone_hash", sa.String(64), nullable=True))
     op.create_index("ix_users_phone_hash", "users", ["phone_hash"], unique=True)
 
-    # phone 列扩容 String(20) -> String(255)（容纳 base64 密文），移除旧 unique/index
+    # phone 列扩容 String(20) → String(255)（容纳 base64 密文），移除旧 unique/index
     op.drop_index("ix_users_phone", table_name="users")
     op.alter_column("users", "phone",
                      existing_type=sa.String(20),
