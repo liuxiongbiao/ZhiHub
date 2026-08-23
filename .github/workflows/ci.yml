@@ -57,6 +57,11 @@ jobs:
           pip-audit -r requirements.txt -f json -o audit.json || true
           python scripts/ci_audit_gate.py audit.json --ignore-file scripts/audit_ignore.json
 
+      - name: Enable MySQL trigger creation (d33 immutability triggers)
+        run: |
+          cd backend
+          python -c "import pymysql; c=pymysql.connect(host='localhost', port=3306, user='root', password='root'); c.cursor().execute('SET GLOBAL log_bin_trust_function_creators = 1'); c.close()"
+
       - name: Migration consistency (alembic upgrade + check)
         run: |
           cd backend
