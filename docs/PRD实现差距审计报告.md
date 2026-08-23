@@ -288,7 +288,7 @@
 
 | 要求 | 状态 |
 |---|---|
-| Chrome/Edge/Firefox 最新两大版本 + Widget 兼容第三方网站 | ⚪ 无显式验证记录（技术栈无已知障碍；建议上线前手动过一遍 Firefox） |
+| Chrome/Edge/Firefox 最新两大版本 + Widget 兼容第三方网站 | ✅ 本机现有 Chrome 151、Edge 151、Firefox 132 三浏览器均完成登录/工作台/知识库/Widget 预览/运营看板与第三方页加载 widget.js 验收，全部 200、0 横向溢出、0 控制台/页面/关键网络异常；未安装版本不虚构，持续“最新两个大版本”应由云浏览器矩阵承担，详见 `docs/browser_compatibility_report.md` |
 | 后端全容器化，支持 Linux/Windows | ✅ Dockerfile + docker-compose 全栈（本机 Windows + CI Ubuntu） |
 
 ### 4.3 安全与隐私（14 条，全部 ✅）
@@ -442,7 +442,7 @@
 
 **答辩时主动交代的边界（坦诚反而加分）**：
 - 支付宝沙箱真实付款闭环待公网环境验证；短信/微信/OCR 为 mock/降级模式（凭据已配但真实发送未验证）
-- 会话状态流转已完成 100 条真实状态链基准；浏览器兼容性仍待补测；数据埋点运营看板已于 2026-08-24 补齐
+- 会话状态流转已完成 100 条真实状态链基准；Chrome/Edge/Firefox 核心页面与第三方 widget.js 均已实测通过；数据埋点运营看板已于 2026-08-24 补齐
 - MCP 背后是自建 mock 业务库（PRD 明示的设计选择，协议层标准可替换真实系统）
 
 ---
@@ -545,7 +545,7 @@ cd C:\Users\Lenovo\Desktop\Three\zhihub\backend
 | 5 | 10MB 大文档 <3 分钟解析入库 | ✅ **达标**：9.50MiB、4,778 块、全管道 26.509s；结束后 DB/Milvus/ES/源文件清理验证通过 | 可重复脚本与明细见 `docs/p1_bench_report.md` B 节 |
 | 6 | 端到端生成场景 P95/P99（阈值修复后） | ✅ **高频场景达标**：25 轮 TTFB/完整回答 P95 0.111s/P99 0.155s，DONE P95 0.112s/P99 0.155s；冷请求尾延迟如实单列 | 安全缓存边界、冷/热口径和脚本见 `docs/p1_bench_report.md` C 节 |
 | 7 | 短信真实发送 <3s | ⏸ 外部条件阻塞（配置链已闭环） | 2026-08-23 核查确认 `deploy/.env` 的 `SMS_ENABLED` 与四项 `ALIYUN_SMS_*` 均未配置，无法真实收码；已补 Compose/两份 env 示例完整透传、开关防误发、production 禁止 mock、2.8s 网关超时、可重复验收脚本与 Runbook；74 项短信/账号/启动配置测试通过。凭据与验收手机号到位后执行 `scripts/verify_sms.py`，仍需人工确认手机收码 |
-| 8 | 浏览器兼容性（Firefox/Edge 手动过一遍） | ⚪ 未做 | 手动或用 Playwright 跑现有 e2e 脚本 |
+| 8 | 浏览器兼容性（Chrome/Edge/Firefox） | ✅ 已验证 | Chrome 151.0.7922.170、Edge 151.0.4129.101、Firefox 132.0：登录/工作台/知识库/Widget 预览/运营看板与第三方页 widget.js 全通过，0 控制台/页面/关键网络异常、0 横向溢出；可重复脚本与边界见 `docs/browser_compatibility_report.md` |
 | 9 | CI 首次实际运行 | ✅ **2026-08-23 双 job 全绿**（后端：依赖审计/迁移一致性/测试覆盖率；前端：依赖审计/类型/单测/构建） | 首轮共排掉 4 类地雷：pip-audit CLI、npm audit 高危、requirements 编码、MySQL 触发器权限与迁移漂移（新增 d35） |
 | 10 | Nginx 反代 API 转发验证 | ✅ 已验证 | /health 200 透传 + SPA fallback 200 + 真实 API 路径 401 正确拒绝 |
 | 11 | 前端生产构建 `npm run build` | ✅ 已验证 | `✓ built in 11.60s`；仅 element 分包 936KB 偏大（见 §十二 C） |
