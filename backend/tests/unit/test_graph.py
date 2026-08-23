@@ -145,6 +145,7 @@ class TestGraphBuild:
         monkeypatch.setattr("app.agents.graph.router_node", _fake_router)
 
         def _fake_ka(state):
+            assert state.get("skip_generation") is True
             return {**state, "final_response": "知识回复", "retrieval_result": []}
         monkeypatch.setattr("app.agents.graph.knowledge_agent_node", _fake_ka)
 
@@ -161,6 +162,7 @@ class TestGraphBuild:
             "retrieval_result": [],
             "current_agent": "router",
             "should_interrupt": False,
+            "skip_generation": True,
             "final_response": "",
         }
 

@@ -50,6 +50,33 @@ class TestRewriteQuery:
         # 完整查询改写后应仍包含核心关键词
         assert "退款" in result or "政策" in result
 
+    def test_colloquial_login_and_plan_terms_are_expanded(self):
+        """口语化故障与价格问法补充知识库术语，不降低 0.3 阈值。"""
+        login = rewrite_query([], "登录一直转圈")
+        plan = rewrite_query([], "有没有便宜方案")
+        assert "登录异常" in login
+        assert "套餐价格" in plan
+
+    def test_complete_query_with_history_skips_llm(self, monkeypatch):
+        """已有历史但当前问句完整时不调用改写 LLM，减少一次外部调用。"""
+        from app.services import retrieval_service
+
+        monkeypatch.setattr(retrieval_service.settings, "llm_enabled", True)
+
+        def _forbidden_llm(**kwargs):
+            raise AssertionError("完整问句不应调用改写 LLM")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "app.core.llm_client",
+            types.SimpleNamespace(llm_complete=_forbidden_llm),
+        )
+        result = rewrite_query(
+            [{"role": "assistant", "content": "请继续提问"}],
+            "登录一直转圈",
+        )
+        assert "登录页面加载缓慢" in result
+
 
 class TestRRFFuse:
     """RRF 融合测试."""

@@ -111,6 +111,52 @@ class RetrievalResult:
 
 
 # ─── 查询改写 ───
+_COLLOQUIAL_QUERY_EXPANSIONS = (
+    (
+        ("登录一直转圈", "登录转圈", "登录卡住", "登录卡顿", "登录进不去"),
+        "登录页面加载缓慢 登录失败 登录异常 排查 解决方案",
+    ),
+    (
+        ("便宜方案", "便宜的套餐", "最便宜", "省钱套餐", "划算套餐"),
+        "套餐价格 试用版 基础版 专业版 月费 价格对比",
+    ),
+)
+
+
+def _normalize_colloquial_query(query: str) -> str:
+    """为高频口语表达补充知识库术语，不改变置信度阈值。"""
+    normalized = query.strip()
+    expansions = [
+        terms
+        for phrases, terms in _COLLOQUIAL_QUERY_EXPANSIONS
+        if any(phrase in normalized for phrase in phrases)
+    ]
+    if not expansions:
+        return normalized
+    return f"{normalized} {' '.join(expansions)}"
+
+
+def _needs_contextual_rewrite(query: str) -> bool:
+    """判断当前问句是否含依赖历史的指代或省略。"""
+    reference_phrases = (
+        "它",
+        "这个",
+        "那个",
+        "这项",
+        "那项",
+        "上面",
+        "刚才",
+        "之前说的",
+        "这种",
+        "那种",
+    )
+    if any(phrase in query for phrase in reference_phrases):
+        return True
+    return len(query.strip()) <= 12 and query.strip().endswith(
+        ("的", "呢", "吗", "可以吗", "怎么办", "多久", "多少")
+    )
+
+
 def rewrite_query(history: list[dict], current_query: str) -> str:
     """指代补全：用 LLM 将对话历史中的省略/指代补全为独立检索查询。
 
@@ -127,8 +173,11 @@ def rewrite_query(history: list[dict], current_query: str) -> str:
 
     如果历史为空或不需要改写，直接返回原查询。
     """
-    if not settings.llm_enabled or not history or len(history) == 0:
-        return current_query
+    normalized_query = _normalize_colloquial_query(current_query)
+    if not settings.llm_enabled or not history:
+        return normalized_query
+    if not _needs_contextual_rewrite(current_query):
+        return normalized_query
 
     # 构建改写 prompt，只取最近 3 轮避免上下文过长
     history_text = "\n".join(
@@ -138,9 +187,10 @@ def rewrite_query(history: list[dict], current_query: str) -> str:
 
     prompt = (
         "根据对话历史，将用户的当前查询改写为独立、完整的检索查询。\n"
-        "只补全指代和省略，不添加额外信息。如果查询已经完整，直接返回原文。\n\n"
+        "只补全指代和省略；同时把口语化故障、价格说法映射为知识库常用术语，"
+        "例如‘一直转圈’对应‘页面加载缓慢/登录异常’，‘便宜方案’对应‘套餐价格对比’。\n\n"
         f"对话历史：\n{history_text}\n\n"
-        f"当前查询：{current_query}\n\n"
+        f"当前查询：{normalized_query}\n\n"
         "改写后的查询："
     )
 
@@ -161,7 +211,7 @@ def rewrite_query(history: list[dict], current_query: str) -> str:
         # 改写失败不影响主流程，回退原查询
         logger.warning(f"Query rewrite failed, using original: {e}")
 
-    return current_query
+    return normalized_query
 
 
 # ─── Milvus 向量召回 ───

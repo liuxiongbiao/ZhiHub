@@ -27,6 +27,7 @@ backend/app/agents/nodes/router.py
 
 import logging
 import os
+import re
 from typing import Any
 
 from pydantic import BaseModel
@@ -110,6 +111,63 @@ def _fallback_result() -> dict[str, Any]:
     }
 
 
+def _extract_fast_slots(message: str) -> dict[str, str]:
+    """从单轮明确问题中提取常见业务槽位，供流式快速路由复用。"""
+    slots: dict[str, str] = {}
+    patterns = {
+        "phone": r"(?<!\d)(1[3-9]\d{9})(?!\d)",
+        "ticket_no": r"(?i)(?:工单号|ticket)\s*[:：#]?\s*([A-Z0-9-]{4,32})",
+        "order_no": r"(?i)(?:订单号|order)\s*[:：#]?\s*([A-Z0-9-]{4,32})",
+    }
+    for key, pattern in patterns.items():
+        matched = re.search(pattern, message)
+        if matched:
+            slots[key] = matched.group(1)
+    return slots
+
+
+def _fast_stream_route(message: str, *, has_history: bool) -> dict[str, Any] | None:
+    """为首轮、意图明确的流式请求返回确定性结构化路由。
+
+    流式链路最关心首包时间；首轮消息没有上下文消歧需求时，无需为「知识咨询」
+    再等待一次远端路由模型。涉及多轮上下文或内容过短时仍回退到 LLM，避免牺牲准确率。
+    """
+    text = message.strip()
+    if has_history or len(text) < 2:
+        return None
+
+    slots = _extract_fast_slots(text)
+    angry_words = ("投诉", "骗子", "垃圾", "太差", "气死", "愤怒")
+    if any(word in text for word in angry_words):
+        return {
+            "intent": "knowledge_consult",
+            "confidence": 0.99,
+            "sentiment": "angry",
+            "slots": slots,
+        }
+
+    # 政策/流程类问题仍属于知识咨询；明确要求执行退款、退货或取消才是敏感操作。
+    sensitive_patterns = (
+        r"(?:我要|帮我|申请|立即|现在).{0,4}(?:退款|退货|取消订单)",
+        r"(?:退款|退货|取消订单).{0,4}(?:申请|操作|办理)",
+    )
+    if any(re.search(pattern, text) for pattern in sensitive_patterns):
+        intent = "sensitive_action"
+    elif "ticket_no" in slots or "工单" in text:
+        intent = "ticket_query"
+    elif "order_no" in slots or any(word in text for word in ("订单", "物流", "快递", "发货", "收货")):
+        intent = "order_query"
+    else:
+        intent = "knowledge_consult"
+
+    return {
+        "intent": intent,
+        "confidence": 0.96,
+        "sentiment": "normal",
+        "slots": slots,
+    }
+
+
 @observe(name="router")
 def router_node(state: dict[str, Any]) -> dict[str, Any]:
     """LangGraph 节点：路由识别。
@@ -144,6 +202,15 @@ def router_node(state: dict[str, Any]) -> dict[str, Any]:
     # 单看当前消息无法判断意图，需结合上文（如"查工单"）才能正确路由。
     # 取最近 6 条消息（3 轮）的历史拼进 prompt 供 LLM 参考。
     recent = [m for m in messages[-7:] if m.get("role") in ("user", "assistant")]
+    if state.get("skip_generation"):
+        fast_result = _fast_stream_route(last_user, has_history=len(recent) > 1)
+        if fast_result is not None:
+            logger.info(
+                "Router fast path: intent=%s, confidence=%.2f",
+                fast_result["intent"],
+                fast_result["confidence"],
+            )
+            return fast_result
     if len(recent) > 1:
         history = "\n".join(
             f"{'用户' if m['role']=='user' else '助手'}: {m['content'][:150]}"

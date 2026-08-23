@@ -56,7 +56,7 @@ class AgentState(TypedDict, total=False):
       - 对话历史: messages（逐步追加）
       - 路由输出: intent, confidence, sentiment, slots
       - 知识输出: retrieval_result
-      - 编排控制: current_agent, should_interrupt
+      - 编排控制: current_agent, should_interrupt, skip_generation
       - 最终输出: final_response
     """
     # 会话标识
@@ -74,6 +74,8 @@ class AgentState(TypedDict, total=False):
     # 编排控制
     current_agent: str     # 当前正在执行的节点名
     should_interrupt: bool  # 是否触发中断转人工
+    # 流式链路由服务层逐 token 生成，图内知识节点只检索，避免先完整生成一次再重复生成。
+    skip_generation: bool
     # 最终输出
     final_response: str    # 给用户的回复文本
 

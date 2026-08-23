@@ -9,7 +9,7 @@ backend/app/api/v1/session.py
   GET  /list                          会话列表（分页 + 筛选）      -> session_crud.list_sessions
   GET  /{session_id}                  会话详情（含消息列表）        -> session_service.get_session_detail
   POST /message                       发送消息驱动 Agent            -> agent_service.handle_message
-  POST /message/stream                SSE 流式输出                  -> litellm.completion(stream=True)
+  POST /message/stream                SSE 流式输出                  -> agent_service.stream_message_events
   POST /{session_id}/claim            坐席认领（Redis SETNX 锁）    -> human_service.claim_session
   POST /{session_id}/return-to-agent  坐席退回给 AI                 -> human_service.return_to_agent
   GET  /{session_id}/trace            Agent 执行轨迹（MongoDB）     -> trace_service.get_trace_by_session
@@ -24,8 +24,8 @@ backend/app/api/v1/session.py
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DbSession
-import asyncio
 import json
+import logging
 
 from app.api.deps import get_db, require_role
 from app.schemas.session import (
@@ -47,6 +47,7 @@ from app.services import session_service
 from app.services import tenant_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _get_tenant_id(request: Request) -> int:
@@ -201,7 +202,7 @@ async def send_message_stream(body: SendMessageRequest, request: Request, db: Db
       finalize_message_stream: 保存 assistant 消息 + 计费 + trace + 记忆抽取
     """
     from app.crud import session as session_crud
-    from app.services.agent_service import prepare_message_stream, finalize_message_stream
+    from app.services.agent_service import stream_message_events
 
     tenant_id = _get_tenant_id(request)
     # PRD §3.4/4.1：stream 端点同样受终端用户级限流（10 次/分钟）
@@ -221,75 +222,17 @@ async def send_message_stream(body: SendMessageRequest, request: Request, db: Db
 
     async def generate():
         try:
-            # 1. 预处理 + graph.invoke（线程池执行，不阻塞事件循环）
-            prep = await asyncio.to_thread(
-                prepare_message_stream,
-                db=db, session_id=body.session_id, tenant_id=tenant_id, user_message=body.content,
-            )
-
-            if not prep["need_stream"]:
-                # 转人工/降级/无检索 → 直接返回完整内容
-                content = prep["content"]
-                result = await asyncio.to_thread(
-                    finalize_message_stream,
-                    db=db, session_id=body.session_id, tenant_id=tenant_id,
-                    content=content, prep=prep,
-                )
-                yield f"data: {json.dumps({'chunk': content})}\n\n"
-                if result.get("message_id"):
-                    yield f"data: {json.dumps({'message_id': result['message_id']})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-
-            # 2. 真流式: llm_complete_stream 逐 token yield（队列桥接 sync→async）
-            import queue as _queue
-            import threading as _threading
-            from app.core.llm_client import llm_complete_stream
-            from app.services.agent_service import build_stream_messages
-
-            messages = build_stream_messages(body.content, prep["retrieval_result"], prep["context"])
-            q = _queue.Queue()
-
-            def _stream_worker():
-                full = []
-                try:
-                    for chunk in llm_complete_stream(messages=messages, max_tokens=800, temperature=0.3):
-                        full.append(chunk)
-                        q.put(chunk)
-                except Exception as e:
-                    q.put(e)
-                finally:
-                    q.put(None)  # sentinel
-                    q.put("".join(full))
-
-            _threading.Thread(target=_stream_worker, daemon=True).start()
-
-            # 3. 逐 chunk 发送 SSE 事件
-            while True:
-                item = await asyncio.to_thread(q.get)
-                if item is None:
-                    break
-                if isinstance(item, Exception):
-                    yield f"data: {json.dumps({'error': str(item)})}\n\n"
-                    break
-                yield f"data: {json.dumps({'chunk': item})}\n\n"
-
-            # 4. 获取完整内容（worker 在 sentinel 后放入）
-            full_content = await asyncio.to_thread(q.get)
-            if not full_content:
-                full_content = prep["content"]
-
-            # 5. 后处理: 保存 assistant 消息 + 计费 + trace
-            result = await asyncio.to_thread(
-                finalize_message_stream,
-                db=db, session_id=body.session_id, tenant_id=tenant_id,
-                content=full_content, prep=prep,
-            )
-            if result.get("message_id"):
-                yield f"data: {json.dumps({'message_id': result['message_id']})}\n\n"
+            async for event in stream_message_events(
+                db,
+                session_id=body.session_id,
+                tenant_id=tenant_id,
+                user_message=body.content,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        except Exception:
+            logger.exception("Session stream failed: session=%s", body.session_id)
+            yield f"data: {json.dumps({'error': '流式处理失败，请稍后重试'}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

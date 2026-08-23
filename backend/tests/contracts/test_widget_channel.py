@@ -130,6 +130,42 @@ class TestWidgetMessage:
         )
         assert resp.status_code == 403
 
+    def test_stream_message_emits_chunks_and_sources(self, client, db, monkeypatch):
+        """Widget 流式端点复用 Agent 服务并返回增量文本、引用与结束标记。"""
+        tenant, key = _mk_tenant_with_key(db)
+        sess = client.post(
+            "/api/v1/widget/session",
+            json={"api_key": key, "origin": "https://shop.example.com"},
+        ).json()
+
+        from app.services import agent_service
+
+        async def fake_events(db_, *, session_id, tenant_id, user_message):
+            assert session_id == sess["session_id"]
+            assert tenant_id == tenant.id
+            assert user_message == "退款政策"
+            yield {"type": "chunk", "chunk": "退款"}
+            yield {"type": "chunk", "chunk": "政策"}
+            yield {
+                "type": "meta",
+                "message_id": 8,
+                "sources": [{"doc": "退款政策.pdf"}],
+                "metadata": {},
+            }
+
+        monkeypatch.setattr(agent_service, "stream_message_events", fake_events)
+        resp = client.post(
+            f"/api/v1/widget/{sess['session_id']}/message/stream",
+            headers={"Authorization": f"Bearer {sess['token']}"},
+            json={"session_id": sess["session_id"], "content": "退款政策"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert '"chunk": "退款"' in resp.text
+        assert '"chunk": "政策"' in resp.text
+        assert '"doc": "退款政策.pdf"' in resp.text
+        assert "[DONE]" in resp.text
+
 
 class TestWidgetRefundCancel:
     def _mk_pending_refund(self, db, *, phone="13800138000"):

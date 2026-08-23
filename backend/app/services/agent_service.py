@@ -24,8 +24,15 @@ backend/app/services/agent_service.py
           memory_service（记忆注入/抽取）、billing_service（计费）、trace_service（trace）
 """
 
+import asyncio
+import hashlib
+import json
 import logging
+import queue
+import re
+import threading
 import time
+from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session as DbSession
 
@@ -41,6 +48,86 @@ logger = logging.getLogger(__name__)
 # Token 预算（与 BUILD_PLAN 对齐）
 MAX_TOKEN_BUDGET = 4000  # 上下文 token 上限，超则截断历史
 MAX_ROUNDS = settings.max_rounds_per_session  # 单会话最大轮次（PRD 3.4: 15，可配置）
+ANSWER_CACHE_TTL_SECONDS = 3600
+
+
+def _normalize_answer_cache_query(message: str) -> str:
+    """归一化常见知识问题，用哈希键缓存，避免 Redis 键暴露用户原文。"""
+    lowered = message.strip().lower()
+    return re.sub(r"[\s，。！？、,.!?；;：:（）()]+", "", lowered)
+
+
+def _is_answer_cache_eligible(user_message: str, existing_context: list[dict]) -> bool:
+    """仅允许无历史、无明显业务编号或敏感操作的常见知识问题进入共享缓存。"""
+    normalized = _normalize_answer_cache_query(user_message)
+    if existing_context or not 4 <= len(normalized) <= 80:
+        return False
+    if re.search(r"\d{4,}", normalized):
+        return False
+    sensitive_phrases = ("我要退款", "申请退款", "取消订单", "投诉", "手机号", "身份证")
+    return not any(phrase in normalized for phrase in sensitive_phrases)
+
+
+def _answer_cache_key(tenant_id: int, user_message: str) -> str:
+    """构造租户隔离的回答缓存键。"""
+    digest = hashlib.sha256(
+        _normalize_answer_cache_query(user_message).encode("utf-8")
+    ).hexdigest()
+    return f"answer_cache:{tenant_id}:{digest}"
+
+
+def _get_cached_answer(tenant_id: int, user_message: str) -> dict | None:
+    """读取并校验常见问题缓存；缓存损坏时删除并降级为正常生成。"""
+    from app.core.redis import get_redis
+
+    redis = get_redis()
+    key = _answer_cache_key(tenant_id, user_message)
+    raw = redis.get(key)
+    if not raw:
+        return None
+    try:
+        cached = json.loads(raw)
+        if not isinstance(cached.get("content"), str) or not cached["content"].strip():
+            raise ValueError("回答内容为空")
+        if not isinstance(cached.get("sources", []), list):
+            raise ValueError("引用结构非法")
+        return cached
+    except (json.JSONDecodeError, TypeError, ValueError, KeyError):
+        redis.delete(key)
+        return None
+
+
+def _store_cached_answer(tenant_id: int, user_message: str, payload: dict) -> None:
+    """写入带有效期的租户级常见问题缓存，失败不阻断主链路。"""
+    from app.core.redis import get_redis
+
+    try:
+        get_redis().set(
+            _answer_cache_key(tenant_id, user_message),
+            json.dumps(payload, ensure_ascii=False),
+            ex=ANSWER_CACHE_TTL_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("Answer cache write failed: %s", exc)
+
+
+def _save_memory_non_blocking(tenant_id: int, end_user_id: str | None, user_message: str) -> None:
+    """后台抽取并保存长期记忆；非关键任务不得延迟用户收到完整回答。"""
+    if not settings.llm_enabled or not end_user_id or not user_message:
+        return
+
+    def worker() -> None:
+        """执行外部模型抽取与 Milvus 保存，失败仅记录告警。"""
+        try:
+            from app.services.memory_service import extract_facts, save_memory
+
+            facts = extract_facts(user_message)
+            if facts:
+                save_memory(tenant_id, end_user_id, facts)
+        except Exception as exc:
+            logger.warning("Memory save failed (non-blocking): %s", exc)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def _quota_status(db: DbSession, tenant_id: int) -> str:
@@ -472,15 +559,8 @@ def handle_message(
         f"confidence={confidence:.2f}, elapsed={elapsed}ms, tokens={tokens_used}"
     )
 
-    # 规格 009 US2: 长期记忆抽取+保存（跨会话用户偏好，降级不阻断）
-    if settings.llm_enabled:
-        try:
-            from app.services.memory_service import extract_facts, save_memory
-            facts = extract_facts(user_message)
-            if facts and end_user_id:
-                save_memory(tenant_id, end_user_id, facts)
-        except Exception as e:
-            logger.warning(f"Memory save failed (non-blocking): {e}")
+    # 长期记忆是非关键后处理，后台执行，避免外部抽取模型延迟完整回答。
+    _save_memory_non_blocking(tenant_id, end_user_id, user_message)
 
     return {
         "message_id": msg_id,
@@ -534,22 +614,65 @@ def prepare_message_stream(
                 "elapsed_ms": int((time.perf_counter() - start) * 1000)}
 
     context = session_service.get_context(session_id)
+    cache_eligible = _is_answer_cache_eligible(user_message, context)
     context.append({"role": "user", "content": user_message})
-    if settings.llm_enabled:
-        try:
-            from app.services.memory_service import search_memory
-            memories = search_memory(tenant_id, end_user_id, user_message) if end_user_id else []
-            if memories:
-                memory_text = "；".join(memories)
-                context.insert(0, {"role": "system", "content": f"用户历史记忆: {memory_text}"})
-        except Exception as e:
-            logger.warning(f"Memory search failed (non-blocking): {e}")
 
     session_crud.create_message(db, session_id=session_id, role="user", content=user_message)
 
     final_state = _detect_injection(db, session_id=session_id, tenant_id=tenant_id, user_message=user_message)
 
     if final_state is None:
+        cached = _get_cached_answer(tenant_id, user_message) if cache_eligible else None
+        if cached is not None:
+            cached_sources = cached.get("sources", [])
+            retrieval_result = [
+                {
+                    "doc_filename": source.get("doc", "未知文档"),
+                    "chunk_index": source.get("chunk_index", 0),
+                    "chunk_text": source.get("text", ""),
+                    "score": 1.0,
+                }
+                for source in cached_sources
+                if isinstance(source, dict)
+            ]
+            cached_intent = cached.get("intent", "knowledge_consult")
+            cached_confidence = float(cached.get("confidence", 0.96))
+            logger.info("Answer cache hit: tenant=%s session=%s", tenant_id, session_id)
+            return {
+                "need_stream": False,
+                "content": cached["content"],
+                "retrieval_result": retrieval_result,
+                "intent": cached_intent,
+                "confidence": cached_confidence,
+                "sentiment": "normal",
+                "should_interrupt": False,
+                "context": context,
+                "session": s,
+                "end_user_id": end_user_id,
+                "final_state": {
+                    "cache_hit": True,
+                    "intent": cached_intent,
+                    "confidence": cached_confidence,
+                    "sentiment": "normal",
+                    "retrieval_result": retrieval_result,
+                    "should_interrupt": False,
+                },
+                "elapsed_ms": int((time.perf_counter() - start) * 1000),
+                "cache_eligible": cache_eligible,
+                "user_message": user_message,
+            }
+
+        if settings.llm_enabled:
+            try:
+                from app.services.memory_service import search_memory
+
+                memories = search_memory(tenant_id, end_user_id, user_message) if end_user_id else []
+                if memories:
+                    memory_text = "；".join(memories)
+                    context.insert(0, {"role": "system", "content": f"用户历史记忆: {memory_text}"})
+            except Exception as e:
+                logger.warning(f"Memory search failed (non-blocking): {e}")
+
         session_crud.update_status(db, s, "routing")
         db.commit()
         if len(context) > MAX_ROUNDS * 2:
@@ -592,7 +715,8 @@ def prepare_message_stream(
             "retrieval_result": retrieval_result, "intent": intent, "confidence": confidence,
             "sentiment": sentiment, "should_interrupt": should_interrupt, "context": context,
             "session": s, "end_user_id": end_user_id, "final_state": final_state,
-            "elapsed_ms": int((time.perf_counter() - start) * 1000)}
+            "elapsed_ms": int((time.perf_counter() - start) * 1000),
+            "cache_eligible": cache_eligible, "user_message": user_message}
 
 
 def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
@@ -636,13 +760,33 @@ def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
         s.effective_reply = True
     db.commit()
 
+    final_state = prep.get("final_state", {})
+    if (
+        prep.get("cache_eligible")
+        and not final_state.get("cache_hit")
+        and intent == "knowledge_consult"
+        and not should_interrupt
+        and not final_state.get("generation_failed")
+        and content.strip()
+        and sources
+    ):
+        _store_cached_answer(
+            tenant_id,
+            prep.get("user_message", ""),
+            {
+                "content": content,
+                "sources": sources,
+                "intent": intent,
+                "confidence": round(confidence, 4),
+            },
+        )
+
     if should_interrupt:
         _notify_new_session(tenant_id=tenant_id, session_id=s.id)
 
     try:
         import threading, asyncio as _aio
         from app.services.trace_service import save_trace
-        final_state = prep.get("final_state", {})
         final_state["final_response"] = content
         def _save_trace():
             try:
@@ -653,15 +797,8 @@ def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
     except Exception:
         logger.warning("Trace save skipped")
 
-    if settings.llm_enabled:
-        try:
-            from app.services.memory_service import extract_facts, save_memory
-            user_msg = context[-2]["content"] if len(context) >= 2 else ""
-            facts = extract_facts(user_msg)
-            if facts and end_user_id:
-                save_memory(tenant_id, end_user_id, facts)
-        except Exception as e:
-            logger.warning(f"Memory save failed (non-blocking): {e}")
+    user_msg = context[-2]["content"] if len(context) >= 2 else ""
+    _save_memory_non_blocking(tenant_id, end_user_id, user_msg)
 
     logger.info(f"Agent stream: session={session_id}, intent={intent}, elapsed={elapsed}ms")
     return {"message_id": msg_id, "role": "assistant", "content": content,
@@ -684,3 +821,90 @@ def build_stream_messages(user_message: str, retrieval_result: list, context: li
             messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": user_message})
     return messages
+
+
+async def stream_message_events(
+    db: DbSession,
+    *,
+    session_id: int,
+    tenant_id: int,
+    user_message: str,
+) -> AsyncIterator[dict]:
+    """统一生成会话流式领域事件，供管理端和 Widget 两个 HTTP 通道复用。
+
+    事件只有两类：``chunk`` 表示增量文本，``meta`` 表示已落库的消息编号、引用和
+    元数据。同步 LLM 迭代器通过后台线程与队列桥接，避免阻塞 FastAPI 事件循环。
+    """
+    prep = await asyncio.to_thread(
+        prepare_message_stream,
+        db=db,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        user_message=user_message,
+    )
+
+    if not prep["need_stream"]:
+        content = prep["content"]
+        result = await asyncio.to_thread(
+            finalize_message_stream,
+            db=db,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            content=content,
+            prep=prep,
+        )
+        # 先完成消息落库，再向客户端发送文本；长期记忆抽取已转后台，不会拖慢首包。
+        yield {"type": "chunk", "chunk": content}
+        yield {
+            "type": "meta",
+            "message_id": result.get("message_id"),
+            "sources": result.get("sources", []),
+            "metadata": result.get("metadata", {}),
+        }
+        return
+
+    from app.core.llm_client import llm_complete_stream
+
+    messages = build_stream_messages(user_message, prep["retrieval_result"], prep["context"])
+    event_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+
+    def _stream_worker() -> None:
+        """在独立线程中消费同步模型流，并把结果投递给异步生成器。"""
+        full: list[str] = []
+        try:
+            for chunk in llm_complete_stream(messages=messages, max_tokens=800, temperature=0.3):
+                full.append(chunk)
+                event_queue.put(("chunk", chunk))
+            event_queue.put(("complete", "".join(full)))
+        except Exception as exc:  # pragma: no cover - 由端点契约测试覆盖异常事件
+            event_queue.put(("error", exc))
+
+    threading.Thread(target=_stream_worker, daemon=True).start()
+
+    full_content = ""
+    while True:
+        event_type, payload = await asyncio.to_thread(event_queue.get)
+        if event_type == "chunk":
+            yield {"type": "chunk", "chunk": str(payload)}
+            continue
+        if event_type == "error":
+            raise payload if isinstance(payload, Exception) else RuntimeError("流式生成失败")
+        full_content = str(payload)
+        break
+
+    if not full_content:
+        full_content = prep["content"]
+    result = await asyncio.to_thread(
+        finalize_message_stream,
+        db=db,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        content=full_content,
+        prep=prep,
+    )
+    yield {
+        "type": "meta",
+        "message_id": result.get("message_id"),
+        "sources": result.get("sources", []),
+        "metadata": result.get("metadata", {}),
+    }

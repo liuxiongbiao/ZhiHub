@@ -192,6 +192,66 @@
     });
   }
 
+  /** 发送 SSE 请求并逐块回调文本；返回最终 message_id、sources 与 metadata。 */
+  function postStream(path, body, token, onChunk) {
+    var headers = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = 'Bearer ' + token;
+    return fetch(endpoint + path, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(body),
+    }).then(function (response) {
+      if (!response.ok) {
+        return response.json().then(function (data) {
+          return { status: response.status, data: data };
+        }).catch(function () {
+          return { status: response.status, data: {} };
+        });
+      }
+
+      var reader = response.body && response.body.getReader ? response.body.getReader() : null;
+      if (!reader) throw new Error('当前浏览器不支持流式回复');
+      var decoder = new TextDecoder('utf-8');
+      var buffer = '';
+      var finalData = {};
+
+      function consumeEvent(block) {
+        var dataLines = block.split(/\r?\n/).filter(function (line) {
+          return line.indexOf('data:') === 0;
+        }).map(function (line) {
+          return line.slice(5).trimStart();
+        });
+        if (!dataLines.length) return;
+        var raw = dataLines.join('\n');
+        if (raw === '[DONE]') return;
+        var event;
+        try { event = JSON.parse(raw); } catch (e) { return; }
+        if (event.error) throw new Error(event.error);
+        if (event.chunk) onChunk(event.chunk);
+        if (event.message_id) finalData.message_id = event.message_id;
+        if (event.sources) finalData.sources = event.sources;
+        if (event.metadata) finalData.metadata = event.metadata;
+      }
+
+      function consumeBuffer(flush) {
+        var blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = flush ? '' : blocks.pop();
+        blocks.forEach(consumeEvent);
+        if (flush && buffer) consumeEvent(buffer);
+      }
+
+      function pump() {
+        return reader.read().then(function (part) {
+          buffer += decoder.decode(part.value || new Uint8Array(), { stream: !part.done });
+          consumeBuffer(part.done);
+          if (part.done) return { status: response.status, data: finalData };
+          return pump();
+        });
+      }
+      return pump();
+    });
+  }
+
   /** token 过期/失效: 清理旧会话与连接，提示重新开始 */
   function resetSession(reason) {
     closeWs();
@@ -322,8 +382,19 @@
     send.textContent = '发送中';
     input.value = '';
     appendMsg('user', text);
+    showStatus('智能助手正在输入…');
+    var streamBubble = null;
     ensureSession().then(function (sess) {
-      return post('/' + sess.session_id + '/message', { session_id: sess.session_id, content: text }, sess.token);
+      return postStream(
+        '/' + sess.session_id + '/message/stream',
+        { session_id: sess.session_id, content: text },
+        sess.token,
+        function (chunk) {
+          if (!streamBubble) streamBubble = appendMsg('assistant', '');
+          streamBubble.appendChild(document.createTextNode(chunk));
+          log.scrollTop = log.scrollHeight;
+        }
+      );
     }).then(function (res) {
       if (res.status === 401 || res.status === 403) {
         // token 过期/会话令牌不匹配: 清理旧会话，提示重新开始（下一条消息自动重建）
@@ -339,11 +410,13 @@
         return;
       }
       var d = res.data || {};
-      var bubble = appendMsg('assistant', d.content || '暂时无法回复，请稍后重试');
-      appendSources(bubble, d.sources);
+      if (!streamBubble) streamBubble = appendMsg('assistant', '暂时无法回复，请稍后重试');
+      appendSources(streamBubble, d.sources);
       // 仅降级模式设置状态；普通回复不清状态，避免覆盖 WS 先到的转人工提示
       if (d.metadata && d.metadata.degraded) {
         showStatus('当前为降级模式，回答质量可能受限');
+      } else if (status.textContent === '智能助手正在输入…') {
+        showStatus('');
       }
     }).catch(function (err) {
       appendMsg('assistant', (err && err.message) || '网络异常，请稍后重试');

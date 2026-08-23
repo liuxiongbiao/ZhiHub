@@ -67,6 +67,35 @@ class TestLangChainRouter:
         assert result["intent"] == "knowledge_consult"
         assert result["confidence"] == 0.3
 
+    @pytest.mark.parametrize(
+        ("message", "intent"),
+        [
+            ("登录页面一直转圈怎么办", "knowledge_consult"),
+            ("订单 ORD-2026-001 什么时候发货", "order_query"),
+            ("帮我查询工单 TK-7788", "ticket_query"),
+            ("我要申请退款", "sensitive_action"),
+        ],
+    )
+    def test_first_turn_stream_uses_fast_structured_route(self, monkeypatch, message, intent):
+        """首轮流式明确问题不等待远端路由模型，仍返回完整结构化结果。"""
+        from app.agents.nodes import router as router_mod
+
+        class UnexpectedChain:
+            """快速路径生效时不应调用的模型桩。"""
+
+            def invoke(self, messages):
+                raise AssertionError("首轮流式明确问题不应调用路由模型")
+
+        monkeypatch.setattr(router_mod, "_router_agent", UnexpectedChain())
+        result = router_mod.router_node({
+            "messages": [{"role": "user", "content": message}],
+            "tenant_id": 1,
+            "skip_generation": True,
+        })
+        assert result["intent"] == intent
+        assert result["confidence"] >= 0.9
+        assert set(result) == {"intent", "confidence", "sentiment", "slots"}
+
 
 class TestLangChainMemory:
     """记忆抽取 LangChain 结构化输出契约。"""

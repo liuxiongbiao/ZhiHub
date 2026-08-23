@@ -165,7 +165,8 @@ def knowledge_agent_node(state: dict[str, Any]) -> dict[str, Any]:
         result = hybrid_search(
             query=last_user,
             tenant_id=tenant_id,
-            history=messages,
+            # 当前用户消息不是“历史”；剔除后首轮会直接跳过改写 LLM，避免无意义外部调用。
+            history=messages[:-1],
         )
 
         # PRD §3.3：HyDE 兜底后仍低置信度 → 强制转人工（防止硬编答案）

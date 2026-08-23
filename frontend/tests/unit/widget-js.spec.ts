@@ -38,6 +38,15 @@ function jsonResponse(status: number, data: unknown) {
   })
 }
 
+/** 构造浏览器 Fetch 可增量读取的 SSE 响应。 */
+function sseResponse(events: unknown[]) {
+  const payload = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n'
+  return new Response(payload, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  })
+}
+
 /** jsdom 会把 hex 归一化成 rgb()，断言前转换 */
 function hexToRgb(hex: string): string {
   const m = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex)!
@@ -166,21 +175,26 @@ describe('widget.js sources doc field ()', () => {
   it('displays sources[].doc file name instead of generic fallback', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(201, sessionResponse()))
-      .mockResolvedValueOnce(jsonResponse(200, {
-        message_id: 2,
-        role: 'assistant',
-        content: '退款政策如下',
-        sources: [{ doc: '退款政策.pdf', chunk_index: 2 }],
-        metadata: {},
-      }))
+      .mockResolvedValueOnce(sseResponse([
+        { type: 'chunk', chunk: '退款政策' },
+        { type: 'chunk', chunk: '如下' },
+        {
+          type: 'meta',
+          message_id: 2,
+          sources: [{ doc: '退款政策.pdf', chunk_index: 2 }],
+          metadata: {},
+        },
+      ]))
     vi.stubGlobal('fetch', fetchMock)
 
     loadWidget()
     await openAndSend(fetchMock)
 
     const logText = document.querySelector('.zhihub-widget-log')!.textContent!
+    expect(logText).toContain('退款政策如下')
     expect(logText).toContain('退款政策.pdf')
     expect(logText).toContain('引用')
+    expect(fetchMock.mock.calls[1][0]).toContain('/message/stream')
   })
 })
 

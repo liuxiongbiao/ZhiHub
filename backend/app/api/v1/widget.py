@@ -3,7 +3,11 @@
 业务规则来源: PRD §3.1.3 / docs/specs/014-widget-public-channel/spec.md
 """
 
+import json
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -11,6 +15,7 @@ from app.api.deps import get_db
 from app.schemas.session import SendMessageRequest, SendMessageResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _get_tenant_id(request: Request) -> int:
@@ -41,6 +46,35 @@ class WidgetRefundCancelRequest(BaseModel):
     session_id: int
     phone: str
     reason: str
+
+
+def _ensure_widget_message_allowed(
+    db: Session,
+    request: Request,
+    *,
+    session_id: int,
+    tenant_id: int,
+) -> None:
+    """统一校验 Widget 消息的租户限流、会话令牌、会话限流和会话状态。"""
+    from app.services.rate_limit_service import check_tenant_rate_limit, check_widget_rate_limit
+
+    if not check_tenant_rate_limit(tenant_id)["allowed"]:
+        raise HTTPException(status_code=429, detail="租户请求过于频繁，请稍后再试")
+    if getattr(request.state, "widget_session_id", None) != session_id:
+        raise HTTPException(status_code=403, detail="会话令牌不匹配")
+    if not check_widget_rate_limit(session_id)["allowed"]:
+        raise HTTPException(status_code=429, detail="您提问过于频繁，请稍后再试")
+
+    from app.crud import session as session_crud
+    from app.services import session_service
+
+    widget_session = session_crud.get_by_id(db, session_id, tenant_id)
+    if widget_session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    try:
+        session_service.ensure_agent_execution_allowed(widget_session)
+    except session_service.SessionHumanControlled as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/session", response_model=WidgetSessionResponse, status_code=201)
@@ -79,21 +113,12 @@ def send_widget_message(
 ):
     """Widget 令牌发消息：令牌会话与路径一致 + 会话归属 + 限流。"""
     tenant_id = _get_tenant_id(request)
-    # PRD §3.4 双重限流：Widget 匿名通道补租户级限流（全局中间件对匿名请求跳过）
-    from app.services.rate_limit_service import check_tenant_rate_limit
-    if not check_tenant_rate_limit(tenant_id)["allowed"]:
-        raise HTTPException(status_code=429, detail="租户请求过于频繁，请稍后再试")
-    if getattr(request.state, "widget_session_id", None) != session_id:
-        raise HTTPException(status_code=403, detail="会话令牌不匹配")
-
-    from app.services.rate_limit_service import check_widget_rate_limit
-    if not check_widget_rate_limit(session_id)["allowed"]:
-        raise HTTPException(status_code=429, detail="您提问过于频繁，请稍后再试")
-
-    from app.crud import session as session_crud
-    s = session_crud.get_by_id(db, session_id, tenant_id)
-    if s is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    _ensure_widget_message_allowed(
+        db,
+        request,
+        session_id=session_id,
+        tenant_id=tenant_id,
+    )
 
     from app.services.agent_service import handle_message
     try:
@@ -102,6 +127,43 @@ def send_widget_message(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail="Agent 处理失败，请稍后重试") from e
+
+
+@router.post("/{session_id}/message/stream")
+async def stream_widget_message(
+    session_id: int,
+    body: SendMessageRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Widget 令牌发消息并以 SSE 返回真实增量文本与最终引用。"""
+    tenant_id = _get_tenant_id(request)
+    _ensure_widget_message_allowed(
+        db,
+        request,
+        session_id=session_id,
+        tenant_id=tenant_id,
+    )
+
+    from app.services.agent_service import stream_message_events
+
+    async def generate():
+        """把服务层领域事件编码为浏览器可消费的 SSE。"""
+        try:
+            async for event in stream_message_events(
+                db,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                user_message=body.content,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception:
+            logger.exception("Widget stream failed: session=%s", session_id)
+            yield f"data: {json.dumps({'error': '流式处理失败，请稍后重试'}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/refunds/{approval_id}/cancel", status_code=200)
