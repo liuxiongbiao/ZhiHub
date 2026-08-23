@@ -12,7 +12,7 @@ backend/app/models/tenant.py
 
 from decimal import Decimal
 
-from sqlalchemy import Integer, Numeric, String
+from sqlalchemy import Boolean, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel
@@ -32,17 +32,20 @@ class Tenant(BaseModel):
     # 租户状态：active(正常)/readonly(只读，欠费等场景)/closed(已关闭)
     # enterprise 套餐注册时为 pending_review（待审核，不自动激活）
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
-    # 配置向导当前步骤：basic->knowledge->mcp->team->done（PRD 3.1，有序推进不可跳步）
+    # 配置向导当前步骤：basic→knowledge→mcp→team→done（PRD §3.1，有序推进不可跳步）
     wizard_step: Mapped[str] = mapped_column(String(20), nullable=False, default="basic")
     # 退款审批阈值：单笔退款金额超过此值需要人工审批（对应后续 human-in-the-loop 逻辑）
     # Numeric 列返回 Decimal，注解与列类型对齐（T-遗留1）
     refund_approval_threshold: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=0)
-    # 020 Widget 品牌定制（PRD 3.8）：嵌入组件主题色/Logo/欢迎语，租户自定义品牌
+    # Widget 品牌定制（PRD §3.8）：嵌入组件主题色/Logo/欢迎语，租户自定义品牌
     widget_theme_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#1890ff")
     widget_logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     widget_welcome_text: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    # 014 Widget 公共通道：API Key 仅存 SHA-256 哈希（防库泄露后直接使用）；域名白名单逗号分隔
+    # 规格 014 Widget 公共通道：API Key 仅存 SHA-256 哈希（防库泄露后直接使用）；域名白名单逗号分隔
     widget_api_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     widget_allowed_domains: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    # 026 多模型计费折算（PRD 3.9）：租户默认模型，计费时按 MODEL_WEIGHTS 折算配额
+    # 多模型计费折算（PRD §3.9）：租户默认模型，计费时按 MODEL_WEIGHTS 折算配额
     default_model: Mapped[str] = mapped_column(String(100), nullable=False, default="deepseek/deepseek-chat")
+    # 迁移 d34： 演示租户持久标记 —— 所有权校验不依赖可碰撞的 name。
+    # 归档旧演示实例时保留 True（识别历史演示租户），新实例重新置 True。
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

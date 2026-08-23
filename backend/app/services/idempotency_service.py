@@ -63,7 +63,7 @@ def with_idempotency(
     """
     cached = check_idempotency(namespace, client_request_id)
     if cached:
-        # 命中缓存 -- 直接返回，不执行业务函数，拦截重复请求/网络重试
+        # 命中缓存 —— 直接返回，不执行业务函数，拦截重复请求/网络重试
         logger.info(f"Idempotency hit: {client_request_id}")
         return cached, True
 
@@ -76,7 +76,7 @@ def with_idempotency(
 
     try:
         result = action(*args, **kwargs)
-        # 从结果提取 resource_id -- 兼容 dict（取 "id"）和 ORM 对象（取 .id）
+        # 从结果提取 resource_id —— 兼容 dict（取 "id"）和 ORM 对象（取 .id）
         resource_id = result["id"] if isinstance(result, dict) else result.id
         record_idempotency(namespace, client_request_id, resource_type, resource_id)
     except Exception:
@@ -87,7 +87,7 @@ def with_idempotency(
     # 业务成功：清理 in-progress 标记（最终结果已由 record_idempotency 写入）
     r.delete(processing_key)
 
-    # 统一返回 dict -- ORM 对象也包装成 {resource_type, resource_id}
+    # 统一返回 dict —— ORM 对象也包装成 {resource_type, resource_id}
     if isinstance(result, dict):
         return result, False
     return {"resource_type": resource_type, "resource_id": resource_id}, False

@@ -70,7 +70,10 @@ def verify_password(password: str, password_hash: str) -> bool:
     return _pwd_context.verify(password, password_hash)
 
 
-def create_access_token(subject: str, extra_claims: dict[str, Any] | None = None) -> str:
+def create_access_token(
+    subject: str, extra_claims: dict[str, Any] | None = None,
+    expires_minutes: int | None = None,
+) -> str:
     """生成 JWT access token。
 
     流程: 组装 payload（sub + iat + exp + jti + 额外 claims）-> 用 app_secret_key 签名。
@@ -86,10 +89,12 @@ def create_access_token(subject: str, extra_claims: dict[str, Any] | None = None
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "sub": subject,  # JWT 标准字段：token 主体（用户标识）
-        "iss": "zhihub",  # P1-5: 签发方标识，防跨系统复用
-        "aud": "zhihub-api",  # P1-5: 受众标识，防令牌被其他服务接受
+        "iss": "zhihub",  # : 签发方标识，防跨系统复用
+        "aud": "zhihub-api",  # : 受众标识，防令牌被其他服务接受
         "iat": now,  # issued at：签发时间（带时区，避免 naive datetime 歧义）
-        "exp": now + timedelta(minutes=settings.jwt_access_token_expire_minutes),  # 过期时间
+        "exp": now + timedelta(
+            minutes=expires_minutes if expires_minutes is not None else settings.jwt_access_token_expire_minutes
+        ),  # 过期时间
         "jti": secrets.token_hex(16),  # JWT ID：每 token 唯一，用于登出黑名单吊销
     }
     if extra_claims:

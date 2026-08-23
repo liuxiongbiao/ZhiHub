@@ -23,6 +23,7 @@ backend/app/services/rate_limit_service.py
 """
 
 import time
+import secrets
 from app.core.redis import get_redis
 
 import os
@@ -32,7 +33,7 @@ TENANT_RATE = int(os.environ.get("ZHIHUB_TENANT_RATE_PER_MIN", "100"))   # 租�
 USER_RATE = int(os.environ.get("ZHIHUB_USER_RATE_PER_MIN", "20"))       # 用户每分钟请求数
 WINDOW_SECONDS = 60
 
-# 007 US4: 终端用户对话消息限流（加严，作用于 /session/message 端点）
+# 规格 007 US4: 终端用户对话消息限流（加严，作用于 /session/message 端点）
 MESSAGE_RATE = 10   # 单用户每分钟对话消息数
 MESSAGE_WINDOW_SECONDS = 60
 
@@ -80,9 +81,11 @@ def check_rate_limit(tenant_id: int, user_id: int) -> dict:
 
     if allowed:
         # 记录本次请求
-        ns = time.time_ns()
-        r.zadd(tenant_key, {str(ns): now})
-        r.zadd(user_key, {str(ns): now})
+        # 成员必须唯一 —— time_ns() 在快速连续请求下可能同值，
+        # ZSET 同成员会覆盖导致计数少算（Windows 时钟粒度问题实测复现）
+        member = f"{time.time_ns()}:{secrets.token_hex(4)}"
+        r.zadd(tenant_key, {member: now})
+        r.zadd(user_key, {member: now})
         r.expire(tenant_key, WINDOW_SECONDS + 10)
         r.expire(user_key, WINDOW_SECONDS + 10)
 
@@ -90,7 +93,7 @@ def check_rate_limit(tenant_id: int, user_id: int) -> dict:
 
 
 def check_message_rate_limit(user_id: int) -> dict:
-    """终端用户对话消息限流（007 US4）：单用户 10 次/分钟，滑动窗口 ZSET。
+    """终端用户对话消息限流（规格 007 US4）：单用户 10 次/分钟，滑动窗口 ZSET。
 
     作用于 /session/message 端点层，超限 -> 端点返回 429（不落库、不计轮次）。
     与现有 check_rate_limit（租户/用户全局限流）并存，键独立 rate:msg:{user_id}:minute。
@@ -121,13 +124,14 @@ def check_message_rate_limit(user_id: int) -> dict:
     allowed = count < MESSAGE_RATE
     if allowed:
         # member 用 time_ns 保证唯一（同一秒多次调用不会互相覆盖）
-        r.zadd(key, {str(time.time_ns()): now})
+        member = f"{time.time_ns()}:{secrets.token_hex(4)}"
+        r.zadd(key, {member: now})
         r.expire(key, MESSAGE_WINDOW_SECONDS + 10)
     return {"allowed": allowed, "count": count}
 
 
 def check_widget_rate_limit(session_id: int) -> dict:
-    """014 Widget 匿名会话消息限流：单会话 10 次/分钟（与员工消息限流同阈值）。"""
+    """规格 014 Widget 匿名会话消息限流：单会话 10 次/分钟（与员工消息限流同阈值）。"""
     r = get_redis()
     now = int(time.time())
     window_start = now - MESSAGE_WINDOW_SECONDS
@@ -137,6 +141,28 @@ def check_widget_rate_limit(session_id: int) -> dict:
     count = r.zcard(key)
     allowed = count < MESSAGE_RATE
     if allowed:
-        r.zadd(key, {str(time.time_ns()): now})
+        member = f"{time.time_ns()}:{secrets.token_hex(4)}"
+        r.zadd(key, {member: now})
         r.expire(key, MESSAGE_WINDOW_SECONDS + 10)
+    return {"allowed": allowed, "count": count}
+
+
+def check_tenant_rate_limit(tenant_id: int) -> dict:
+    """租户级限流（供 Widget 匿名通道使用，PRD 3.4 双重限流缺口补齐）。
+
+    与 check_rate_limit 的租户维度同键同阈值；匿名请求无 user_id，
+    全局中间件跳过，故在 Widget 消息端点显式调用本函数。
+    """
+    r = get_redis()
+    now = int(time.time())
+    window_start = now - WINDOW_SECONDS
+    key = f"rate:tenant:{tenant_id}:minute"
+
+    r.zremrangebyscore(key, 0, window_start)
+    count = r.zcard(key)
+    allowed = count < TENANT_RATE
+    if allowed:
+        member = f"{time.time_ns()}:{secrets.token_hex(4)}"
+        r.zadd(key, {member: now})
+        r.expire(key, WINDOW_SECONDS + 10)
     return {"allowed": allowed, "count": count}

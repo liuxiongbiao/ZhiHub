@@ -26,10 +26,10 @@ from app.models.base import BaseModel
 class AuditLog(BaseModel):
     __tablename__ = "audit_logs"
 
-    # 租户隔离键 -- 端点查询强制 WHERE tenant_id=?，防跨租户泄露
+    # 租户隔离键 —— 端点查询强制 WHERE tenant_id=?，防跨租户泄露
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     # 操作人用户 ID（可空：系统自动操作无操作人）
-    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", name="fk_audit_logs_user_id"), nullable=True, index=True)  # T27 FK
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", name="fk_audit_logs_user_id"), nullable=True, index=True)  #  FK
     # 操作类型: refund_approve / refund_cancel / login / logout / wizard_advance / payment
     action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     # 操作对象类型: refund_approval / user / tenant / billing_invoice

@@ -1,3 +1,11 @@
+/**
+ * src/views/onboarding/MemberInvite.vue
+ *
+ * 职责: 成员邀请页 —— 输入坐席手机号生成一次性邀请链接（受套餐坐席名额限制），
+ *      坐席通过链接接受邀请后加入租户，管理员可查看未接受链接的状态。
+ *
+ * 依赖: tenant API（邀请生成/接受状态）。
+ */
 <template>
   <div>
     <PageHeader title="成员邀请" subtitle="邀请坐席加入（受套餐坐席数限制）" />

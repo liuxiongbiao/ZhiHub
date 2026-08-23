@@ -1,5 +1,5 @@
 <!-- frontend/src/views/audit/AuditLog.vue -->
-<!-- 013: 审计日志（PRD 2.1 系统日志与审计，仅 admin） -->
+<!-- 规格 013: 审计日志（PRD §2.1 系统日志与审计，仅 admin） -->
 <template>
   <div>
     <PageHeader title="审计日志" subtitle="关键操作的可追溯记录（仅管理员）" />

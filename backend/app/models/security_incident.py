@@ -18,7 +18,7 @@ class SecurityIncident(BaseModel):
     __tablename__ = "security_incidents"
 
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)  # 租户隔离键
-    session_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("sessions.id", name="fk_security_incidents_session_id"), nullable=True)  # 关联会话（可空，T27 FK）
+    session_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("sessions.id", name="fk_security_incidents_session_id"), nullable=True)  # 关联会话（可空， FK）
     # 触发规则的用户输入摘要（脱敏后截断 500 字）
     user_message_preview: Mapped[str] = mapped_column(String(500), nullable=False)
     # 命中的规则名，如 ignore_instruction / role_hijack

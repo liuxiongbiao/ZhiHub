@@ -51,11 +51,11 @@ class InjectionResult:
 # 顺序即匹配优先级：high 规则在前，medium 在后，first-match 即返回，确保 high 命中优先于 medium。
 # 中英文双语覆盖，re.IGNORECASE 大小写不敏感。
 # 5 条规则对应 5 类典型注入手法：
-#   - ignore_instruction: "忽略上述指令"类，企图覆盖系统提示词
-#   - role_hijack: "你现在是 XX"类，企图劫持 Agent 角色
-#   - system_prompt_leak: 企图套取系统提示词/规则
-#   - jailbreak_attempt: 越狱/DAN 等知名越狱手法
-#   - role_play: 角色扮演类，medium 级别（可能是正常请求如"扮演客服"，故只标记）
+# - ignore_instruction: "忽略上述指令"类，企图覆盖系统提示词
+# - role_hijack: "你现在是 XX"类，企图劫持 Agent 角色
+# - system_prompt_leak: 企图套取系统提示词/规则
+# - jailbreak_attempt: 越狱/DAN 等知名越狱手法
+# - role_play: 角色扮演类，medium 级别（可能是正常请求如"扮演客服"，故只标记）
 _INJECTION_RULES: list[tuple[str, str, str]] = [
     ("ignore_instruction", r"忽略.*指令|ignore.*previous.*instruction", "high"),
     ("role_hijack", r"你现在是|you are now", "high"),

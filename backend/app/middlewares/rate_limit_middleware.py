@@ -40,13 +40,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in SKIP_PATHS:
             return await call_next(request)
 
+        # 读请求不参与全局写限流 —— 后台导航/通知轮询是正常负载，
+        # 按 20 req/min 的用户配额会把正常使用打成 429；写请求继续受双维限流。
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return await call_next(request)
+
         # 2. 提取租户 + 用户身份（未认证则放行，由 Auth 中间件拦截）
         tenant_id = getattr(request.state, "tenant_id", None)
         user_id = getattr(request.state, "user_id", None)
         if tenant_id is None or user_id is None:
             return await call_next(request)
 
-        # 3. 双维度令牌桶校验（Redis 故障降级放行，T13）
+        # 3. 双维度令牌桶校验（Redis 故障降级放行，）
         try:
             result = check_rate_limit(tenant_id, user_id)
         except Exception as e:

@@ -19,10 +19,23 @@ backend/app/services/tenant_service.py
 """
 
 import json
+import re
+from urllib.parse import urlencode
+
+# Widget 品牌/域名白名单校验规则
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+# 规范 hostname（含单标签）或 IPv4 或 localhost；禁止 scheme/路径/query/fragment/端口/凭据
+_DOMAIN_ENTRY_RE = re.compile(
+    r"^(localhost|"
+    r"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}|"
+    r"(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)"
+    r"(\.([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*)$"
+)
 
 from sqlalchemy.orm import Session
 
 from app.core import redis as redis_module
+from app.config import settings
 from app.core.security import generate_random_token, hash_password
 from app.crud import tenant as tenant_crud
 from app.crud import user as user_crud
@@ -30,14 +43,14 @@ from app.services.audit_service import log_audit
 from app.utils.validators import validate_password_strength, validate_phone
 
 
-# 配置向导步骤（PRD 3.1）：basic -> knowledge -> mcp -> team -> done，有序推进
+# 配置向导步骤（PRD §3.1）：basic → knowledge → mcp → team → done，有序推进
 WIZARD_STEPS = ["basic", "knowledge", "mcp", "team", "done"]
 
-# 邀请 token 有效期：7 天（PRD 3.1 邀请链接带过期）
+# 邀请 token 有效期：7 天（PRD §3.1 邀请链接带过期）
 INVITE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
-# ---------- 业务异常（API 层映射到 HTTP 状态码）----------
+# ────────── 业务异常（API 层映射到 HTTP 状态码）──────────
 class TenantError(Exception):
     """租户业务异常基类。"""
 
@@ -62,7 +75,40 @@ class TenantNotPending(TenantError):
     """租户非待审批状态 -> 409（PRD 3.1 #17 企业版审批）。"""
 
 
-# ---------- 配置向导 ----------
+# ────────── 配置向导 ──────────
+class TenantInactive(TenantError):
+    """租户状态不允许操作（readonly/closed/pending_review）-> 403"""
+
+
+# 不允许发起新会话的租户状态（PRD §3.1：试用到期只读/欠费只读/已注销/待审批）
+BLOCKED_NEW_SESSION_STATUSES = {"readonly", "closed", "pending_review"}
+
+
+def require_active_tenant(db: Session, tenant_id: int):
+    """租户状态门禁：仅 active 允许发起新会话。"""
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    if tenant.status in BLOCKED_NEW_SESSION_STATUSES:
+        raise TenantInactive(f"租户当前状态为 {tenant.status}，无法发起新会话")
+    return tenant
+
+
+def require_message_allowed_tenant(db: Session, tenant_id: int):
+    """消息入口门禁：closed 拒绝继续；readonly 允许进行中会话走完（PRD 3.1 降级语义）。"""
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        # 会话存在但租户行缺失（脏数据/测试夹具）：放行并告警，避免主链路 500
+        import logging
+        logging.getLogger(__name__).warning(
+            f"require_message_allowed_tenant: tenant {tenant_id} not found, allowing"
+        )
+        return None
+    if tenant.status == "closed":
+        raise TenantInactive("租户已注销，无法继续会话")
+    return tenant
+
+
 def get_wizard_status(db: Session, tenant_id: int) -> dict:
     """查询向导状态：当前步骤 + 完成度 + 步骤全表。
 
@@ -103,13 +149,13 @@ def advance_wizard(db: Session, tenant_id: int) -> dict:
     if tenant is None:
         raise TenantNotFound("租户不存在")
     if tenant.wizard_step not in WIZARD_STEPS:
-        # 防御：异常数据 -> 视为不可推进
+        # 防御：异常数据 → 视为不可推进
         raise TenantError(f"向导步骤异常: {tenant.wizard_step}")
     idx = WIZARD_STEPS.index(tenant.wizard_step)
     if idx == len(WIZARD_STEPS) - 1:
         raise WizardAlreadyDone("配置向导已完成")
     tenant.wizard_step = WIZARD_STEPS[idx + 1]
-    # PRD 2.1 审计日志: 向导推进落库（同事务）
+    # PRD §2.1 审计日志: 向导推进落库（同事务）
     log_audit(
         db, tenant_id=tenant_id, user_id=None, action="wizard_advance",
         target_type="tenant", target_id=tenant_id,
@@ -119,7 +165,7 @@ def advance_wizard(db: Session, tenant_id: int) -> dict:
     return get_wizard_status(db, tenant_id)
 
 
-# ---------- 成员邀请 ----------
+# ────────── 成员邀请 ──────────
 def _invite_key(token: str) -> str:
     """构造邀请 token 的 Redis key。"""
     return f"invite:{token}"
@@ -163,10 +209,21 @@ def invite_member(db: Session, tenant_id: int, phone: str) -> dict:
     token = generate_random_token(24)
     payload = json.dumps({"tenant_id": tenant_id, "phone": phone})
     redis_module.get_redis().set(_invite_key(token), payload, ex=INVITE_TTL_SECONDS)
-    return {"invite_token": token, "expires_in": INVITE_TTL_SECONDS}
+    invite_url = f"{settings.invite_link_base}?{urlencode({'token': token})}"
+    return {
+        "invite_token": token,
+        "invite_url": invite_url,
+        "expires_in": INVITE_TTL_SECONDS,
+    }
 
 
-def accept_invite(db: Session, invite_token: str, phone: str, password: str) -> dict:
+def accept_invite(
+    db: Session,
+    invite_token: str,
+    phone: str | None = None,
+    password: str | None = None,
+    current_user_id: int | None = None,
+) -> dict:
     """被邀请者接受邀请：校验 token -> 创建 user + member(role=agent)。
 
     流程:
@@ -200,15 +257,22 @@ def accept_invite(db: Session, invite_token: str, phone: str, password: str) -> 
     except (json.JSONDecodeError, TypeError):
         raise InvalidInviteToken("邀请链接无效或已过期")
 
-    # 手机号不匹配 -> 同样报 token 无效（不暴露 token 有效性，防探测）
-    if data.get("phone") != phone or data.get("tenant_id") is None:
+    if data.get("tenant_id") is None:
         raise InvalidInviteToken("邀请链接无效或已过期")
 
-    try:
-        validate_phone(phone)
-        validate_password_strength(password)
-    except ValueError as e:
-        raise TenantError(str(e)) from e
+    if current_user_id is not None:
+        user = user_crud.get_by_id(db, current_user_id)
+        if user is None or data.get("phone") != user.phone:
+            raise InvalidInviteToken("邀请链接无效或已过期")
+        phone = user.phone
+    else:
+        if not phone or not password or data.get("phone") != phone:
+            raise InvalidInviteToken("邀请链接无效或已过期")
+        try:
+            validate_phone(phone)
+            validate_password_strength(password)
+        except ValueError as e:
+            raise TenantError(str(e)) from e
 
     tenant_id = int(data["tenant_id"])
 
@@ -221,12 +285,12 @@ def accept_invite(db: Session, invite_token: str, phone: str, password: str) -> 
 
     try:
         # user 已存在（跨租户）则复用，否则新建
-        user = user_crud.get_by_phone(db, phone)
-        if user is None:
+        user = user_crud.get_by_phone(db, phone) if current_user_id is None else user
+        if user is None and password is not None:
             user = user_crud.create(
                 db, phone=phone, password_hash=hash_password(password), role_default="agent"
             )
-        # 防重复加入（同租户已存在 member -> 视为已接受过）
+        # 防重复加入（同租户已存在 member → 视为已接受过）
         existing = tenant_crud.get_member(db, tenant_id=tenant_id, user_id=user.id)
         if existing is not None:
             raise InvalidInviteToken("该用户已加入此租户")
@@ -239,12 +303,24 @@ def accept_invite(db: Session, invite_token: str, phone: str, password: str) -> 
         db.rollback()
         raise
 
-    # 接受成功 -> 一次性失效
+    # 接受成功 → 一次性失效
     redis_module.get_redis().delete(_invite_key(invite_token))
-    return {"user_id": user.id, "tenant_id": tenant_id, "role": "agent"}
+    from app.services.auth_service import issue_token_pair
+
+    access_token, refresh_token, _ = issue_token_pair(
+        db, user_id=user.id, tenant_id=tenant_id, role="agent"
+    )
+    db.commit()
+    return {
+        "user_id": user.id,
+        "tenant_id": tenant_id,
+        "role": "agent",
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
 
 
-# ---------- 企业版审批（PRD 3.1 #17）----------
+# ────────── 企业版审批（PRD §3.1 #17）──────────
 def approve_enterprise(db: Session, tenant_id: int) -> dict:
     """审批企业版租户: pending_review -> active。
 
@@ -271,11 +347,15 @@ def approve_enterprise(db: Session, tenant_id: int) -> dict:
     if tenant.status != "pending_review":
         raise TenantNotPending(f"租户当前状态为 {tenant.status}，非待审批")
     tenant.status = "active"
+    log_audit(
+        db, tenant_id=tenant_id, user_id=None, action="enterprise_approve",
+        target_type="tenant", target_id=tenant_id, detail="platform ops approval",
+    )
     db.commit()
     return {"tenant_id": tenant_id, "status": "active"}
 
 
-# ---------- Widget 品牌配置（020 PRD 3.8）----------
+# ────────── Widget 品牌配置（PRD §3.8）──────────
 def update_widget_config(
     db: Session, tenant_id: int, *,
     theme_color: str | None = None,
@@ -297,10 +377,22 @@ def update_widget_config(
     tenant = tenant_crud.get_by_id(db, tenant_id)
     if tenant is None:
         raise TenantNotFound("租户不存在")
+    # /: 品牌字段写入校验 —— 主题色仅标准十六进制；
+    # logo 与读取侧共用同一套严格校验（is_valid_absolute_logo_url）。
+    # 明确提交空串 = 清除旧 Logo（区别于不提交字段保持原值）。
+    if theme_color is not None and not _HEX_COLOR_RE.match(theme_color):
+        raise TenantError("theme_color 必须是标准十六进制颜色（如 #1890ff）")
+    from app.services.widget_service import is_valid_absolute_logo_url
+    if logo_url is not None and logo_url and not is_valid_absolute_logo_url(logo_url):
+        raise TenantError("logo_url 只允许空值或绝对 http/https URL（不带凭据/query/fragment）")
+    # 空串 = 明确清除。crud.update_widget 只更新非 None 字段（None 语义=保持原值），
+    # 因此清除需在此显式置 None，且传给 crud 的也必须转 None（空串会被当成"提交空值"写回）。
+    if logo_url == "":
+        tenant.widget_logo_url = None
     tenant_crud.update_widget(
         db, tenant,
         theme_color=theme_color,
-        logo_url=logo_url,
+        logo_url=None if logo_url == "" else logo_url,
         welcome_text=welcome_text,
     )
     db.commit()
@@ -312,7 +404,176 @@ def update_widget_config(
     }
 
 
-# ---------- 014 Widget 公共通道：API Key / 域名白名单 ----------
+# ────────── 退款审批阈值（PRD §3.6 规则配置）──────────
+def get_refund_threshold(db: Session, tenant_id: int) -> dict:
+    """查询租户退款审批阈值（当前生效值）。"""
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    return {
+        "tenant_id": tenant.id,
+        "refund_approval_threshold": float(tenant.refund_approval_threshold or 0),
+    }
+
+
+def update_refund_threshold(db: Session, tenant_id: int, threshold: float) -> dict:
+    """更新租户退款审批阈值：超过该金额的退款需管理员二次审批（PRD 3.6）。
+
+    校验: 0 < threshold；小数位不超过 2 位（金额精度与 orders/refund_approvals 一致）。
+    """
+    from decimal import Decimal, InvalidOperation
+
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+        raise TenantError("退款审批阈值必须是数值")
+    try:
+        dec = Decimal(str(threshold))
+        if dec <= 0:
+            raise TenantError("退款审批阈值必须大于 0")
+        if dec.as_tuple().exponent < -2:
+            raise TenantError("退款审批阈值小数位不能超过 2 位")
+    except InvalidOperation:
+        raise TenantError("退款审批阈值格式错误")
+
+    tenant.refund_approval_threshold = dec
+    log_audit(
+        db, tenant_id=tenant_id, user_id=None, action="refund_threshold_update",
+        target_type="tenant", target_id=tenant_id,
+        detail=f"refund_approval_threshold={dec}",
+    )
+    db.commit()
+    return {
+        "tenant_id": tenant.id,
+        "refund_approval_threshold": float(tenant.refund_approval_threshold),
+    }
+
+
+# ────────── 租户数据导出（PRD §8.5 最小实现）──────────
+def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
+    """导出租户核心业务数据（CSV 打包为 ZIP）。
+
+    覆盖: 知识库文档、会话、消息、工单、订单、退款审批、账单、用量记录。
+    本版本为管理员手动导出（PRD 8.5 的最小实现）；注销申请、30 天窗口与物理删除
+    列入后续迭代（见 PRD 9.3）。
+    """
+    import csv
+    import io
+    import zipfile
+    from datetime import datetime, timezone
+
+    from app.models.billing_invoice import BillingInvoice
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.message import Message
+    from app.models.order import Order
+    from app.models.refund_approval import RefundApproval
+    from app.models.session import Session as SessionModel
+    from app.models.ticket import Ticket
+    from app.models.usage_record import UsageRecord
+    from sqlalchemy import select
+
+    buf = io.BytesIO()
+    zf = zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED)
+
+    def add_csv(name: str, header: list[str], rows: list[list]) -> None:
+        sio = io.StringIO()
+        writer = csv.writer(sio)
+        writer.writerow(header)
+        writer.writerows(rows)
+        zf.writestr(name, sio.getvalue())
+
+    docs = db.execute(
+        select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id)
+    ).scalars().all()
+    add_csv(
+        "knowledge_documents.csv",
+        ["doc_id", "filename", "file_type", "file_size", "status", "version",
+         "is_latest", "chunk_count", "expires_at", "quality_status", "uploaded_at"],
+        [[d.id, d.filename, d.file_type, d.file_size, d.status, d.version,
+          d.is_latest, d.chunk_count, d.expires_at, d.quality_status, d.created_at] for d in docs],
+    )
+
+    sessions = db.execute(
+        select(SessionModel).where(SessionModel.tenant_id == tenant_id)
+    ).scalars().all()
+    add_csv(
+        "sessions.csv",
+        ["session_id", "status", "intent", "confidence", "sentiment", "end_user_id", "created_at", "updated_at"],
+        [[s.id, s.status, s.intent, s.confidence, s.sentiment, s.end_user_id, s.created_at, s.updated_at]
+         for s in sessions],
+    )
+
+    session_ids = [s.id for s in sessions]
+    messages = (
+        db.execute(
+            select(Message).where(Message.session_id.in_(session_ids)).order_by(Message.created_at)
+        ).scalars().all()
+        if session_ids else []
+    )
+    add_csv(
+        "messages.csv",
+        ["message_id", "session_id", "role", "content", "created_at"],
+        [[m.id, m.session_id, m.role, m.content, m.created_at] for m in messages],
+    )
+
+    tickets = db.execute(
+        select(Ticket).where(Ticket.tenant_id == tenant_id)
+    ).scalars().all()
+    add_csv(
+        "tickets.csv",
+        ["ticket_id", "ticket_no", "title", "status", "priority", "assignee_id", "category", "created_at"],
+        [[t.id, t.ticket_no, t.title, t.status, t.priority, t.assignee_id, t.category, t.created_at]
+         for t in tickets],
+    )
+
+    orders = db.execute(
+        select(Order).where(Order.tenant_id == tenant_id)
+    ).scalars().all()
+    add_csv(
+        "orders.csv",
+        ["order_id", "order_no", "amount", "paid_amount", "status", "tracking_no", "created_at", "updated_at"],
+        [[o.id, o.order_no, o.amount, o.paid_amount, o.status, o.tracking_no, o.created_at, o.updated_at]
+         for o in orders],
+    )
+
+    approvals = db.execute(
+        select(RefundApproval)
+        .join(Order, Order.id == RefundApproval.order_id)
+        .where(Order.tenant_id == tenant_id)
+    ).scalars().all()
+    add_csv(
+        "refund_approvals.csv",
+        ["approval_id", "order_id", "amount", "reason", "status", "approver_id", "pre_status", "created_at"],
+        [[a.id, a.order_id, a.amount, a.reason, a.status, a.approver_id, a.pre_status, a.created_at]
+         for a in approvals],
+    )
+
+    invoices = db.execute(
+        select(BillingInvoice).where(BillingInvoice.tenant_id == tenant_id)
+    ).scalars().all()
+    add_csv(
+        "billing_invoices.csv",
+        ["invoice_id", "period", "base_fee", "overage_fee", "status", "payment_trade_no", "paid_at", "created_at"],
+        [[i.id, i.period, i.base_fee, i.overage_fee, i.status, i.payment_trade_no, i.paid_at, i.created_at]
+         for i in invoices],
+    )
+
+    usage = db.execute(
+        select(UsageRecord).where(UsageRecord.tenant_id == tenant_id)
+    ).scalars().all()
+    add_csv(
+        "usage_records.csv",
+        ["record_id", "date", "conversation_count", "is_overage", "created_at"],
+        [[u.id, u.date, u.conversation_count, u.is_overage, u.created_at] for u in usage],
+    )
+
+    zf.close()
+    filename = f"zhihub-tenant-{tenant_id}-export-{datetime.now(timezone.utc):%Y%m%d}.zip"
+    return buf.getvalue(), filename
+
+
+# ────────── 规格 014 Widget 公共通道：API Key / 域名白名单 ──────────
 def generate_widget_api_key(db: Session, tenant_id: int) -> dict:
     """生成/轮换 Widget API Key：仅存储 SHA-256 哈希，原始 Key 只返回一次。"""
     import hashlib
@@ -328,11 +589,29 @@ def generate_widget_api_key(db: Session, tenant_id: int) -> dict:
 
 
 def set_widget_allowed_domains(db: Session, tenant_id: int, domains: list[str]) -> dict:
-    """设置 Widget 域名白名单（逗号分隔存储；空列表=仅开发环境 localhost 可用）。"""
+    """设置 Widget 域名白名单（逗号分隔存储；空列表=仅开发环境 localhost 可用）。
+
+    : 仅接受规范 hostname / IPv4 / localhost；带 scheme、路径、query、
+    fragment、端口或凭据的条目直接拒绝（TenantError -> 422）。
+    """
     tenant = tenant_crud.get_by_id(db, tenant_id)
     if tenant is None:
         raise TenantNotFound("租户不存在")
-    cleaned = [d.strip().lower().lstrip("*.") for d in domains if d and d.strip()]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in domains:
+        d = (raw or "").strip().lower()
+        if not d:
+            continue
+        # 仅精确 "*." 前缀移除（兼容 *.example.com 写法，存父域子域自动匹配）；
+        # 不再用 lstrip("*.")（会吞掉 **example.com 的多余星号）。
+        if d.startswith("*."):
+            d = d[2:]
+        if not _DOMAIN_ENTRY_RE.match(d):
+            raise TenantError(f"域名白名单条目无效（仅接受 hostname/IP/localhost，不带 scheme/路径/query）: {raw}")
+        if d not in seen:  # 去重（保序）
+            seen.add(d)
+            cleaned.append(d)
     tenant.widget_allowed_domains = ",".join(cleaned)
     db.commit()
     return {"allowed_domains": cleaned}

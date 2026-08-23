@@ -27,13 +27,18 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # 公开端点豁免（与 auth_middleware 白名单一致 + 支付宝回调）
 _CSRF_EXEMPT_PREFIXES = (
     "/health",
+    "/api/v1/widget",  # 规格 014 Widget 匿名/令牌通道：Bearer 令牌鉴权，无 Cookie，豁免 CSRF
     "/api/v1/auth/register",
     "/api/v1/auth/login",
+    "/api/v1/auth/refresh",
     "/api/v1/auth/sms/send",
     "/api/v1/auth/code/send",
+    "/api/v1/auth/email/activate",
+    "/api/v1/auth/email/resend",
     "/api/v1/auth/password/reset",
     "/api/v1/auth/wechat/auth",
     "/api/v1/auth/wechat/callback",
+    "/api/v1/tenant/enterprise/approve",
     "/api/v1/billing/alipay/notify",
     "/docs",
     "/redoc",
@@ -73,7 +78,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         # 仅对已携带 Authorization 的请求校验 CSRF token：
         # 未认证请求放行给 Auth 中间件返回 401（保持 API 语义）；
-        # 已认证请求缺少 CSRF token -> 403（纵深防御生效）
+        # 已认证请求缺少 CSRF token → 403（纵深防御生效）
         has_auth = bool(request.headers.get("Authorization"))
         if not has_auth:
             return await call_next(request)

@@ -15,7 +15,7 @@ from app.models.tenant_member import TenantMember
 
 
 def get_by_widget_key_hash(db: Session, digest: str) -> Tenant | None:
-    """按 Widget API Key 的 SHA-256 哈希查找租户（014，仅存哈希不存明文）。"""
+    """按 Widget API Key 的 SHA-256 哈希查找租户（规格 014，仅存哈希不存明文）。"""
     from sqlalchemy import select
     return db.execute(
         select(Tenant).where(Tenant.widget_api_key_hash == digest)
@@ -97,7 +97,7 @@ def update_widget(
     logo_url: str | None = None,
     welcome_text: str | None = None,
 ) -> Tenant:
-    """更新租户 Widget 品牌配置（020 PRD 3.8）。
+    """更新租户 Widget 品牌配置（PRD §3.8）。
 
     仅更新非 None 字段（增量更新），flush 不 commit。
     """
