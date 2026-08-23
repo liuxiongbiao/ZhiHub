@@ -101,6 +101,9 @@ def create_deep_task(body: DeepTaskRequest, request: Request):
     initial_task = {
         "task_id": task_id, "goal": body.goal, "status": "pending",
         "tenant_id": tenant_id, "created_at": now,
+        "token_consumed": 0,
+        "token_budget": settings.deep_agent_token_budget,
+        "termination_reason": "",
     }
     _save_task(initial_task)
 
@@ -121,6 +124,9 @@ def create_deep_task(body: DeepTaskRequest, request: Request):
             "report": "",
             "error": "",
             "total_elapsed_ms": 0,
+            "token_consumed": 0,
+            "token_budget": settings.deep_agent_token_budget,
+            "termination_reason": "",
             "tenant_id": tenant_id,
             "created_at": now,
         }
@@ -130,6 +136,7 @@ def create_deep_task(body: DeepTaskRequest, request: Request):
         result = _run_and_save(
             task_id=task_id, goal=body.goal, tenant_id=tenant_id, created_at=now,
             timeout_seconds=settings.deep_agent_timeout_seconds,
+            token_budget=settings.deep_agent_token_budget,
         )
         return result
 

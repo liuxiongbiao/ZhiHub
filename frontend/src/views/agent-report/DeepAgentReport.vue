@@ -29,6 +29,11 @@
 
     <!-- 结果区 -->
     <div v-if="result" class="result-area">
+      <div class="execution-summary">
+        <el-tag :type="statusType(result.status)">{{ statusText(result.status) }}</el-tag>
+        <span>Token：{{ formatNumber(result.token_consumed) }} / {{ formatNumber(result.token_budget) }}</span>
+        <span v-if="result.termination_reason">终止原因：{{ terminationText(result.termination_reason) }}</span>
+      </div>
       <!-- 执行步骤 -->
       <div class="steps-section">
         <h4>执行步骤 ({{ result.total_elapsed_ms }}ms)</h4>
@@ -77,6 +82,12 @@
         </div>
         <div class="report-content" v-html="renderMarkdown(taskResult.report)"></div>
       </div>
+      <div v-if="taskResult" class="execution-summary history-summary">
+        <el-tag :type="statusType(taskResult.status)">{{ statusText(taskResult.status) }}</el-tag>
+        <span>Token：{{ formatNumber(taskResult.token_consumed) }} / {{ formatNumber(taskResult.token_budget) }}</span>
+        <span v-if="taskResult.termination_reason">终止原因：{{ terminationText(taskResult.termination_reason) }}</span>
+      </div>
+      <el-alert v-if="taskResult?.error" :title="taskResult.error" type="error" show-icon />
     </el-card>
 
     <!-- 快捷预设 -->
@@ -112,6 +123,26 @@ const taskId = ref('')
 const querying = ref(false)
 const queryError = ref('')
 const taskResult = ref<any>(null)
+const MAX_POLL_MS = 11 * 60 * 1000
+
+function formatNumber(value: number | undefined): string {
+  return Number(value || 0).toLocaleString('zh-CN')
+}
+
+function statusText(status: string): string {
+  return ({ pending: '等待中', running: '执行中', completed: '已完成', failed: '失败', truncated: '已熔断' } as Record<string, string>)[status] || status
+}
+
+function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'truncated') return 'warning'
+  return 'info'
+}
+
+function terminationText(reason: string): string {
+  return ({ token_budget: 'Token 预算耗尽', timeout: '执行超时', tool_limit: '工具调用次数达到上限', execution_error: '执行异常' } as Record<string, string>)[reason] || reason
+}
 
 /** 快捷预设任务目标列表 */
 const presets = [
@@ -144,11 +175,11 @@ async function handleExecute() {
   loading.value = true
   result.value = null
   try {
-    // DeepAgent 同步执行 3 步规划（真实 LLM 多次调用），需远大于全局 10s 超时
-    const res = await request.post('/agent/deep-task', { goal: goal.value.trim() }, { timeout: 300000 })
-    // DeepAgent 为 Celery 异步任务：轮询 GET 直到 completed/failed（最多 3 分钟）
+    // RabbitMQ 不可用时接口会同步降级执行，客户端超时需覆盖后端 10 分钟墙钟上限。
+    const res = await request.post('/agent/deep-task', { goal: goal.value.trim() }, { timeout: MAX_POLL_MS })
+    // DeepAgent 为 Celery 异步任务：轮询至终态，覆盖后端 10 分钟墙钟上限。
     let current = res.data
-    const deadline = Date.now() + 180000
+    const deadline = Date.now() + MAX_POLL_MS
     while ((current.status === 'pending' || current.status === 'running') && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 3000))
       const q = await request.get(`/agent/deep-task/${current.task_id}`, { timeout: 10000 })
@@ -185,6 +216,8 @@ async function handleQueryTask() {
 .input-area { margin-bottom: 20px; }
 .loading-area { text-align: center; padding: 40px; font-size: 16px; color: #666; }
 .result-area { margin-top: 24px; }
+.execution-summary { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; color: #606266; font-size: 13px; }
+.history-summary { margin-top: 16px; }
 .steps-section { margin-bottom: 24px; }
 .step-detail { font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; }
 .report-section { margin-top: 24px; }

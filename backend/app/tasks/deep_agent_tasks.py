@@ -19,13 +19,22 @@ logger = logging.getLogger(__name__)
 
 
 def _run_and_save(
-    task_id: str, goal: str, tenant_id: int, created_at=None, timeout_seconds: int | None = None,
+    task_id: str,
+    goal: str,
+    tenant_id: int,
+    created_at=None,
+    timeout_seconds: int | None = None,
+    token_budget: int | None = None,
 ) -> dict:
     """执行 DeepAgent 任务并保存结果（被 Celery 任务和同步 fallback 共用）。"""
     from app.agents.deep_agent.planner import execute
 
     result = execute(
-        task_id=task_id, goal=goal, tenant_id=tenant_id, timeout_seconds=timeout_seconds,
+        task_id=task_id,
+        goal=goal,
+        tenant_id=tenant_id,
+        timeout_seconds=timeout_seconds,
+        token_budget=token_budget,
     )
 
     # 构建与 API 层兼容的结果结构（steps 保留 ReAct 字段）
@@ -59,6 +68,9 @@ def _run_and_save(
         "report": result.report,
         "error": result.error,
         "total_elapsed_ms": result.total_elapsed_ms,
+        "token_consumed": result.token_consumed,
+        "token_budget": result.token_budget,
+        "termination_reason": result.termination_reason,
         "tenant_id": tenant_id,
         "created_at": created_at,
     }
@@ -100,6 +112,7 @@ try:
             return _run_and_save(
                 task_id, goal, tenant_id, created_at=created_at,
                 timeout_seconds=settings.deep_agent_timeout_seconds,
+                token_budget=settings.deep_agent_token_budget,
             )
         except Exception as e:
             logger.exception(f"DeepAgent task {task_id} failed: {e}")
@@ -111,5 +124,13 @@ except Exception as e:  # pragma: no cover - celery import may fail in minimal e
     # 占位: 无 Celery 时提供同步执行的兼容接口
     def run_deep_agent_task_sync(task_id: str, goal: str, tenant_id: int) -> dict:
         from datetime import datetime, timezone
+        from app.config import settings
         created_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        return _run_and_save(task_id, goal, tenant_id, created_at=created_at)
+        return _run_and_save(
+            task_id,
+            goal,
+            tenant_id,
+            created_at=created_at,
+            timeout_seconds=settings.deep_agent_timeout_seconds,
+            token_budget=settings.deep_agent_token_budget,
+        )

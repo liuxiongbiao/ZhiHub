@@ -17,6 +17,8 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from app.utils.tokenizer import count_messages_tokens, estimate_tokens
+
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_CALLS = 5
@@ -31,6 +33,9 @@ class DeepAgentResult:
     report: str = ""
     error: str = ""
     total_elapsed_ms: int = 0
+    token_consumed: int = 0
+    token_budget: int = 500_000
+    termination_reason: str = ""
 
 
 def _build_react_system_prompt(goal: str, tenant_id: int) -> str:
@@ -121,17 +126,62 @@ def _execute_tool(action: str, action_input: str, goal: str, tenant_id: int) -> 
         return f"未知工具: {action}"
 
 
+def _response_token_usage(response, messages: list[dict], output: str) -> int:
+    """优先读取模型网关的真实 usage；缺失时用本地估算，保证所有调用均计入预算。"""
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        if isinstance(usage, dict):
+            total = usage.get("total_tokens")
+        else:
+            total = getattr(usage, "total_tokens", None)
+        if isinstance(total, (int, float)) and total >= 0:
+            return int(total)
+    return count_messages_tokens(messages) + estimate_tokens(output)
+
+
+def _mark_limit_failure(result: DeepAgentResult, reason: str, message: str) -> None:
+    """统一记录资源限制终止，避免超限后继续查询或调用模型。"""
+    result.status = "failed"
+    result.termination_reason = reason
+    result.error = f"资源超限失败：{message}"
+
+
 def execute(
-    task_id: str, goal: str, tenant_id: int, timeout_seconds: int | None = None,
+    task_id: str,
+    goal: str,
+    tenant_id: int,
+    timeout_seconds: int | None = None,
+    token_budget: int | None = None,
 ) -> DeepAgentResult:
-    """ReAct 自主规划循环: LLM 决策 -> 工具执行 -> 观察 -> 重复直到 finish 或熔断。"""
+    """ReAct 自主规划循环，并强制执行 token 与墙钟时间双重预算。"""
+    from app.config import settings
+
     start = time.perf_counter()
-    result = DeepAgentResult(task_id=task_id, goal=goal, status="running")
+    effective_timeout = (
+        settings.deep_agent_timeout_seconds if timeout_seconds is None else timeout_seconds
+    )
+    effective_budget = (
+        settings.deep_agent_token_budget if token_budget is None else token_budget
+    )
+    result = DeepAgentResult(
+        task_id=task_id,
+        goal=goal,
+        status="running",
+        token_budget=max(0, int(effective_budget)),
+    )
     tool_calls = 0
-    deadline = (start + timeout_seconds) if timeout_seconds else None
+    deadline = start + max(0, effective_timeout)
+
+    if effective_timeout <= 0:
+        _mark_limit_failure(result, "timeout", f"执行时间达到 {effective_timeout} 秒上限")
+        result.total_elapsed_ms = int((time.perf_counter() - start) * 1000)
+        return result
+    if effective_budget <= 0:
+        _mark_limit_failure(result, "token_budget", f"token 消耗达到 {effective_budget} 上限")
+        result.total_elapsed_ms = int((time.perf_counter() - start) * 1000)
+        return result
 
     # 占位 key 检测: LLM 未配置时快速降级，避免测试/开发环境挂起
-    from app.config import settings
     if not settings.deepseek_api_key or "placeholder" in settings.deepseek_api_key:
         logger.warning("DeepSeek API key is placeholder/empty, DeepAgent falling back to template report")
         # 直接生成模板报告（不调 LLM，避免占位 key 触发 60s 超时挂起）
@@ -168,15 +218,46 @@ def execute(
         from app.core.llm_client import llm_complete
 
         while tool_calls < MAX_TOOL_CALLS:
-            # PRD §3.11：任务执行超时（默认 10 分钟）→ 标记失败
-            if deadline and time.perf_counter() > deadline:
-                result.status = "failed"
-                result.error = f"任务执行超时（{timeout_seconds} 秒）"
-                result.report = _generate_report(goal, _query_stats(tenant_id), _search_sop(goal, tenant_id))
+            # PRD §3.11：默认 10 分钟墙钟上限；超限后不得再调用模型或工具。
+            remaining_seconds = deadline - time.perf_counter()
+            if remaining_seconds <= 0:
+                _mark_limit_failure(
+                    result, "timeout", f"执行时间达到 {effective_timeout} 秒上限"
+                )
                 break
+
+            remaining_tokens = result.token_budget - result.token_consumed
+            prompt_tokens = count_messages_tokens(messages)
+            if remaining_tokens <= prompt_tokens:
+                _mark_limit_failure(
+                    result,
+                    "token_budget",
+                    f"token 消耗达到 {result.token_budget} 上限",
+                )
+                break
+
             step_start = time.perf_counter()
-            resp = llm_complete(messages=messages, max_tokens=500, temperature=0.0)
+            resp = llm_complete(
+                messages=messages,
+                max_tokens=min(500, max(1, remaining_tokens - prompt_tokens)),
+                temperature=0.0,
+                timeout=max(0.1, min(60.0, remaining_seconds)),
+            )
             llm_output = resp.choices[0].message.content.strip()
+            result.token_consumed += _response_token_usage(resp, messages, llm_output)
+
+            if result.token_consumed >= result.token_budget:
+                _mark_limit_failure(
+                    result,
+                    "token_budget",
+                    f"token 消耗达到 {result.token_consumed}/{result.token_budget}",
+                )
+                break
+            if time.perf_counter() >= deadline:
+                _mark_limit_failure(
+                    result, "timeout", f"执行时间达到 {effective_timeout} 秒上限"
+                )
+                break
 
             thought, action, action_input = _parse_react_response(llm_output)
             observation = _execute_tool(action, action_input, goal, tenant_id)
@@ -193,6 +274,12 @@ def execute(
                 "elapsed_ms": int((time.perf_counter() - step_start) * 1000),
             })
 
+            if time.perf_counter() >= deadline:
+                _mark_limit_failure(
+                    result, "timeout", f"执行时间达到 {effective_timeout} 秒上限"
+                )
+                break
+
             if action == "finish":
                 result.report = observation
                 result.status = "completed"
@@ -202,14 +289,14 @@ def execute(
             messages.append({"role": "user", "content": f"Observation: {observation}"})
         else:
             result.status = "truncated"
+            result.termination_reason = "tool_limit"
             result.error = f"工具调用达上限({MAX_TOOL_CALLS})，任务熔断"
-            result.report = _generate_report(goal, _query_stats(tenant_id), _search_sop(goal, tenant_id))
 
     except Exception as e:
         logger.exception(f"DeepAgent {task_id} failed: {e}")
         result.status = "failed"
         result.error = str(e)
-        result.report = _generate_report(goal, _query_stats(tenant_id), _search_sop(goal, tenant_id))
+        result.termination_reason = "execution_error"
 
     result.total_elapsed_ms = int((time.perf_counter() - start) * 1000)
     logger.info(f"DeepAgent {task_id}: {result.status} in {result.total_elapsed_ms}ms")

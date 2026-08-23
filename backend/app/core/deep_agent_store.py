@@ -51,7 +51,13 @@ def load_task(task_id: str, tenant_id: int) -> dict | None:
     client = None
     try:
         col, client = _get_collection()
-        return col.find_one({"task_id": task_id, "tenant_id": tenant_id}, {"_id": 0})
+        task = col.find_one({"task_id": task_id, "tenant_id": tenant_id}, {"_id": 0})
+        if task:
+            # 兼容上线前已落库的历史任务文档。
+            task.setdefault("token_consumed", 0)
+            task.setdefault("token_budget", settings.deep_agent_token_budget)
+            task.setdefault("termination_reason", "")
+        return task
     except Exception as e:
         logger.warning(f"DeepAgent task load failed: {e}")
         return None

@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     max_rounds_per_session: int = 15
     # PRD §3.11: DeepAgent 任务执行超时（秒）
     deep_agent_timeout_seconds: int = 600
+    # PRD §3.11: 单个 DeepAgent 任务 token 硬预算（输入 + 输出累计）
+    deep_agent_token_budget: int = 500_000
     model_weights: str = '{"deepseek/deepseek-chat": 1.0, "deepseek/deepseek-reasoner": 3.0, "gpt-4o": 5.0, "gpt-4o-mini": 0.5, "claude-3-5-sonnet": 4.0}'  # 模型折算权重（JSON 字符串，贵模型权重高）
 
     # 规格 010 PRD §3.10: 支付宝沙箱支付（key 为空 → mock 模式，不调真实网关；用户后填真 key 即切换）

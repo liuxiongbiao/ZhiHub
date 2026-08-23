@@ -344,7 +344,7 @@
 | csat_evaluations / usage_records / billing_invoices / security_incidents | ✅ | 一致 |
 | notifications / quick_replies / refresh_token / billing_event / audit_log | ✅ | PRD 未列但合理新增 |
 | MongoDB agent_traces（90 天 TTL、脱敏） | ✅ | 一致 |
-| MongoDB deep_agent_tasks | ✅ | 一致（token_consumed 缺失，与 3.11 缺口呼应） |
+| MongoDB deep_agent_tasks | ✅ | 一致（含 token_consumed/token_budget/termination_reason；历史文档读取时补默认值） |
 | MongoDB deep_agent_reports | ✅ | planner 报告写入 |
 | Redis Key 设计（quota/context/rate/vcode/login_fail/blocklist/claim） | ✅ | 全部有对应实现；claim 锁在 human_service（SETNX） |
 
@@ -364,7 +364,7 @@
 | 6 | MCP 五工具+双因子+金额上限+幂等+参数校验+熔断 | ✅ |
 | 7 | 订单状态机+撤销+不可覆写+乐观锁+分级阈值 | ✅ |
 | 8 | 转人工+认领互斥+留言建单+退回过渡提示 | ✅（等待时长估算 ⚠️） |
-| 9 | DeepAgent 报告+步骤可视化+5 次上限 | ✅（token/超时 ❌） |
+| 9 | DeepAgent 报告+步骤可视化+5 次上限 | ✅（50 万 token + 10 分钟双硬预算、资源超限失败与消耗展示均已补齐） |
 | 10 | Langfuse 100% 覆盖+脱敏+90 天 | ✅ 脱敏/90 天 TTL 代码落实；真实上报已验证（云端 2233 条 trace，最新时间戳与实测对话一致） |
 | 11 | RAGAS 跑通+量化数据+指标达标 | ✅ 已复跑（F 1.00 / CR +8.3pp）；+15pp 目标未达（评测集设计限制，见 §3.12） |
 | 12 | 权限矩阵+注入检测识别典型攻击 | ✅ |
@@ -407,7 +407,7 @@
 | 🟠 中 | 数据埋点事件体系 + 运营看板 | §5 | PRD 自认未上线；答辩需主动说明边界 |
 | ✅ 已修复 | 套餐升级流程 | §3.9 | 2026-08-23 完成前后端闭环、权限校验、资源上限联动与审计日志 |
 | 🟠 中 | 租户注销/30 天窗口/物理删除 | §8.5 | 合规缺口，答辩需主动说明 |
-| 🟠 中 | DeepAgent token 预算 + 任务超时 | §3.11 | 资源熔断不完整 |
+| ✅ 已修复 | DeepAgent token 预算 + 任务超时 | §3.11 | 50 万 token 与 600 秒墙钟预算均强制执行，超限停止后续工具/模型调用并持久化原因 |
 | 🟡 低 | 终端用户双因子短信方案 | §3.1.3 | 已有手机号+后4位替代方案 |
 | 🟡 低 | 置信度阈值租户可配置 | §3.4 | 系统常量可用（且当前常量本身失配，见上） |
 | 🟡 低 | 知识库租户公平调度（单队列） | §3.2 | 规模上来才会出问题 |
@@ -544,7 +544,7 @@ cd C:\Users\Lenovo\Desktop\Three\zhihub\backend
 | 数据埋点事件体系 + 运营看板 | §5 | PRD 自认未上线 |
 | ✅ 套餐升级流程 | §3.9 | 2026-08-23 已完成：四档套餐卡片、admin 升级接口、basic/pro 即时生效、enterprise 待人工议价、席位/配额联动、审计日志；12 项后端契约测试与 10 项前端定向测试通过，`vue-tsc` 零错误，Alembic upgrade/check 通过 |
 | 租户注销/30 天窗口/物理删除 | §8.5 | 数据导出已实现 ✅ |
-| DeepAgent token 预算 + 任务超时 | §3.11 | 工具 5 次上限已实现 ✅ |
+| ✅ DeepAgent token 预算 + 任务超时 | §3.11 | 2026-08-23 已完成：默认 500,000 token 与 600 秒墙钟双预算；优先累计模型真实 usage、缺失时本地估算；超限立即停止后续模型/工具调用并标记“资源超限失败”；Mongo/API 兼容持久化 token_consumed、预算及终止原因，前端支持执行中与历史任务展示；20 项 DeepAgent/模型网关测试通过，前端生产构建通过 |
 | 终端用户双因子短信方案 | §3.1.3 | 手机号+后4位已实现 ✅ |
 | 知识库租户公平调度（单队列） | §3.2 | 规模问题 |
 | Widget SDK 打字状态/消息时间戳 | §3.8 | PRD 自认待完善 |

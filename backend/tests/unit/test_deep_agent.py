@@ -1,11 +1,11 @@
 """
 backend/tests/unit/test_deep_agent.py
 
-职责: 测试 DeepAgent 3 步固定骨架执行 + 熔断上限 + 降级
+职责: 测试 DeepAgent ReAct 执行、熔断上限、资源预算与降级
 
 测试内容:
-  - TestDeepAgent: execute 返回 DeepAgentResult / 3 步骨架 / task_id 保留 /
-    report 或 error / _query_stats 统计 / MAX_TOOL_CALLS=5 熔断上限
+  - TestDeepAgent: execute 返回 DeepAgentResult / task_id 保留 / report 或 error /
+    _query_stats 统计 / MAX_TOOL_CALLS=5 / token 预算 / 墙钟超时 / 历史文档兼容
 """
 
 import pytest
@@ -69,6 +69,83 @@ class TestDeepAgent:
     def test_max_tool_calls_limit(self):
         """熔断上限常量正确."""
         assert MAX_TOOL_CALLS == 5
+
+    def test_token_budget_stops_before_tool_execution(self, monkeypatch):
+        """模型返回的真实 usage 达到预算后，任务立即标记资源超限且不执行工具。"""
+        from app.agents.deep_agent import planner
+        from app.config import settings
+
+        class FakeMessage:
+            content = "Thought: 查询\nAction: query_stats\nAction Input: {}"
+
+        class FakeChoice:
+            message = FakeMessage()
+
+        class FakeUsage:
+            total_tokens = 1000
+
+        class FakeResp:
+            choices = [FakeChoice()]
+            usage = FakeUsage()
+
+        monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
+        monkeypatch.setattr("app.core.llm_client.llm_complete", lambda **kw: FakeResp())
+        monkeypatch.setattr(
+            planner,
+            "_query_stats",
+            lambda tenant_id: pytest.fail("超限后不应执行工具"),
+        )
+
+        result = execute(
+            task_id="budget-limit", goal="工单分析", tenant_id=1, token_budget=900
+        )
+
+        assert result.status == "failed"
+        assert result.termination_reason == "token_budget"
+        assert result.token_consumed == 1000
+        assert "资源超限失败" in result.error
+
+    def test_timeout_zero_stops_before_external_call(self, monkeypatch):
+        """墙钟预算为零时不调用模型，直接记录资源超限失败。"""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
+        monkeypatch.setattr(
+            "app.core.llm_client.llm_complete",
+            lambda **kw: pytest.fail("超时后不应调用模型"),
+        )
+
+        result = execute(
+            task_id="timeout-limit", goal="工单分析", tenant_id=1, timeout_seconds=0
+        )
+
+        assert result.status == "failed"
+        assert result.termination_reason == "timeout"
+        assert result.token_consumed == 0
+        assert "资源超限失败" in result.error
+
+    def test_historical_mongo_task_backfills_resource_fields(self, monkeypatch):
+        """历史 Mongo 文档没有资源字段时，查询接口仍返回兼容默认值。"""
+        from app.core import deep_agent_store
+        from app.config import settings
+
+        class FakeCollection:
+            def find_one(self, query, projection):
+                return {"task_id": query["task_id"], "tenant_id": query["tenant_id"]}
+
+        class FakeClient:
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            deep_agent_store, "_get_collection", lambda: (FakeCollection(), FakeClient())
+        )
+
+        task = deep_agent_store.load_task("legacy-task", 1)
+
+        assert task["token_consumed"] == 0
+        assert task["token_budget"] == settings.deep_agent_token_budget
+        assert task["termination_reason"] == ""
 
     def test_extract_json_object_handles_braces_in_report(self):
         """ 回归：报告内容含 } 时仍能提取完整 JSON（原非贪婪正则截断导致空报告）。"""
