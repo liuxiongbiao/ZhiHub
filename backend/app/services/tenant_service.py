@@ -49,6 +49,30 @@ WIZARD_STEPS = ["basic", "knowledge", "mcp", "team", "done"]
 # 邀请 token 有效期：7 天（PRD §3.1 邀请链接带过期）
 INVITE_TTL_SECONDS = 7 * 24 * 60 * 60
 
+# 套餐矩阵是升级、席位和计费配额的唯一业务口径（PRD §3.9）。
+PLAN_CATALOG = {
+    "trial": {
+        "name": "试用版", "monthly_price": 0.0, "conversation_quota": 100,
+        "knowledge_base_limit": 1, "storage_quota_mb": 500, "seat_limit": 1,
+        "negotiable": False, "rank": 0,
+    },
+    "basic": {
+        "name": "基础版", "monthly_price": 999.0, "conversation_quota": 2000,
+        "knowledge_base_limit": 3, "storage_quota_mb": 5 * 1024, "seat_limit": 2,
+        "negotiable": False, "rank": 1,
+    },
+    "pro": {
+        "name": "专业版", "monthly_price": 4999.0, "conversation_quota": 10000,
+        "knowledge_base_limit": None, "storage_quota_mb": 50 * 1024, "seat_limit": 10,
+        "negotiable": False, "rank": 2,
+    },
+    "enterprise": {
+        "name": "企业版", "monthly_price": None, "conversation_quota": 100000,
+        "knowledge_base_limit": None, "storage_quota_mb": None, "seat_limit": 10,
+        "negotiable": True, "rank": 3,
+    },
+}
+
 
 # ────────── 业务异常（API 层映射到 HTTP 状态码）──────────
 class TenantError(Exception):
@@ -73,6 +97,10 @@ class InvalidInviteToken(TenantError):
 
 class TenantNotPending(TenantError):
     """租户非待审批状态 -> 409（PRD 3.1 #17 企业版审批）。"""
+
+
+class InvalidPlanChange(TenantError):
+    """套餐目标非法、重复升级或尝试降级。"""
 
 
 # ────────── 配置向导 ──────────
@@ -320,7 +348,92 @@ def accept_invite(
     }
 
 
-# ────────── 企业版审批（PRD §3.1 #17）──────────
+# ────────── 套餐升级（PRD §3.9）──────────
+def get_plan_catalog(db: Session, tenant_id: int) -> dict:
+    """返回套餐矩阵及租户当前、待议价套餐。"""
+
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    plans = []
+    for plan_type, definition in PLAN_CATALOG.items():
+        plans.append({
+            "plan_type": plan_type,
+            **{key: value for key, value in definition.items() if key != "rank"},
+        })
+    return {
+        "current_plan": tenant.plan_type,
+        "pending_plan": tenant.pending_plan_type,
+        "plans": plans,
+    }
+
+
+def change_plan(db: Session, tenant_id: int, target_plan: str, *, user_id: int) -> dict:
+    """升级租户套餐并联动席位与月配额（PRD §3.9）。
+
+    基础版和专业版升级立即生效；企业版仅登记待人工议价，当前套餐继续服务。
+    本接口只处理升级，不允许重复提交、降级或回到试用版。
+    """
+
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    target = target_plan.strip().lower()
+    if target not in PLAN_CATALOG or target == "trial":
+        raise InvalidPlanChange("目标套餐无效，仅支持升级至基础版、专业版或企业版")
+    current = tenant.plan_type if tenant.plan_type in PLAN_CATALOG else "trial"
+    if tenant.pending_plan_type:
+        raise InvalidPlanChange("已有套餐变更申请正在处理中")
+    if PLAN_CATALOG[target]["rank"] <= PLAN_CATALOG[current]["rank"]:
+        raise InvalidPlanChange("仅支持升级到高于当前等级的套餐")
+
+    if target == "enterprise":
+        tenant.pending_plan_type = target
+        log_audit(
+            db, tenant_id=tenant_id, user_id=user_id, action="plan_upgrade_requested",
+            target_type="tenant", target_id=tenant_id,
+            detail=f"from={current};target=enterprise;status=pending_negotiation",
+        )
+        db.commit()
+        return {
+            "tenant_id": tenant.id,
+            "current_plan": current,
+            "pending_plan": target,
+            "change_status": "pending_negotiation",
+            "seat_limit": tenant.seat_limit,
+            "conversation_quota": tenant.quota_conversations_per_month
+            or PLAN_CATALOG[current]["conversation_quota"],
+        }
+
+    definition = PLAN_CATALOG[target]
+    previous = current
+    tenant.plan_type = target
+    tenant.pending_plan_type = None
+    tenant.seat_limit = definition["seat_limit"]
+    tenant.quota_conversations_per_month = definition["conversation_quota"]
+    # 套餐升级立即恢复可写服务；历史欠费仍由账单任务重新判定（PRD §3.9）。
+    tenant.status = "active"
+    redis_module.get_redis().delete(f"billing:degraded:{tenant_id}")
+    log_audit(
+        db, tenant_id=tenant_id, user_id=user_id, action="plan_upgraded",
+        target_type="tenant", target_id=tenant_id,
+        detail=(
+            f"from={previous};to={target};seat_limit={definition['seat_limit']};"
+            f"conversation_quota={definition['conversation_quota']}"
+        ),
+    )
+    db.commit()
+    return {
+        "tenant_id": tenant.id,
+        "current_plan": tenant.plan_type,
+        "pending_plan": None,
+        "change_status": "effective",
+        "seat_limit": tenant.seat_limit,
+        "conversation_quota": tenant.quota_conversations_per_month,
+    }
+
+
+# ────────── 企业版审批（PRD §3.1、§3.9）──────────
 def approve_enterprise(db: Session, tenant_id: int) -> dict:
     """审批企业版租户: pending_review -> active。
 
@@ -344,8 +457,12 @@ def approve_enterprise(db: Session, tenant_id: int) -> dict:
     tenant = tenant_crud.get_by_id(db, tenant_id)
     if tenant is None:
         raise TenantNotFound("租户不存在")
-    if tenant.status != "pending_review":
+    if tenant.status != "pending_review" and tenant.pending_plan_type != "enterprise":
         raise TenantNotPending(f"租户当前状态为 {tenant.status}，非待审批")
+    tenant.plan_type = "enterprise"
+    tenant.pending_plan_type = None
+    tenant.seat_limit = PLAN_CATALOG["enterprise"]["seat_limit"]
+    tenant.quota_conversations_per_month = PLAN_CATALOG["enterprise"]["conversation_quota"]
     tenant.status = "active"
     log_audit(
         db, tenant_id=tenant_id, user_id=None, action="enterprise_approve",

@@ -18,6 +18,7 @@ export const useTenantStore = defineStore('tenant', {
     tenant_id: 0,
     tenant_name: '',
     plan_type: '',
+    pending_plan_type: null as string | null,
     status: '',
     current_user: null as CurrentUser | null,
     degradation_alert: false as boolean,

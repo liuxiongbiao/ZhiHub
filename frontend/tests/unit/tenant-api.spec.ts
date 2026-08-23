@@ -11,6 +11,7 @@ vi.mock('@/api/request', () => ({ default: mockRequest }))
 import {
   inviteMember, getAuditLogs,
   getWidgetConfig, rotateWidgetApiKey, getWidgetDomains, setWidgetDomains,
+  getPlanCatalog, changeTenantPlan,
 } from '@/api/tenant'
 beforeEach(() => { vi.clearAllMocks() })
 describe('tenant api (规格 013 US5)', () => {
@@ -49,5 +50,19 @@ describe('tenant widget api ()', () => {
     mockRequest.put.mockResolvedValue({ data: { domains: ['a.com', 'b.com'] } })
     await setWidgetDomains(['a.com', 'b.com'])
     expect(mockRequest.put).toHaveBeenCalledWith('/tenant/widget/domains', { domains: ['a.com', 'b.com'] })
+  })
+})
+
+describe('tenant plan api (PRD 3.9)', () => {
+  it('gets plan catalog', async () => {
+    mockRequest.get.mockResolvedValue({ data: { current_plan: 'trial', plans: [] } })
+    await getPlanCatalog()
+    expect(mockRequest.get).toHaveBeenCalledWith('/tenant/plans')
+  })
+
+  it('puts requested target plan', async () => {
+    mockRequest.put.mockResolvedValue({ data: { current_plan: 'basic', change_status: 'effective' } })
+    await changeTenantPlan('basic')
+    expect(mockRequest.put).toHaveBeenCalledWith('/tenant/plan', { target_plan: 'basic' })
   })
 })

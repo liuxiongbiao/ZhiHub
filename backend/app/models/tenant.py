@@ -25,6 +25,8 @@ class Tenant(BaseModel):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     # 套餐类型：trial(试用)/basic/pro/enterprise，决定配额与功能开关
     plan_type: Mapped[str] = mapped_column(String(20), nullable=False, default="trial")
+    # 企业版升级先进入人工议价，当前套餐继续生效，避免议价期间中断服务（PRD §3.9）。
+    pending_plan_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # 每月对话配额，超出后可能需要升级套餐或限流（具体策略后续日程实现）
     quota_conversations_per_month: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # 座席数量上限，控制该租户下能有多少个 TenantMember

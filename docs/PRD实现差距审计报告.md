@@ -20,7 +20,7 @@
 | 🔶 待运行时验证 | 约 12 条（8%，其中大部分已由 §十一 实测覆盖，剩余见 §十二） |
 | ❌ 完全缺失 | 约 12 条（7%） |
 
-**一句话结论**：核心链路（多租户、LangGraph 编排、混合检索、MCP、订单状态机、人工介入、计费）已有真实闭环；原先两项性能阻塞已完成优化并复测达标（9.50MiB 文档 26.509s；高频 SSE 问答 P95 0.111s/P99 0.155s，冷请求尾延迟单列）。**剩余短板集中在**：① 支付宝沙箱付款回调闭环与短信真实发送受凭据/网关/公网条件限制；② 埋点看板、套餐升级、租户注销、DeepAgent 资源预算等后续能力仍待补齐。
+**一句话结论**：核心链路（多租户、LangGraph 编排、混合检索、MCP、订单状态机、人工介入、计费）已有真实闭环；原先两项性能阻塞已完成优化并复测达标（9.50MiB 文档 26.509s；高频 SSE 问答 P95 0.111s/P99 0.155s，冷请求尾延迟单列）。**剩余短板集中在**：① 支付宝沙箱付款回调闭环与短信真实发送受凭据/网关/公网条件限制；② 埋点看板、租户注销、DeepAgent 资源预算等后续能力仍待补齐。套餐升级全栈流程已于 2026-08-23 补齐。
 
 > **运行时验证已执行（2026-08-23）**：全栈 14 容器真实模式跑通 12 项端到端链路（详见 §十一），并发现 1 个关键缺陷：**检索置信度阈值失配导致知识问答 100% 转人工**（自动解决率实测 0%）。
 
@@ -206,7 +206,7 @@
 | 超额单价 ¥0.5/条 | ✅ | BILLING_OVERAGE_PRICE（config） |
 | 80%/100% 预警（站内+邮件） | ✅ | billing_service 预警 + notification + Home 横幅 |
 | 套餐矩阵（100/2000/10000 + 存储 + 席位） | ✅ | config billing_plan_* / storage_quota_mb / seat_limit |
-| **套餐升级流程** | ❌ | PRD 自认"尚未上线"；PlanSettings 仅为规则配置（退款阈值等） |
+| **套餐升级流程** | ✅ | `GET /tenant/plans` + `PUT /tenant/plan`；basic/pro 即时生效并联动席位/配额，enterprise 保持当前套餐并进入人工议价；PlanSettings 套餐卡片与确认弹窗已上线 |
 | 多模型按 Token 折算计费 | ✅ | usage_amount 模型权重 + tenants.default_model（d26 相关折算测试） |
 | 账单逾期 15 天降级只读 | ✅ | invoice_overdue_days=15 + cleanup_trial_degradation |
 | 用量与 Token 明细 CSV 导出 | ✅ | export_usage + export_usage_detail |
@@ -335,7 +335,7 @@
 
 | 表/集合 | 状态 | 差异 |
 |---|---|---|
-| tenants（含 widget_*、refund_approval_threshold、default_model、is_demo、api_key_hash） | ✅ | 比 PRD 多 is_demo（演示租户标记），字段全覆盖 |
+| tenants（含 widget_*、refund_approval_threshold、default_model、is_demo、api_key_hash、pending_plan_type） | ✅ | 比 PRD 多 is_demo（演示租户标记）与 pending_plan_type（企业版待议价目标），字段全覆盖 |
 | tenant_members / users（含 email_verified、wechat_openid 加密） | ✅ | 一致 |
 | knowledge_documents（version/is_latest/expires_at/quality_status） | ✅ | 一致 |
 | sessions（status/intent/confidence/sentiment/end_user_id/assignee_id） | ✅ | 一致 |
@@ -405,7 +405,7 @@
 | 🔴 高 | **性能指标无并发实测**（§4.1 全部 8 项） | §4.1 | 串行实测已回填（/health 8-39ms）；并发压测需本机干净环境执行（命令见 §十一） |
 | 🔴 高 | **CI 未在 GitHub 实际运行过** | §8.1-15 | 推送后需观察首轮 CI 结果 |
 | 🟠 中 | 数据埋点事件体系 + 运营看板 | §5 | PRD 自认未上线；答辩需主动说明边界 |
-| 🟠 中 | 套餐升级流程 | §3.9 | 商业模式"收费闭环"缺升级环节 |
+| ✅ 已修复 | 套餐升级流程 | §3.9 | 2026-08-23 完成前后端闭环、权限校验、资源上限联动与审计日志 |
 | 🟠 中 | 租户注销/30 天窗口/物理删除 | §8.5 | 合规缺口，答辩需主动说明 |
 | 🟠 中 | DeepAgent token 预算 + 任务超时 | §3.11 | 资源熔断不完整 |
 | 🟡 低 | 终端用户双因子短信方案 | §3.1.3 | 已有手机号+后4位替代方案 |
@@ -542,7 +542,7 @@ cd C:\Users\Lenovo\Desktop\Three\zhihub\backend
 | 缺口 | PRD 出处 | 备注 |
 |---|---|---|
 | 数据埋点事件体系 + 运营看板 | §5 | PRD 自认未上线 |
-| 套餐升级流程 | §3.9 | PRD 自认未上线 |
+| ✅ 套餐升级流程 | §3.9 | 2026-08-23 已完成：四档套餐卡片、admin 升级接口、basic/pro 即时生效、enterprise 待人工议价、席位/配额联动、审计日志；12 项后端契约测试与 10 项前端定向测试通过，`vue-tsc` 零错误，Alembic upgrade/check 通过 |
 | 租户注销/30 天窗口/物理删除 | §8.5 | 数据导出已实现 ✅ |
 | DeepAgent token 预算 + 任务超时 | §3.11 | 工具 5 次上限已实现 ✅ |
 | 终端用户双因子短信方案 | §3.1.3 | 手机号+后4位已实现 ✅ |

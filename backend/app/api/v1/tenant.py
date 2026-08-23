@@ -32,6 +32,9 @@ from app.schemas.tenant import (
     CurrentUser,
     InviteRequest,
     InviteResponse,
+    PlanCatalogResponse,
+    PlanChangeRequest,
+    PlanChangeResponse,
     RefundThresholdRequest,
     RefundThresholdResponse,
     TenantHomeResponse,
@@ -73,6 +76,8 @@ def _map_tenant_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc))
     if isinstance(exc, tenant_service.TenantNotPending):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, tenant_service.InvalidPlanChange):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     # TenantError 基类（入参校验等）→ 422
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -98,6 +103,7 @@ def home(
         tenant_id=tenant.id,
         tenant_name=tenant.name,
         plan_type=tenant.plan_type,
+        pending_plan_type=tenant.pending_plan_type,
         status=tenant.status,
         current_user=CurrentUser(user_id=current_user.id, role=request.state.role),
         degradation_alert=degradation_alert,
@@ -141,6 +147,45 @@ def _get_warning_banner(tenant_id: int) -> str | None:
 def billing(tenant: Tenant = Depends(require_tenant())):
     """管理员专属账单接口（require_role("admin") 拦截非 admin 角色）。"""
     return {"tenant_id": tenant.id, "plan_type": tenant.plan_type, "usage": {}}
+
+
+# ────────── 套餐升级（PRD §3.9）──────────
+@router.get(
+    "/plans",
+    response_model=PlanCatalogResponse,
+    dependencies=[Depends(require_role("admin")), Depends(require_tenant())],
+)
+def list_plans(request: Request, db: Session = Depends(get_db)):
+    """查询套餐矩阵和当前升级状态，仅管理员可访问。"""
+
+    try:
+        return tenant_service.get_plan_catalog(db, request.state.tenant_id)
+    except tenant_service.TenantError as exc:
+        raise _map_tenant_error(exc) from exc
+
+
+@router.put(
+    "/plan",
+    response_model=PlanChangeResponse,
+    dependencies=[Depends(require_role("admin")), Depends(require_tenant())],
+)
+def change_plan(
+    body: PlanChangeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """升级套餐；标准套餐立即生效，企业版进入人工议价。"""
+
+    try:
+        return tenant_service.change_plan(
+            db,
+            request.state.tenant_id,
+            body.target_plan,
+            user_id=current_user.id,
+        )
+    except tenant_service.TenantError as exc:
+        raise _map_tenant_error(exc) from exc
 
 
 # ────────── 配置向导（PRD §3.1）──────────

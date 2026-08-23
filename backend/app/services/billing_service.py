@@ -715,6 +715,8 @@ def get_tenant_quota(db: Session, tenant_id: int) -> int:
         from app.crud import tenant as tenant_crud
         t = tenant_crud.get_by_id(db, tenant_id)
         if t is not None:
+            if t.quota_conversations_per_month > 0:
+                return t.quota_conversations_per_month
             return PLAN_QUOTA.get(t.plan_type, TRIAL_QUOTA)
     except Exception:
         pass

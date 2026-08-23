@@ -18,6 +18,7 @@ class TenantHomeResponse(BaseModel):
     tenant_id: int
     tenant_name: str
     plan_type: str
+    pending_plan_type: str | None = None
     status: str
     current_user: CurrentUser
     # 规格 008 降级模式告警横幅（PRD §3.4/3.8）：检索基础设施故障时 True
@@ -105,3 +106,42 @@ class RefundThresholdResponse(BaseModel):
     """退款审批阈值响应。"""
     tenant_id: int
     refund_approval_threshold: float
+
+
+# ────────── 套餐升级（PRD §3.9）──────────
+class PlanOptionResponse(BaseModel):
+    """套餐卡片响应：价格、配额、存储和席位上限。"""
+
+    plan_type: str
+    name: str
+    monthly_price: float | None = None
+    conversation_quota: int | None = None
+    knowledge_base_limit: int | None = None
+    storage_quota_mb: int | None = None
+    seat_limit: int | None = None
+    negotiable: bool = False
+
+
+class PlanCatalogResponse(BaseModel):
+    """套餐目录及租户当前、待议价套餐。"""
+
+    current_plan: str
+    pending_plan: str | None = None
+    plans: list[PlanOptionResponse]
+
+
+class PlanChangeRequest(BaseModel):
+    """套餐升级请求；试用版和降级请求由业务层拒绝。"""
+
+    target_plan: str = Field(..., min_length=2, max_length=20)
+
+
+class PlanChangeResponse(BaseModel):
+    """套餐升级结果；企业版返回 pending_negotiation。"""
+
+    tenant_id: int
+    current_plan: str
+    pending_plan: str | None = None
+    change_status: str
+    seat_limit: int
+    conversation_quota: int

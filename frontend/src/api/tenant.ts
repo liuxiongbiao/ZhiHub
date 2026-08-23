@@ -98,6 +98,35 @@ export interface WidgetConfigQuery {
 /** : 域名白名单响应 */
 export interface WidgetDomains { domains: string[] }
 
+/** 套餐卡片（对齐后端 PlanOptionResponse）。 */
+export interface PlanOption {
+  plan_type: 'trial' | 'basic' | 'pro' | 'enterprise'
+  name: string
+  monthly_price: number | null
+  conversation_quota: number | null
+  knowledge_base_limit: number | null
+  storage_quota_mb: number | null
+  seat_limit: number | null
+  negotiable: boolean
+}
+
+/** 套餐目录和当前变更状态。 */
+export interface PlanCatalog {
+  current_plan: PlanOption['plan_type']
+  pending_plan: PlanOption['plan_type'] | null
+  plans: PlanOption[]
+}
+
+/** 套餐升级结果。 */
+export interface PlanChangeResult {
+  tenant_id: number
+  current_plan: PlanOption['plan_type']
+  pending_plan: PlanOption['plan_type'] | null
+  change_status: 'effective' | 'pending_negotiation'
+  seat_limit: number
+  conversation_quota: number
+}
+
 /** admin 邀请坐席成员（受 seat_limit 约束，超限 409） */
 export async function inviteMember(phone: string) {
   const res = await request.post('/tenant/invite', { phone })
@@ -155,6 +184,16 @@ export async function getWidgetEmbedCode() {
 export async function getRefundThreshold() {
   const res = await request.get('/tenant/refund-threshold')
   return res
+}
+
+/** 查询套餐矩阵和当前套餐（PRD §3.9，仅 admin）。 */
+export function getPlanCatalog() {
+  return request.get<PlanCatalog>('/tenant/plans')
+}
+
+/** 升级套餐；企业版返回待人工议价状态（PRD §3.9，仅 admin）。 */
+export function changeTenantPlan(target_plan: PlanOption['plan_type']) {
+  return request.put<PlanChangeResult>('/tenant/plan', { target_plan })
 }
 
 /** 更新退款审批阈值（PRD §3.6，仅 admin） */
