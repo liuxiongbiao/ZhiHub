@@ -565,7 +565,11 @@ def send_verification_code(target: str, code_type: str = "sms", reveal_code: boo
     if code_type == "sms":
         from app.core.sms_client import get_sms_client
 
-        client = get_sms_client()
+        try:
+            client = get_sms_client()
+        except Exception as e:
+            logger.warning(f"SMS client unavailable (target={target}): {e}")
+            raise SmsDeliveryError("短信服务未启用或配置不完整") from None
         if not client.is_mock:
             try:
                 ok = client.send(target, code)

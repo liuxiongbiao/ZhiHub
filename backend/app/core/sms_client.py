@@ -1,8 +1,9 @@
 """阿里云短信客户端（PRD 3.1.2 手机验证码发送）。
 
 与 wechat_client/alipay_client 同构的 mock/真实双模式：
-  - 未配置 ALIYUN_SMS_ACCESS_KEY_ID 时走 mock（日志输出验证码，开发/测试零配置）；
-  - 配置密钥后走阿里云 RPC 风格 SendSms 接口（HMAC-SHA1 签名），生产环境强制要求配置。
+  - development/test 且 SMS_ENABLED=false 时走 mock（开发/测试零配置）；
+  - SMS_ENABLED=true 且四项凭据齐全时走阿里云 RPC SendSms（HMAC-SHA1）；
+  - production 禁止 mock，功能关闭或缺配置均显式失败。
 """
 
 import base64
@@ -31,10 +32,23 @@ class SmsClient:
     """阿里云短信客户端（mock 模式 + 真实模式双形态）。"""
 
     def __init__(self) -> None:
-        # 生产环境禁止 mock：短信是注册/登录核心链路，未配置密钥应显式失败而非静默占位
-        if settings.app_env not in ("development", "test") and not settings.aliyun_sms_access_key_id:
-            raise RuntimeError("非 development 环境必须配置 ALIYUN_SMS_ACCESS_KEY_ID（禁止 mock 短信）")
-        self.is_mock: bool = not settings.aliyun_sms_access_key_id
+        # 开关是唯一模式选择来源，避免“仅填了 key、未启用功能”时意外真实发送。
+        if not settings.sms_enabled:
+            if settings.app_env not in ("development", "test"):
+                raise RuntimeError("生产环境短信功能未启用（SMS_ENABLED=false），禁止 mock 短信")
+            self.is_mock = True
+            return
+
+        required = {
+            "ALIYUN_SMS_ACCESS_KEY_ID": settings.aliyun_sms_access_key_id,
+            "ALIYUN_SMS_ACCESS_KEY_SECRET": settings.aliyun_sms_access_key_secret,
+            "ALIYUN_SMS_SIGN_NAME": settings.aliyun_sms_sign_name,
+            "ALIYUN_SMS_TEMPLATE_CODE": settings.aliyun_sms_template_code,
+        }
+        missing = [key for key, value in required.items() if not str(value).strip()]
+        if missing:
+            raise RuntimeError("短信功能缺少配置：" + ", ".join(missing))
+        self.is_mock = False
 
     def send(self, phone: str, code: str) -> bool:
         """发送验证码短信。mock 模式直接返回 True；真实模式调用阿里云 SendSms。"""
@@ -71,7 +85,12 @@ class SmsClient:
         params["Signature"] = base64.b64encode(digest).decode("ascii")
 
         try:
-            resp = httpx.get(SMS_ENDPOINT, params=params, timeout=10.0)
+            # PRD 验收要求真实短信发送调用 <3s；超时立即失败且不写入验证码/限频状态。
+            resp = httpx.get(
+                SMS_ENDPOINT,
+                params=params,
+                timeout=settings.aliyun_sms_timeout_seconds,
+            )
             resp.raise_for_status()
             body = resp.json()
         except Exception as e:

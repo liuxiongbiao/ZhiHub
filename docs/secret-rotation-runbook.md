@@ -16,6 +16,7 @@
 | 7 | MySQL | MYSQL_PASSWORD / MYSQL_ROOT_PASSWORD | docker exec mysql - ALTER USER |
 | 8 | Redis | REDIS_PASSWORD | redis-cli CONFIG SET requirepass |
 | 9 | RabbitMQ | RABBITMQ_PASS | rabbitmq 管理台重建用户 |
+| 10 | 阿里云短信 | ALIYUN_SMS_ACCESS_KEY_ID / ALIYUN_SMS_ACCESS_KEY_SECRET / ALIYUN_SMS_SIGN_NAME / ALIYUN_SMS_TEMPLATE_CODE | dysms.console.aliyun.com |
 
 ## 二、通用轮换步骤
 
@@ -108,3 +109,19 @@ Milvus 恢复必须在全栈停写的维护窗口进行：先解压 `milvus-phys
 - 当前 MySQL 日备对应 RPO 约 24 小时；Milvus/ES 周备的索引恢复点最多落后一周，但知识文档源文件和 MySQL 元数据保留后可重建索引。
 - 每月至少执行一次 MySQL 自动恢复验证；每季度在隔离环境执行一次 Milvus/ES 恢复演练，并记录耗时、缺失数据与修正动作。
 - 恢复完成后必须验证：迁移版本、租户数/文档数、随机三条知识检索、订单双因子查询与后台核心页面。
+
+## 七、阿里云短信真实发送验收
+
+1. 在阿里云控制台准备已启用短信权限的 AccessKey、审核通过的签名与验证码模板；模板参数必须名为 `code`。
+2. 只在受控的 `deploy/.env` 或密钥管理系统中填写四项 `ALIYUN_SMS_*` 配置，并设置 `SMS_ENABLED=true`。不要把凭据写入命令行、日志或 Git。
+3. 重建 backend 后执行一次真实发送：
+
+```powershell
+cd C:\Users\Lenovo\Desktop\Three\zhihub\deploy
+docker compose up -d --build backend
+docker compose exec backend python scripts/verify_sms.py --phone <验收手机号>
+```
+
+脚本只在真实模式运行，不输出验证码或凭据；阿里云返回成功且网关调用耗时低于 3000ms 才会输出 `PASS`。最后还必须由验收手机号人工确认实际收码，因为网关成功回执不等于终端必达。
+
+若凭据未配置，development/test 保留 mock 路径；production 或 `SMS_ENABLED=true` 但配置不全时显式失败，禁止静默伪装发送成功。

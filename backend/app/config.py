@@ -198,6 +198,7 @@ class Settings(BaseSettings):
     aliyun_sms_access_key_secret: str = ""                   # 阿里云 AccessKey Secret
     aliyun_sms_sign_name: str = ""                           # 短信签名
     aliyun_sms_template_code: str = ""                       # 短信模板 Code（如 SMS_123456）
+    aliyun_sms_timeout_seconds: float = 2.8                   # 网关超时（PRD 验收 <3s）
 
     # PRD §3.2 RagFlow 语义解析：配置后走 RagFlow，未配置/解析失败降级本地规则解析
     ragflow_base_url: str = ""                               # RagFlow 服务地址（如 http://localhost:9380）
