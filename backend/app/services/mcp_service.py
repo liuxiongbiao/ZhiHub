@@ -27,6 +27,7 @@ backend/app/services/mcp_service.py
 
 import logging
 import math
+import time
 from decimal import Decimal, InvalidOperation
 
 from app.core.circuit_breaker import is_broken, record_failure, record_success
@@ -205,43 +206,61 @@ def call_tool(
     Returns:
         JSON-RPC 响应信封 dict
     """
+    started_at = time.perf_counter()
+    tracked_method = envelope.get("method", "invalid") if isinstance(envelope, dict) else "invalid"
+
+    def finish(response: dict) -> dict:
+        from app.services.analytics_service import track_event
+        track_event(
+            "mcp_tool_called",
+            tenant_id=tenant_id,
+            properties={
+                "tool_name": tracked_method,
+                "success": "error" not in response,
+                "latency": int((time.perf_counter() - started_at) * 1000),
+                "error_code": response.get("error", {}).get("code") if "error" in response else None,
+            },
+        )
+        return response
+
     # 1. 解析请求信封（结构校验）
     try:
         req_id, method, params = parse_request(envelope)
     except ValueError:
         # 信封结构非法：尽量取 id（取不到回退 null）返回 -32600
         req_id = envelope.get("id") if isinstance(envelope, dict) else None
-        return build_error(ERR_INVALID_REQUEST, req_id)
+        return finish(build_error(ERR_INVALID_REQUEST, req_id))
+    tracked_method = method
 
     # 2. 注入 tenant_id（覆盖客户端传入值，宪法原则 II / FR-012 / SC-006）
     # 关键：tenant_id 来自服务端可信来源（JWT/session），绝不信客户端，防越权访问他租户数据
     # fail-closed: tenant_id 缺失 = 调用上下文不可信，直接拒绝；
     # 原条件注入在 None 时会把 params 里客户端自报值原样透传（配合 server 层默认租户 1 可越权写他租户）
     if tenant_id is None:
-        return build_error(ERR_PERMISSION_DENIED, req_id, "调用上下文缺少租户信息")
+        return finish(build_error(ERR_PERMISSION_DENIED, req_id, "调用上下文缺少租户信息"))
     params["tenant_id"] = tenant_id
 
     # 3. 方法存在性校验（未知方法 → -32601，优先于权限，符合 JSON-RPC 语义）
     # 先校验方法存在性再校验权限：未知方法返回 -32601（标准 JSON-RPC 语义），
     # 而非 -32000 权限拒绝（避免泄露"方法存在但无权"的信息）
     if method not in _ALL_METHODS:
-        return build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}")
+        return finish(build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}"))
 
     # 4. 权限校验 → -32000（角色无权调用该工具）
     if not check_permission(role, method):
-        return build_error(
+        return finish(build_error(
             ERR_PERMISSION_DENIED, req_id, f"角色 {role} 无权调用工具 {method}"
-        )
+        ))
 
     # 5. 熔断检查（US4）：工具处于熔断中 → -32001 + 兜底话术（不调 handler，直接降级）
     if is_broken(method):
-        return build_error(ERR_CIRCUIT_BROKEN, req_id, _fallback_message(method))
+        return finish(build_error(ERR_CIRCUIT_BROKEN, req_id, _fallback_message(method)))
 
     # 6. 入参校验 → -32602
     try:
         validate_params(method, params)
     except InvalidParams as e:
-        return build_error(ERR_INVALID_PARAMS, req_id, str(e))
+        return finish(build_error(ERR_INVALID_PARAMS, req_id, str(e)))
 
     # 7. 分发到 server handler
     try:
@@ -252,22 +271,22 @@ def call_tool(
             from app.mcp_servers.order_server import handle_order_tool
             data = handle_order_tool(method, params, db=db)
         else:
-            return build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}")
+            return finish(build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}"))
     except IdentityVerificationError:
         # 双因子失败/记录不存在 → 统一 -32602 "未查询到匹配信息"（防枚举，SC-002）
-        return build_error(ERR_INVALID_PARAMS, req_id, "未查询到匹配信息")
+        return finish(build_error(ERR_INVALID_PARAMS, req_id, "未查询到匹配信息"))
     except InvalidParams as e:
-        return build_error(ERR_INVALID_PARAMS, req_id, str(e))
+        return finish(build_error(ERR_INVALID_PARAMS, req_id, str(e)))
     except _BusinessValidationErrors as e:
         # 业务校验失败（退款超额/非法状态跃迁/记录不存在等）→ -32602
-        return build_error(ERR_INVALID_PARAMS, req_id, str(e))
+        return finish(build_error(ERR_INVALID_PARAMS, req_id, str(e)))
     except _ConcurrencyConflict as e:
         # 乐观锁冲突 → -32603（可重试）
-        return build_error(ERR_INTERNAL_ERROR, req_id, str(e))
+        return finish(build_error(ERR_INTERNAL_ERROR, req_id, str(e)))
     except Exception as e:
         # 兜底：未预期的异常 → -32603，记全栈日志便于排查
         logger.exception(f"MCP tool {method} internal error")
-        return build_error(ERR_INTERNAL_ERROR, req_id, "Internal error")
+        return finish(build_error(ERR_INTERNAL_ERROR, req_id, "Internal error"))
 
     # 8. 关键字段空值监控（US4）：空/异常 → record_failure（达阈值熔断）；正常 → record_success（half_open 解除）
     if _is_empty_result(method, data):
@@ -276,7 +295,7 @@ def call_tool(
         record_success(method)
 
     # 9. 封装成功信封
-    return build_success(data, req_id)
+    return finish(build_success(data, req_id))
 
 
 # ─── 业务异常分组（延迟导入避免循环，按类型聚合映射）───

@@ -208,7 +208,9 @@ def create_widget_session(db: Session, *, api_key: str, origin: str | None) -> d
         raise TenantUnavailable("租户当前不可用，无法发起新会话")
 
     end_user_id = f"eu-{secrets.token_hex(8)}"
-    created = session_service.create_session(db, tenant_id=tenant.id, end_user_id=end_user_id)
+    created = session_service.create_session(
+        db, tenant_id=tenant.id, end_user_id=end_user_id, channel="widget"
+    )
     session_id = created["session_id"]
     token = create_access_token(
         subject=f"w{session_id}",

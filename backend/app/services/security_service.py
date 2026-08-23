@@ -152,6 +152,17 @@ def record_incident(
     )
     db.add(incident)
     db.commit()
+    from app.services.analytics_service import track_event
+    track_event(
+        "security_block",
+        tenant_id=tenant_id,
+        properties={
+            "rule_hit": rule_hit,
+            "session_id": session_id,
+            "risk_level": risk_level,
+            "action_taken": action_taken,
+        },
+    )
     logger.info(
         f"Security incident recorded: tenant={tenant_id}, session={session_id}, "
         f"rule={rule_hit}, level={risk_level}"

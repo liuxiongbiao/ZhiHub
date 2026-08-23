@@ -115,6 +115,7 @@ def main() -> int:
         mongo.admin.command("ping")
         mongo.zhihub.agent_traces.insert_one({"tenant_id": tenant_id, "marker": marker})
         mongo.zhihub.deep_agent_tasks.insert_one({"tenant_id": tenant_id, "marker": marker})
+        mongo.zhihub.analytics_events.insert_one({"tenant_id": tenant_id, "marker": marker})
 
         init_milvus_collection()
         init_memory_collection()
@@ -155,6 +156,7 @@ def main() -> int:
             "mysql_orphan_user_removed": db.get(User, user_id) is None,
             "mongo_traces_removed": mongo.zhihub.agent_traces.count_documents({"tenant_id": tenant_id}) == 0,
             "mongo_tasks_removed": mongo.zhihub.deep_agent_tasks.count_documents({"tenant_id": tenant_id}) == 0,
+            "mongo_analytics_removed": mongo.zhihub.analytics_events.count_documents({"tenant_id": tenant_id}) == 0,
             "milvus_knowledge_removed": len(knowledge.query(expr=f"tenant_id == {tenant_id}", output_fields=["id"])) == 0,
             "milvus_memory_removed": len(memory.query(expr=f"tenant_id == {tenant_id}", output_fields=["id"])) == 0,
             "elasticsearch_removed": es.count(

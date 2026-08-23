@@ -216,6 +216,7 @@ def _purge_tenant_external_data(
         mongo.admin.command("ping")
         mongo["zhihub"]["agent_traces"].delete_many({"tenant_id": tenant_id})
         mongo["zhihub"]["deep_agent_tasks"].delete_many({"tenant_id": tenant_id})
+        mongo["zhihub"]["analytics_events"].delete_many({"tenant_id": tenant_id})
     finally:
         mongo.close()
 
@@ -496,7 +497,15 @@ def cleanup_idle_sessions(db: DbSession) -> dict:
     # 记录本轮回收到 RESOLVED 的会话 id，事务提交后向终端用户广播 session_ended
     # （widget.js 据此展示"会话已结束"并停止重连；fire-and-forget，不阻塞清理）。
     ended_session_ids: list[int] = []
+    resolved_events: dict[int, tuple[int, dict]] = {}
     for s in candidates:
+        resolution_mode = "human" if s.assignee_id or s.status in {"waiting_human", "human_handling"} else "auto"
+        event_properties = {
+            "session_id": s.id,
+            "resolution_mode": resolution_mode,
+            "previous_status": s.status,
+            "intent": s.intent or "unknown",
+        }
         # 有效回复：状态跃迁与 billed=false 领取合并为一条条件 UPDATE。
         if s.effective_reply and not s.billed:
             if billing_crud.claim_idle_session_for_billing(
@@ -507,6 +516,7 @@ def cleanup_idle_sessions(db: DbSession) -> dict:
                 create_session_billing_event(db, s)
                 resolved_n += 1
                 ended_session_ids.append(s.id)
+                resolved_events[s.id] = (s.tenant_id, event_properties)
             continue
 
         # 无有效回复或已经有事件的会话只做原子状态跃迁，不创建计费事件。
@@ -522,6 +532,7 @@ def cleanup_idle_sessions(db: DbSession) -> dict:
         resolved_n += transition.rowcount or 0
         if transition.rowcount:
             ended_session_ids.append(s.id)
+            resolved_events[s.id] = (s.tenant_id, event_properties)
 
     # 升级兼容：旧流程 Redis 失败后可能留下 resolved/closed + billed=false，
     # 不再依赖 resolved 扫描执行计费，而是为其补建事件后交给统一消费者。
@@ -547,6 +558,13 @@ def cleanup_idle_sessions(db: DbSession) -> dict:
     )
 
     db.commit()
+    from app.services.analytics_service import track_event
+    for _resolved_id, (event_tenant_id, properties) in resolved_events.items():
+        track_event(
+            "session_resolved",
+            tenant_id=event_tenant_id,
+            properties=properties,
+        )
     # 事件提交后再投影 Redis；失败事件保持 pending，下轮与会话状态无关地重试。
     consume_pending_billing_events(db)
     # 向终端用户广播会话结束（事务已提交，状态跃迁生效；无连接时 no-op）

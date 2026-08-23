@@ -101,6 +101,20 @@ def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int
         raise
 
     logger.info(f"Session {session_id} claimed by agent {agent_id}")
+    from datetime import datetime, timezone
+    from app.services.analytics_service import track_event
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    wait_duration = max(0, (now - s.created_at).total_seconds()) if s.created_at else 0
+    track_event(
+        "human_takeover",
+        tenant_id=tenant_id,
+        properties={
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "trigger_reason": "agent_claim",
+            "wait_duration": round(wait_duration, 3),
+        },
+    )
 
     # PRD §3.7: 认领成功后向同租户在线坐席推送实时通知。
     # broadcast_to_tenant_sync 是 fire-and-forget，不阻塞业务；无在线坐席时直接返回。
@@ -267,5 +281,11 @@ def leave_message_if_no_agent(db: Session, *, session_id: int, tenant_id: int, u
         category="message", created_by="message",
     )
     db.commit()
+    from app.services.analytics_service import track_event
+    track_event(
+        "message_left",
+        tenant_id=tenant_id,
+        properties={"session_id": session_id, "ticket_id": ticket.id, "ticket_no": ticket_no},
+    )
     logger.info(f"Auto ticket {ticket_no} created for session {session_id} (category=message)")
     return {"ticket_no": ticket_no, "session_id": session_id}

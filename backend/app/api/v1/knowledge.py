@@ -107,7 +107,12 @@ def rebuild_document(
     """重建文档索引（202 Accepted）: 调 knowledge_service.rebuild。"""
     tenant_id = _get_tenant_id(request)
     try:
-        return knowledge_service.rebuild(db, doc_id=doc_id, tenant_id=tenant_id)
+        return knowledge_service.rebuild(
+            db,
+            doc_id=doc_id,
+            tenant_id=tenant_id,
+            operator_id=getattr(request.state, "user_id", None),
+        )
     except knowledge_service.KnowledgeError as e:
         raise _handle_knowledge_error(e)
 

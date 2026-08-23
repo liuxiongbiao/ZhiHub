@@ -46,6 +46,38 @@ class RefundError(Exception):
     """支付宝退款调用失败（非业务校验错误，属外部网关故障）。"""
 
 
+def _track_order_state(order, from_status: str, to_status: str, operator: str | int | None) -> None:
+    from app.services.analytics_service import track_event
+    track_event(
+        "order_state_changed",
+        tenant_id=order.tenant_id,
+        properties={
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "from_status": from_status,
+            "to_status": to_status,
+            "operator": operator,
+        },
+    )
+
+
+def _track_refund_decision(approval, order, decision: str, approver_id: int) -> None:
+    from app.services.analytics_service import track_event
+    now = datetime.utcnow()
+    latency = max(0, (now - approval.created_at).total_seconds()) if approval.created_at else 0
+    track_event(
+        "refund_approved" if decision == "approved" else "refund_rejected",
+        tenant_id=order.tenant_id,
+        properties={
+            "order_id": order.id,
+            "approval_id": approval.id,
+            "approver_id": approver_id,
+            "amount": approval.amount,
+            "latency_seconds": round(latency, 3),
+        },
+    )
+
+
 def _check_transition(from_status: str, to_status: str) -> None:
     """校验状态跃迁合法性（私有 helper）。
 
@@ -163,6 +195,7 @@ def request_refund(
         detail=f"pre_status={pre_status}, amount={amount}",
     )
     db.commit()
+    _track_order_state(order, pre_status, "refund_requested", "end_user")
 
     # 8. 记录幂等 —— 业务成功后才回写，失败操作不记录（允许重试）
     record_idempotency(order.id, client_request_id, "refund", approval.id)
@@ -268,6 +301,8 @@ def approve_refund(db: Session, *, approval_id: int, decision: str,
         if not ok:
             raise VersionConflict("订单状态已变更，请刷新重试")
         db.commit()
+        _track_refund_decision(approval, order, decision, approver_id)
+        _track_order_state(order, "refund_requested", restore_status, approver_id)
         return {"id": approval.id, "status": decision}
 
     # 审批通过才从待审批进入渠道处理中；兼容上线前已经是 refunding 的存量数据。
@@ -289,6 +324,8 @@ def approve_refund(db: Session, *, approval_id: int, decision: str,
             last_error="missing payment_trade_no, manual review required",
         ))
         db.commit()
+        _track_refund_decision(approval, order, decision, approver_id)
+        _track_order_state(order, "refund_requested", "refunding", approver_id)
         raise
 
     outbox = RefundOutbox(
@@ -297,6 +334,8 @@ def approve_refund(db: Session, *, approval_id: int, decision: str,
     )
     db.add(outbox)
     db.commit()
+    _track_refund_decision(approval, order, decision, approver_id)
+    _track_order_state(order, "refund_requested", "refunding", approver_id)
 
     # 同步尽力执行（mock/单实例部署）；失败进入 pending 由后台任务重试
     ok = process_refund_outbox(db, approval.id)
@@ -356,6 +395,7 @@ def _mark_refund_success(db: Session, outbox, order) -> bool:
     if order.status == "refunded":
         db.commit()
         return True
+    from_status = order.status
     cas_ok = order_crud.update_status_optimistic(db, order, "refunded")
     if not cas_ok:
         db.execute(
@@ -364,6 +404,8 @@ def _mark_refund_success(db: Session, outbox, order) -> bool:
             .values(last_error="order CAS conflict, manual review required")
         )
     db.commit()
+    if cas_ok:
+        _track_order_state(order, from_status, "refunded", "refund_worker")
     return cas_ok
 
 
@@ -649,6 +691,7 @@ def cancel_refund(
         detail=f"amount={approval.amount}, order_no={order.order_no}, reason={reason.strip()}",
     )
     db.commit()
+    _track_order_state(order, "refund_requested", restore_status, "tenant")
     logger.info(f"Refund {approval_id} cancelled by tenant {tenant_id}")
     return {"id": approval.id, "status": "cancelled"}
 
@@ -685,6 +728,7 @@ def ship_order(db: Session, *, order_id: int, tenant_id: int, tracking_no: str) 
         detail=f"tracking_no={tracking_no}, order_no={order.order_no}",
     )
     db.commit()
+    _track_order_state(order, "paid", "shipped", "staff")
     logger.info(f"Order {order_id} shipped, tracking_no={tracking_no}")
     return {"id": order.id, "order_no": order.order_no, "status": "shipped", "tracking_no": tracking_no}
 

@@ -189,6 +189,12 @@ def incr_usage(
         warning = "100%"
         logger.info(f"Tenant {tenant_id} quota EXCEEDED: {count}/{q}")
         _notify(tenant_id, "100%", count, q)
+        from app.services.analytics_service import track_event
+        track_event(
+            "quota_exceeded",
+            tenant_id=tenant_id,
+            properties={"current_usage": count, "quota": q},
+        )
 
     return {
         "count": count,
@@ -536,6 +542,17 @@ def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | No
         detail=f"trade_no={trade_no}",
     )
     db.commit()
+
+    from app.services.analytics_service import track_event
+    track_event(
+        "invoice_paid",
+        tenant_id=invoice.tenant_id,
+        properties={
+            "invoice_id": invoice.id,
+            "amount": float(invoice.base_fee) + float(invoice.overage_fee),
+            "payment_trade_no": trade_no,
+        },
+    )
 
     # 支付成功恢复降级 —— 清除租户降级标记（PRD §3.10 要求）
     _clear_degradation(invoice.tenant_id)

@@ -229,7 +229,9 @@ def upload(db: Session, *, file: UploadFile, tenant_id: int, expires_days: int |
     }
 
 
-def rebuild(db: Session, *, doc_id: int, tenant_id: int) -> dict:
+def rebuild(
+    db: Session, *, doc_id: int, tenant_id: int, operator_id: int | None = None
+) -> dict:
     """重建文档索引：重置为 pending + 重新投递任务。
 
     仅 failed 和 ready 状态的文档可重建。
@@ -265,6 +267,12 @@ def rebuild(db: Session, *, doc_id: int, tenant_id: int) -> dict:
 
     # 重新投递异步任务 —— Worker 会重新解析+分块+向量化
     publish_knowledge_task(doc.id, tenant_id)
+    from app.services.analytics_service import track_event
+    track_event(
+        "index_rebuild_triggered",
+        tenant_id=tenant_id,
+        properties={"doc_id": doc.id, "operator": operator_id},
+    )
 
     return {"doc_id": doc.id, "status": "pending", "message": "重建索引任务已提交"}
 

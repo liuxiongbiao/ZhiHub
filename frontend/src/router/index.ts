@@ -137,6 +137,12 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresRole: ['admin'] },
       },
       {
+        path: 'analytics/overview',
+        name: 'operations-dashboard',
+        component: () => import('@/views/analytics/OperationsDashboard.vue'),
+        meta: { requiresRole: ['admin'] },
+      },
+      {
         path: 'session/:id',
         name: 'session-detail',
         component: () => import('@/views/session/SessionDetail.vue'),

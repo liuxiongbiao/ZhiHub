@@ -59,6 +59,7 @@ describe('router route table ()', () => {
       'profile', 'knowledge-list', 'knowledge-search-test', 'ticket-list', 'order-list',
       'order-refunds', 'billing-usage', 'billing-invoices', 'session-detail',
       'session-monitor', 'agent-report', 'widget-preview', 'agent-console',
+      'operations-dashboard',
     ]
     for (const n of names) {
       expect(routeByName(n), `route name "${n}" should exist`).toBeTruthy()

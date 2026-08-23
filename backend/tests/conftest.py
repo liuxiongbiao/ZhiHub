@@ -83,6 +83,28 @@ def fake_redis():
 
 
 @pytest.fixture(autouse=True)
+def fake_analytics_store(monkeypatch):
+    """单元/契约测试禁止向本机真实 Mongo 写运营事件。"""
+    from app.services import analytics_service
+
+    class _TestCollection:
+        def __init__(self):
+            self.documents = []
+
+        def create_index(self, *_args, **_kwargs):
+            return "test-index"
+
+        def insert_one(self, document):
+            self.documents.append(document)
+            return object()
+
+    collection = _TestCollection()
+    monkeypatch.setattr(analytics_service, "_collection", collection)
+    monkeypatch.setattr(analytics_service, "_indexes_ready", False)
+    yield collection
+
+
+@pytest.fixture(autouse=True)
 def reset_third_party_clients(monkeypatch):
     """测试环境与本地 .env 解耦：支付宝/微信一律 mock，避免真实 Key 影响断言。
 

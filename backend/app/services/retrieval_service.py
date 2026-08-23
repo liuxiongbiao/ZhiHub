@@ -59,10 +59,11 @@ CONFIDENCE_THRESHOLD = 0.3
 
 # 规格 008 降级模式告警: 检索召回失败时 Redis 标记 degradation:{tenant_id}，TTL 1h（PRD §3.4/3.8）
 DEGRADATION_KEY_PREFIX = "degradation:"
+DEGRADATION_EVENT_KEY_PREFIX = "degradation:event:"
 DEGRADATION_TTL = 3600  # 1 小时，平衡敏感度与抖动
 
 
-def _mark_degradation(tenant_id: int) -> None:
+def _mark_degradation(tenant_id: int, affected_service: str = "retrieval") -> None:
     """检索降级标记：vector/bm25 召回失败时设置 Redis 标记（TTL 1h）。
 
     /home 端点读取此标记，前端据此显示降级告警横幅。
@@ -71,8 +72,46 @@ def _mark_degradation(tenant_id: int) -> None:
     """
     try:
         from app.core.redis import get_redis
-        get_redis().set(
-            f"{DEGRADATION_KEY_PREFIX}{tenant_id}", "1", ex=DEGRADATION_TTL
+        redis_client = get_redis()
+        redis_client.set(f"{DEGRADATION_KEY_PREFIX}{tenant_id}", "1", ex=DEGRADATION_TTL)
+        started_at = str(time.time())
+        first_entry = redis_client.set(
+            f"{DEGRADATION_EVENT_KEY_PREFIX}{tenant_id}:{affected_service}",
+            started_at,
+            ex=DEGRADATION_TTL,
+            nx=True,
+        )
+        if first_entry:
+            from app.services.analytics_service import track_event
+            track_event(
+                "degradation_mode_entered",
+                tenant_id=tenant_id,
+                properties={"affected_service": affected_service},
+            )
+    except Exception:
+        pass
+
+
+def _mark_recovery(tenant_id: int, affected_service: str) -> None:
+    """单路召回恢复后记录退出事件；两个召回服务都恢复才清除全局告警。"""
+    try:
+        from app.core.redis import get_redis
+        redis_client = get_redis()
+        event_key = f"{DEGRADATION_EVENT_KEY_PREFIX}{tenant_id}:{affected_service}"
+        started_at = redis_client.get(event_key)
+        if started_at is None:
+            return
+        redis_client.delete(event_key)
+        if not any(redis_client.scan_iter(f"{DEGRADATION_EVENT_KEY_PREFIX}{tenant_id}:*", count=10)):
+            redis_client.delete(f"{DEGRADATION_KEY_PREFIX}{tenant_id}")
+        from app.services.analytics_service import track_event
+        track_event(
+            "degradation_mode_exited",
+            tenant_id=tenant_id,
+            properties={
+                "affected_service": affected_service,
+                "duration": max(0, round(time.time() - float(started_at), 3)),
+            },
         )
     except Exception:
         pass
@@ -248,7 +287,7 @@ def vector_recall(query: str, tenant_id: int, top_k: int = VECTOR_TOP_K) -> list
     except Exception as e:
         # 单路失败不中断：返回空，让 BM25 路兜底
         logger.error(f"Milvus search failed: {e}")
-        _mark_degradation(tenant_id)  # 规格 008: 降级标记（PRD 3.4/3.8）
+        _mark_degradation(tenant_id, "milvus")  # 规格 008: 降级标记（PRD 3.4/3.8）
         return []
 
     # 3. 转换结果
@@ -263,6 +302,7 @@ def vector_recall(query: str, tenant_id: int, top_k: int = VECTOR_TOP_K) -> list
                 "score": hit.distance,  # IP 相似度
                 "source": "vector",
             })
+    _mark_recovery(tenant_id, "milvus")
     return output
 
 
@@ -305,7 +345,7 @@ def bm25_recall(query: str, tenant_id: int, top_k: int = BM25_TOP_K) -> list[dic
         )
     except Exception as e:
         logger.error(f"ES search failed: {e}")
-        _mark_degradation(tenant_id)  # 规格 008: 降级标记（PRD 3.4/3.8）
+        _mark_degradation(tenant_id, "elasticsearch")  # 规格 008: 降级标记（PRD 3.4/3.8）
         return []
 
     output = []
@@ -319,6 +359,7 @@ def bm25_recall(query: str, tenant_id: int, top_k: int = BM25_TOP_K) -> list[dic
             "score": hit["_score"],
             "source": "bm25",
         })
+    _mark_recovery(tenant_id, "elasticsearch")
     return output
 
 
@@ -469,6 +510,35 @@ def _is_knowledge_base_empty(tenant_id: int) -> bool:
 
 
 # ─── 主编排函数 ───
+def _track_retrieval_result(tenant_id: int, result: RetrievalResult) -> None:
+    """记录可用于纯向量/混合/HyDE 对比的同一次检索结果。"""
+    from app.services.analytics_service import track_event
+
+    track_event(
+        "retrieval_executed",
+        tenant_id=tenant_id,
+        properties={
+            "query": result.query,
+            "confidence": (
+                result.hybrid_results[0].score if result.hybrid_results else 0
+            ),
+            "latency": result.elapsed_ms,
+            "mode": "hyde" if result.hyde_fallback else "hybrid",
+            "vector_top_score": (
+                result.vector_results[0].score if result.vector_results else None
+            ),
+            "hybrid_top_score": (
+                result.hybrid_results[0].score if result.hybrid_results else None
+            ),
+            "vector_result_count": len(result.vector_results),
+            "hybrid_result_count": len(result.hybrid_results),
+            "hyde_fallback": result.hyde_fallback,
+            "low_confidence": result.low_confidence,
+            "empty_knowledge": result.empty_knowledge,
+        },
+    )
+
+
 @observe(name="retrieval")
 def hybrid_search(
     query: str,
@@ -499,12 +569,14 @@ def hybrid_search(
     # 2. 空知识库检查
     if _is_knowledge_base_empty(tenant_id):
         elapsed = int((time.perf_counter() - start) * 1000)
-        return RetrievalResult(
+        result = RetrievalResult(
             query=query,
             rewritten_query=rewritten if rewritten != query else None,
             empty_knowledge=True,
             elapsed_ms=elapsed,
         )
+        _track_retrieval_result(tenant_id, result)
+        return result
 
     # 3. 双路召回（ThreadPoolExecutor 真正并行，避免两路延迟叠加）
     from concurrent.futures import ThreadPoolExecutor
@@ -598,7 +670,7 @@ def hybrid_search(
 
     elapsed = int((time.perf_counter() - start) * 1000)
 
-    return RetrievalResult(
+    result = RetrievalResult(
         query=query,
         rewritten_query=rewritten if rewritten != query else None,
         vector_results=vector_top,
@@ -607,3 +679,5 @@ def hybrid_search(
         low_confidence=low_confidence,
         elapsed_ms=elapsed,
     )
+    _track_retrieval_result(tenant_id, result)
+    return result

@@ -47,6 +47,7 @@ from app.core.rabbitmq import consume_knowledge_tasks
 from app.tasks.knowledge_tasks import process_document
 
 from app.api.v1 import agent as agent_router
+from app.api.v1 import analytics as analytics_router
 from app.api.v1 import auth as auth_router
 from app.api.v1 import billing as billing_router
 from app.api.v1 import knowledge as knowledge_router
@@ -270,6 +271,7 @@ app.add_middleware(MetricsMiddleware)
 
 # 路由挂载 —— 统一前缀 /api/v1/<module>
 app.include_router(agent_router.router, prefix="/api/v1/agent", tags=["agent"])
+app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(knowledge_router.router, prefix="/api/v1/knowledge", tags=["knowledge"])
 app.include_router(billing_router.router, prefix="/api/v1/billing", tags=["billing"])

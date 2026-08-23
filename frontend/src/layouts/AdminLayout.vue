@@ -86,6 +86,11 @@
           </el-menu-item>
         </el-sub-menu>
 
+        <el-menu-item v-if="userStore.role === 'admin'" index="/analytics/overview">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>运营看板</span>
+        </el-menu-item>
+
         <el-sub-menu index="group-agent">
           <template #title>
             <el-icon><MagicStick /></el-icon>
@@ -189,6 +194,7 @@ import {
   Service, Odometer, Collection, Files, Search, Tickets, Document, List,
   Wallet, TrendCharts, DataLine, Money, MagicStick, Notebook, Headset,
   ChatDotRound, Setting, Tools, User, ArrowDown, SwitchButton, Brush, DocumentChecked, Bell,
+  DataAnalysis,
 } from '@element-plus/icons-vue'
 import { getNotifications, getUnreadCount, markNotificationRead, type NotificationItem } from '@/api/notification'
 import { useTenantStore } from '@/store/modules/tenant'

@@ -208,7 +208,13 @@ def cleanup_expired_agent_presence() -> int:
 
 # ─── 会话生命周期 ───
 
-def create_session(db: DbSession, *, tenant_id: int, end_user_id: str | None = None) -> dict:
+def create_session(
+    db: DbSession,
+    *,
+    tenant_id: int,
+    end_user_id: str | None = None,
+    channel: str = "web",
+) -> dict:
     """创建新会话并初始化 Redis 上下文。"""
     # readonly/closed/pending_review 租户拒绝新会话
     from app.services.tenant_service import require_active_tenant
@@ -218,6 +224,12 @@ def create_session(db: DbSession, *, tenant_id: int, end_user_id: str | None = N
     db.commit()
     # 初始化空的 Redis 上下文
     save_context(session.id, [])
+    from app.services.analytics_service import track_event
+    track_event(
+        "session_created",
+        tenant_id=tenant_id,
+        properties={"session_id": session.id, "channel": channel, "intent": session.intent or "unknown"},
+    )
     return {"session_id": session.id, "status": session.status, "created_at": session.created_at}
 
 
@@ -414,6 +426,16 @@ def submit_feedback(
 
     fb = feedback_crud.create_feedback(db, message_id=message_id, score=score, comment=comment)
     db.commit()
+    from app.services.analytics_service import track_event
+    track_event(
+        "answer_feedback",
+        tenant_id=tenant_id,
+        properties={
+            "session_id": msg.session_id,
+            "message_id": message_id,
+            "feedback": "like" if score > 0 else "dislike",
+        },
+    )
     return {
         "id": fb.id,
         "message_id": message_id,

@@ -103,6 +103,7 @@ describe('AdminLayout.vue', () => {
     expect(text).not.toContain('配置向导')
     expect(text).not.toContain('规则配置')
     expect(text).not.toContain('审计日志')
+    expect(text).not.toContain('运营看板')
     expect(text).toContain('工单与订单')
   })
 })
