@@ -5,7 +5,7 @@
 > **审计口径（用户确认）**:
 > - 四档判定：✅ 真实实现 / ⚠️ mock或降级实现（流程可跑，但依赖 mock 或降级路径）/ 🔶 有代码实现但需中间件或真实凭据才能运行时验证 / ❌ 完全缺失
 > - 基准：**PRD 原文全量要求**（即使 PRD 修订记录标注"本期不实现/后续迭代"的条目，也一律列为缺口）
-> - 方法：静态代码审计（路由/服务/模型/前端页面逐一比对）+ 758 项本地测试 + **真实栈运行时验证**（14 容器全栈，12 项端到端链路实测，见 §十一）
+> - 方法：静态代码审计（路由/服务/模型/前端页面逐一比对）+ 759 项后端单元/契约测试 + 174 项前端测试 + **真实栈运行时验证**（14 个长驻容器，12 项端到端链路实测，见 §十一）
 
 ---
 
@@ -358,7 +358,7 @@
 | # | 验收项 | 状态 |
 |---|---|---|
 | 1 | 三登录方式+注册/绑定/找回+锁定+验证码失效+黑名单 | ✅（短信/微信真实发送 ⚠️） |
-| 2 | 多租户隔离+角色越权拒绝+试用 1 席位 | ✅（758 测试含对应契约） |
+| 2 | 多租户隔离+角色越权拒绝+试用 1 席位 | ✅（759 项后端测试含对应契约） |
 | 3 | 知识管道全流程+版本归档+到期提醒+双写恢复+存储上限 | ✅（真实栈实测入库；RagFlow 语义解析未配置降级本地） |
 | 4 | 混合检索+测试台+HyDE+空库+降级横幅 | ✅（真实栈实测全链路） |
 | 5 | LangGraph 流转+愤怒转人工+15轮+截断+空闲收尾+双限流 | ✅ |
@@ -370,15 +370,15 @@
 | 11 | RAGAS 跑通+量化数据+指标达标 | ✅ 已复跑（F 1.00 / CR +8.3pp）；+15pp 目标未达（评测集设计限制，见 §3.12） |
 | 12 | 权限矩阵+注入检测识别典型攻击 | ✅ |
 | 13 | 计费闸门+预警+导出+多模型折算 | ✅ |
-| 14 | 支付宝沙箱闭环+回调幂等 | ⚠️ 半程已验证（真实签名链接生成 ✅）；付款/回调闭环待沙箱应用核对+公网环境（见 §十二） |
-| 15 | Docker Compose 一键启动 + CI 跑通 | ✅ Compose 全栈已实测 14 容器 Up&healthy；GitHub Actions 后端/前端双 job 已实际全绿（见 §十二） |
+| 14 | 支付宝沙箱闭环+回调幂等 | ⚠️ 半程已验证（真实 SDK/RSA2 签名参数 ✅）；付款/回调闭环待启用支付开关与公网 HTTPS 回调环境（见 §十二） |
+| 15 | Docker Compose 一键启动 + CI 跑通 | ✅ Compose 全栈已实测 14 个长驻容器运行（有健康检查的 11 个均 healthy），一次性 migration 容器退出码 0；GitHub Actions 后端/前端双 job 已实际全绿（见 §十二） |
 
 ### 8.2 上线 Checklist
 
 | 项 | 状态 |
 |---|---|
 | 密钥配置完整且不入库 | ⚠️ `.env` 已 gitignore；DeepSeek/硅基流动/支付宝沙箱/微信/OCR/SMTP 仅在本机运行环境配置并做过对应预检，阿里云短信凭据未配置；真实密钥均不进入仓库 |
-| Nginx 反代 + 静态资源部署 | ✅ deploy/nginx.conf + frontend/nginx.conf 存在，未运行时验证 |
+| Nginx 反代 + 静态资源部署 | ✅ 2026-08-24 运行时复验：`/health` 200、SPA fallback 200、未鉴权 API 401 |
 | 迁移脚本幂等可重复执行 | ✅ alembic 从零建库测试（test_alembic_from_scratch，2 跳过需 MySQL 密码） |
 | 演示租户/示例数据预置 | ✅ scripts/seed_data.py + demo_seed.py |
 
@@ -438,7 +438,7 @@
 9. **计费**：RESOLVED 才计费（无效回复不扣）→ Redis 计数 → 日聚合 → 月账单 → 80/100 预警 → 多模型 Token 折算 → CSV 对账导出
 10. **安全层**：Prompt 注入检测 + 工具权限矩阵 + 资金操作强制人工 + PII 静态加密 + trace 脱敏 + CSRF + 支付回调验签幂等
 11. **可观测**：Langfuse 全链路 @observe + Prometheus 探针 + 90 天 TTL 脱敏 trace
-12. **工程化**：758 项测试（unit/contracts/integration）+ CI（语法/安全审计/迁移一致性/覆盖率/前端构建）+ Docker Compose 全栈
+12. **工程化**：759 项后端单元/契约测试 + 174 项前端测试 + CI（语法/安全审计/迁移一致性/覆盖率/前端构建）+ Docker Compose 全栈
 
 **答辩时主动交代的边界（坦诚反而加分）**：
 - 支付宝沙箱真实付款闭环待支付开关与公网 HTTPS 回调环境；短信因凭据未配置保留 mock，微信/OCR 已配置但本轮未做终端侧真实验收
@@ -453,7 +453,7 @@
 
 | 步骤 | 状态 |
 |---|---|
-| 1-2 全栈启动（14 容器 Up & healthy） | ✅ 已完成 |
+| 1-2 全栈启动（14 个长驻容器） | ✅ 已完成：全部 running，有健康检查的 11 个均 healthy；migration 一次性容器退出码 0 |
 | 3 真实密钥配置 | ✅ DeepSeek/硅基流动/支付宝/微信/OCR/SMTP 已配置；**支付宝密钥格式缺陷已修复**；阿里云短信凭据未配置 |
 | 4 迁移/种子/端到端冒烟 | ✅ 已完成（§十一 12 项链路） |
 | 5 并发压测 | ✅ 已完成（容器内网实测：/health 564 req/s、100 并发零 5xx；宿主机 502 已定位为 Docker Desktop 端口转发层，非应用问题） |
@@ -465,7 +465,7 @@
 
 ## 十一、运行时验证实录（2026-08-23 已执行）
 
-**环境**：本机 Docker Desktop 全栈（deploy 栈 14 个容器全部 Up & healthy：backend/frontend/MySQL/Redis/RabbitMQ/Mongo/Milvus/ES/nginx/celery×3/langfuse-db/clickhouse/langfuse），`deploy/.env` 含真实密钥（DeepSeek/硅基流动/支付宝沙箱/微信/OCR/SMTP），`LLM_ENABLED=true`。
+**环境**：本机 Docker Desktop 核心 deploy 栈（14 个长驻容器：backend/frontend/MySQL/Redis/RabbitMQ/Mongo/Milvus/MinIO/etcd/ES/nginx/celery×3；全部 running，有健康检查的 11 个均 healthy；migration 一次性容器退出码 0），`deploy/.env` 含本机受控的 DeepSeek/硅基流动/支付宝沙箱/微信/OCR/SMTP 配置，`LLM_ENABLED=true`；Langfuse 采用云端实例并已核验真实 trace。
 
 ### 已验证通过的链路（真实模式）
 
@@ -552,7 +552,8 @@ docker compose exec backend python scripts/verify_alipay.py
 | 8 | 浏览器兼容性（Chrome/Edge/Firefox） | ✅ 已验证 | Chrome 151.0.7922.170、Edge 151.0.4129.101、Firefox 132.0：登录/工作台/知识库/Widget 预览/运营看板与第三方页 widget.js 全通过，0 控制台/页面/关键网络异常、0 横向溢出；可重复脚本与边界见 `docs/browser_compatibility_report.md` |
 | 9 | CI 首次实际运行 | ✅ **2026-08-23 双 job 全绿**（后端：依赖审计/迁移一致性/测试覆盖率；前端：依赖审计/类型/单测/构建） | 首轮共排掉 4 类地雷：pip-audit CLI、npm audit 高危、requirements 编码、MySQL 触发器权限与迁移漂移（新增 d35） |
 | 10 | Nginx 反代 API 转发验证 | ✅ 已验证 | /health 200 透传 + SPA fallback 200 + 真实 API 路径 401 正确拒绝 |
-| 11 | 前端生产构建 `npm run build` | ✅ 已验证 | `✓ built in 11.60s`；仅 element 分包 936KB 偏大（见 §十二 C） |
+| 11 | 前端生产构建 `npm run build` | ✅ 已验证 | 2026-08-24 最终复跑 `✓ built in 5.14s`；仅 element 分包 937.88KB 偏大（见 §十二 C） |
+| 12 | 最终本地总验收 | ✅ 已验证 | 后端 compileall 通过，759/759 单元与契约测试通过、覆盖率 77%；前端 `vue-tsc` 零错误、174/174 测试通过、生产构建成功；pip-audit 唯一已审查豁免项通过门禁、npm audit 0 漏洞；真实 MySQL `alembic upgrade head` + `alembic check` 通过；Nginx health/SPA/API 鉴权分别为 200/200/401 |
 
 ### B. PRD 缺口（❌ 类，非审计未完成——按全量口径列出，是否补齐由你决策）
 
