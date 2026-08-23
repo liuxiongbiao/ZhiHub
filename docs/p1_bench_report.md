@@ -52,3 +52,18 @@
 冷请求单独披露：修复重复生成后 5 轮诊断样本的 TTFB P50 2.987s / P95 5.544s，完整回答 P50 3.794s / P95 6.049s；尾延迟来自真实外部 Embedding/DeepSeek 服务。首轮冷启动曾为 TTFB 5.523s / 完整回答 6.214s。缓存不适用的个性化、带业务编号或敏感请求仍按冷链路执行，不能把高频缓存成绩解释为所有问题的供应商冷延迟。
 
 复测命令：`python -m scripts.benchmark_generation_latency --rounds 25 --warmup 2`；文档复测命令：`python -m scripts.benchmark_document_pipeline --tenant-id 1 --size-mib 9.5`。
+
+## D) 会话状态流转（真实 MySQL + Redis，100 条完整状态链）
+
+测试链路：`created → routing → agent_handling → waiting_human → human_handling → agent_handling → resolved → closed`。本项只测状态机、事务、Redis 认领锁和实时通知开销，不把 LLM/检索外部调用混入状态流转口径。
+
+| 阶段 | P50 | P95 | P99 | Max |
+|---|---:|---:|---:|---:|
+| 创建会话 | 4.780ms | 6.669ms | 6.880ms | 111.564ms（首轮连接预热） |
+| 三段转人工状态推进 | 8.880ms | 11.868ms | 13.085ms | 13.757ms |
+| 坐席认领（含 Redis SETNX） | 5.236ms | 7.054ms | 7.648ms | 7.731ms |
+| 退回智能体 | 4.084ms | 5.673ms | 6.590ms | 7.599ms |
+| resolved → closed | 6.220ms | 9.001ms | 10.586ms | 12.351ms |
+| **完整状态链** | **30.204ms** | **37.508ms** | **40.274ms** | **150.516ms** |
+
+PRD 目标 `<200ms`：✅ 完整链路 P99 40.274ms，余量约 80%。可重复命令：`python scripts/benchmark_session_transitions.py --tenant-id 1 --iterations 100 --target-ms 200`。脚本结束后自动清理 MySQL 会话/消息、Redis 上下文/认领锁与 Mongo 埋点；实测清理复核均为 0。
