@@ -46,10 +46,11 @@ def get_by_id(db: Session, user_id: int) -> User | None:
 def get_by_openid(db: Session, openid: str) -> User | None:
     """按微信 openid 查询用户（扫码登录查找绑定）。
 
-    openid 列有 unique 索引，等值查询高效。未绑定返回 None。
+    openid 静态加密存储（密文不确定），查询走 wechat_openid_hash（HMAC-SHA256 确定性哈希）。
+    未绑定返回 None。
     """
     return db.execute(
-        select(User).where(User.wechat_openid == openid)
+        select(User).where(User.wechat_openid_hash == pii_hash(openid))
     ).scalar_one_or_none()
 
 

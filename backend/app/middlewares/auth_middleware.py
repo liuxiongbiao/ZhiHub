@@ -38,22 +38,26 @@ logger = logging.getLogger(__name__)
 
 # 免鉴权路径（前缀匹配）: 健康检查、注册、登录、邀请接受（被邀请者无账号）、支付宝异步回调、API 文档
 # 支付宝回调由签名校验保证安全（auth_middleware 不持有支付宝公钥，无法验签，故放行交由业务层验签）
-# PRD 3.1 账户体系扩展: 验证码发送/登录、邮箱注册/登录、密码找回均为公开端点（用户未登录时使用）
-# PRD 3.1 #12 微信扫码登录: /wechat/auth 与 /wechat/callback 公开（扫码前用户未登录），
-#   /wechat/bind 需 JWT（已登录后才允许绑定）
+# PRD §3.1 账户体系扩展: 验证码发送/登录、邮箱注册/登录、密码找回均为公开端点（用户未登录时使用）
+# PRD §3.1 #12 微信扫码登录: /wechat/auth 与 /wechat/callback 公开（扫码前用户未登录），
+# /wechat/bind 需 JWT（已登录后才允许绑定）
 _PUBLIC_PREFIXES = (
     "/health",
-    # "/metrics" 已移除公开白名单 -- 监控探针需鉴权或内网隔离（P-003 修复）
+    # "/metrics" 已移除公开白名单 —— 监控探针需鉴权或内网隔离（审计修复）
     "/api/v1/auth/register",
     "/api/v1/auth/login",
+    "/api/v1/auth/refresh",
     "/api/v1/auth/sms/send",
     "/api/v1/auth/code/send",
+    "/api/v1/auth/email/activate",
+    "/api/v1/auth/email/resend",
     "/api/v1/auth/password/reset",
     "/api/v1/auth/wechat/auth",
     "/api/v1/auth/wechat/callback",
     "/api/v1/tenant/invite/accept",
+    "/api/v1/tenant/enterprise/approve",  # : 平台运营令牌单独鉴权（X-Platform-Token）
     "/api/v1/billing/alipay/notify",
-    "/api/v1/widget/session",  # 014: 仅会话创建公开；发消息/撤单需 Widget 令牌
+    "/api/v1/widget/session",  # 规格 014: 仅会话创建公开；发消息/撤单需 Widget 令牌
     "/docs",
     "/redoc",
     "/openapi.json",
@@ -88,7 +92,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             try:
                 is_blocked = is_blocklisted(jti)
             except Exception as e:
-                # Redis 故障降级（T13）: 黑名单查不了 -> fail-open 放行（可用性优先）。
+                # Redis 故障降级: 黑名单查不了 → fail-open 放行（可用性优先）。
                 # 代价: 登出的 token 在 Redis 恢复前不失效——token 本身有 TTL，
                 # 最坏多存活到令牌自然过期，可接受。
                 logger.warning(f"Redis unavailable, blocklist check skipped: {e}")
@@ -96,7 +100,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if is_blocked:
                 return JSONResponse({"detail": "未认证"}, status_code=401)
 
-        # 014: Widget 令牌（role=widget）只允许访问 /api/v1/widget/*，
+        # 规格 014: Widget 令牌（role=widget）只允许访问 /api/v1/widget/*，
         # 注入 widget_session_id，user_id 保持 None（匿名终端用户）。
         if payload.get("role") == "widget":
             if not request.url.path.startswith("/api/v1/widget/"):

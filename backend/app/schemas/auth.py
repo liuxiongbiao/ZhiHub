@@ -31,8 +31,9 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """登录响应：JWT access_token 及用户/租户/角色信息。"""
+    """登录响应：短效 access token、可轮换 refresh token 及身份信息。"""
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     user_id: int
     tenant_id: int
@@ -45,7 +46,35 @@ class MessageResponse(BaseModel):
     message: str
 
 
-# ---------- 账户体系扩展（PRD 3.1 #10-#17）----------
+class RefreshRequest(BaseModel):
+    """Refresh token 轮换请求。"""
+    refresh_token: str = Field(..., min_length=32, max_length=256)
+
+
+class RefreshResponse(BaseModel):
+    """轮换后的新 token 对。"""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class LogoutRequest(BaseModel):
+    """登出时可携带 refresh token，以撤销整个登录家族。"""
+    refresh_token: str | None = Field(default=None, min_length=32, max_length=256)
+
+
+class RevokeUserTokensRequest(BaseModel):
+    """管理员踢出指定用户。"""
+    user_id: int = Field(..., gt=0)
+
+
+class WsTokenResponse(BaseModel):
+    """坐席工作台 WebSocket 短效令牌"""
+    token: str
+    expires_in: int
+
+
+# ────────── 账户体系扩展（PRD §3.1 #10-#17）──────────
 
 class SendCodeRequest(BaseModel):
     """发送短信验证码请求体（#10）。"""
@@ -53,7 +82,7 @@ class SendCodeRequest(BaseModel):
 
 
 class SendGenericCodeRequest(BaseModel):
-    """通用验证码发送请求体（个人中心/绑定场景，013）。"""
+    """通用验证码发送请求体（个人中心/绑定场景，规格 013）。"""
     target: str = Field(..., description="手机号（code_type=sms）或邮箱（code_type=email）")
     code_type: str = Field("sms", description="验证码类型：sms 或 email")
 
@@ -86,6 +115,30 @@ class EmailRegisterResponse(BaseModel):
     email: str
     role: str
     plan_type: str
+    email_verified: bool = False
+    activation_link: str | None = None
+
+
+class EmailActivateRequest(BaseModel):
+    """邮箱激活请求"""
+    token: str = Field(..., min_length=16, max_length=128)
+
+
+class EmailActivateResponse(BaseModel):
+    """邮箱激活结果"""
+    user_id: int
+    email: str
+    activated: bool = True
+
+
+class EmailResendRequest(BaseModel):
+    """重新发送激活邮件请求"""
+    email: str = Field(..., description="注册邮箱")
+
+
+class EmailResendResponse(BaseModel):
+    """重新发送激活邮件结果"""
+    sent: bool
 
 
 class EmailLoginRequest(BaseModel):
@@ -108,6 +161,12 @@ class BindEmailRequest(BaseModel):
     code: str = Field(..., description="邮箱验证码")
 
 
+class BindPhoneRequest(BaseModel):
+    """绑定手机号请求体（PRD 3.1 账号绑定反向闭环）。"""
+    phone: str = Field(..., description="待绑定手机号")
+    code: str = Field(..., description="短信验证码")
+
+
 class EnterpriseApproveRequest(BaseModel):
     """企业版审批请求体（#17 admin 审批）。"""
     tenant_id: int = Field(..., description="待审批租户 ID")
@@ -119,7 +178,7 @@ class EnterpriseApproveResponse(BaseModel):
     status: str
 
 
-# ── 微信扫码登录（PRD 3.1）──
+# ── 微信扫码登录（PRD §3.1）──
 class WechatAuthResponse(BaseModel):
     """微信授权 URL 响应：前端跳转到此 URL 触发扫码。"""
     auth_url: str
@@ -130,6 +189,7 @@ class WechatCallbackResponse(BaseModel):
     need_bind: bool
     openid: str | None = None
     access_token: str | None = None
+    refresh_token: str | None = None
     token_type: str = "bearer"
     user_id: int | None = None
     tenant_id: int | None = None
@@ -137,7 +197,7 @@ class WechatCallbackResponse(BaseModel):
 
 
 class WechatBindRequest(BaseModel):
-    """微信绑定请求体（T12）：已登录用户传入微信授权 code，服务端换 openid 后绑定。
+    """微信绑定请求体：已登录用户传入微信授权 code，服务端换 openid 后绑定。
 
     不收 openid：openid 必须由微信授权（code 交换）产生，防"客户端任意传 openid
     绑定他人微信"的账户接管链。

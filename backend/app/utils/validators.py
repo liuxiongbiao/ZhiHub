@@ -21,7 +21,7 @@ import re
 # 中国大陆手机号：1 开头，第二位 3-9，共 11 位
 _PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 
-# 邮箱格式：local@domain.tld（PRD 3.1 #11 邮箱注册/登录）
+# 邮箱格式：local@domain.tld（PRD §3.1 #11 邮箱注册/登录）
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
 
 # 常见弱密码黑名单（PRD 点名 password / 88888888；补充若干高频弱密码）
@@ -75,7 +75,7 @@ def validate_password_strength(pw: str) -> None:
 
 
 def verify_phone_suffix(provided: str | None, bound: str | None) -> bool:
-    """双因子校验：提供的手机号与业务记录绑定手机号后 4 位是否一致（016）。
+    """双因子校验：提供的手机号与业务记录绑定手机号后 4 位是否一致（规格 016）。
 
     任一为空/长度不足 4 -> False。只比较后 4 位字符串，避免数字前导零问题。
     注意：调用方必须保证 bound 来自可信来源（DB 解密后的明文手机号）。

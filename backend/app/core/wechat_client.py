@@ -37,7 +37,12 @@ class WeChatClient:
     """
 
     def __init__(self) -> None:
-        # 模式判定: app_id 为空 -> mock 模式（开发/测试/未配 key 时降级）
+        # 模式判定: app_id 为空 → mock 模式（开发/测试/未配 key 时降级）
+        # 非 development 环境禁止 mock（mock_openid 可被伪造登录）
+        if settings.app_env not in ("development", "test") and not settings.wechat_app_id:
+            raise RuntimeError("非 development 环境必须配置 WECHAT_APP_ID（禁止 mock 登录）")
+        if settings.app_env not in ("development", "test") and settings.wechat_app_id and not settings.wechat_app_secret:
+            raise RuntimeError("生产环境必须配置 WECHAT_APP_SECRET")
         self.is_mock: bool = not settings.wechat_app_id
 
     # ── 生成授权 URL ──

@@ -17,7 +17,7 @@ backend/app/models/user.py
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Integer, String
+from sqlalchemy import Boolean, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.core.crypto import EncryptedString, phone_hash, pii_hash
@@ -27,13 +27,13 @@ from app.models.base import BaseModel
 class User(BaseModel):
     __tablename__ = "users"
 
-    # 手机号作为登录名，AES-GCM 加密存储（PRD 3.1/4.3 PII 静态加密）
+    # 手机号作为登录名，AES-GCM 加密存储（PRD §3.1/4.3 PII 静态加密）
     # 密文不确定（nonce 随机），unique/index 放在 phone_hash 列而非此列
-    # nullable=True: 邮箱注册用户无手机号（PRD 3.1 账户体系扩展 #11）
+    # nullable=True: 邮箱注册用户无手机号（PRD §3.1 账户体系扩展 #11）
     phone: Mapped[Optional[str]] = mapped_column(EncryptedString(255), nullable=True)
     # 手机号确定性哈希（HMAC-SHA256），用于等值查询（登录/查重）和唯一约束
     phone_hash: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
-    # 邮箱（AES-GCM 加密存储），可空--手机号注册用户初始无邮箱，可后续绑定（#15）
+    # 邮箱（AES-GCM 加密存储），可空——手机号注册用户初始无邮箱，可后续绑定（#15）
     email: Mapped[Optional[str]] = mapped_column(EncryptedString(255), nullable=True)
     # 邮箱确定性哈希（HMAC-SHA256），用于等值查询和唯一约束
     email_hash: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
@@ -45,9 +45,12 @@ class User(BaseModel):
     login_fail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # 锁定截止时间，为 None 表示未锁定；登录失败次数超限时写入未来时间点
     locked_until: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    # 微信 openid（PRD 3.1 扫码登录），unique+nullable：未绑定为 None，绑定后唯一
-    # 一个 openid 只能绑定一个平台账号，绑定后可用微信扫码直接登录
-    wechat_openid: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True, index=True)
+    # 微信 openid（PRD §3.1 扫码登录，P3-11 静态加密存储）：AES-GCM 密文不确定，
+    # 唯一性与等值查询走 wechat_openid_hash（HMAC-SHA256 确定性哈希）
+    wechat_openid: Mapped[Optional[str]] = mapped_column(EncryptedString(255), nullable=True)
+    wechat_openid_hash: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    # 邮箱注册账号必须激活后才能登录（PRD §3.1.1 验证链接）
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     @validates("phone")
     def _auto_set_phone_hash(self, key, value):
@@ -70,4 +73,11 @@ class User(BaseModel):
         """
         if value:
             self.email_hash = pii_hash(value)
+        return value
+
+    @validates("wechat_openid")
+    def _auto_set_openid_hash(self, key, value):
+        """设置 wechat_openid 时自动计算 wechat_openid_hash，保证两列同步（同 phone/email 模式）。"""
+        if value:
+            self.wechat_openid_hash = pii_hash(value)
         return value
