@@ -113,28 +113,30 @@ class TestChunkText:
     """文本切片测试."""
 
     def test_chunk_markdown_with_headings(self):
-        """Markdown 文档按 ## 标题切片."""
+        """相邻短小节合并，同时在正文中保留各自标题。"""
         text = "## 第一章\n这是第一章的内容。\n\n## 第二章\n这是第二章的内容。"
         result = chunk_text(text, "test.md")
-        assert len(result) == 2
+        assert len(result) == 1
         assert result[0].heading == "第一章"
+        assert "第一章" in result[0].text
         assert "第一章的内容" in result[0].text
-        assert result[1].heading == "第二章"
-        assert "第二章的内容" in result[1].text
+        assert "第二章" in result[0].text
+        assert "第二章的内容" in result[0].text
 
     def test_chunk_generic_paragraphs(self):
-        """通用文档按双换行分段."""
+        """相邻短段落合并，避免每段都产生极小切片。"""
         text = "段落一的内容。\n\n段落二的内容。\n\n段落三的内容。"
         result = chunk_text(text, "test.txt")
-        assert len(result) == 3
+        assert len(result) == 1
         assert result[0].index == 0
-        assert result[2].index == 2
+        assert "段落三" in result[0].text
 
     def test_chunk_long_paragraph(self):
         """长段落应被二级切分."""
-        long_text = "长" * 800  # ~800 chars, > CHUNK_SIZE_CHARS (512)
+        long_text = "长" * 1600
         result = chunk_text(long_text, "test.txt")
         assert len(result) >= 2  # 至少切成 2 段
+        assert all(len(chunk.text) <= 800 for chunk in result)
 
     def test_chunk_empty_text(self):
         """空文本返回空列表."""
@@ -152,6 +154,17 @@ class TestChunkText:
         result = chunk_text(text, "test.txt")
         for i, chunk in enumerate(result):
             assert chunk.index == i
+
+    def test_many_short_sections_are_merged_to_bounded_chunks(self):
+        """大量短小节应压缩为 500-800 字为主的切片，防止切片数量爆炸。"""
+        text = "\n".join(
+            f"## 小节 {index}\n这是第 {index} 节的业务说明，包含登录、套餐与退款规则。"
+            for index in range(1000)
+        )
+        result = chunk_text(text, "large.md")
+        assert len(result) < 100
+        assert all(len(chunk.text) <= 800 for chunk in result)
+        assert sum(len(chunk.text) for chunk in result) >= len(text) * 0.9
 
 
 class TestParseAndChunk:

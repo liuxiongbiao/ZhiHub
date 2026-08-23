@@ -30,6 +30,7 @@ backend/app/tasks/knowledge_tasks.py
 import logging
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 from celery import shared_task
 from app.config import settings
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 # 双写重试次数（Milvus + ES 任一失败时重试）
 MAX_DUAL_WRITE_RETRIES = 3
+ES_BULK_CHUNK_SIZE = 500
 
 
 @shared_task(name="app.tasks.knowledge_tasks.process_document")
@@ -303,10 +305,10 @@ def _index_to_es(
     chunks: list,
     is_latest: bool = True,
 ) -> int:
-    """将切片写入 Elasticsearch。返回成功写入的条数。
+    """通过 Bulk API 将切片批量写入 Elasticsearch，并返回成功条数。
 
     写入前先删除该文档的旧切片（幂等），支持 rebuild 时清理旧版本。
-    ES 逐条 index（非 bulk），量大时应改用 bulk API 优化性能。
+    每 500 条切片一次批量写入，避免大文档产生数千次 HTTP 往返。
 
     Args:
         tenant_id: 租户 ID
@@ -331,7 +333,7 @@ def _index_to_es(
         )
     except Exception as e:
         logger.warning(f"ES cleanup old chunks for doc {doc_id} failed: {e}")
-    count = 0
+    operations: list[dict] = []
     for c in chunks:
         doc_body = {
             "tenant_id": tenant_id,
@@ -341,8 +343,36 @@ def _index_to_es(
             "doc_filename": doc_filename,
             "is_latest": is_latest,
         }
-        es.index(index="knowledge_chunks", document=doc_body)
-        count += 1
+        # 固定文档 ID 让网络重试保持幂等，不会在 ES 中产生重复切片。
+        operations.append({
+            "index": {
+                "_index": "knowledge_chunks",
+                "_id": f"{tenant_id}:{doc_id}:{c.index}",
+            }
+        })
+        operations.append(doc_body)
+
+    count = 0
+    operation_step = ES_BULK_CHUNK_SIZE * 2
+    for start in range(0, len(operations), operation_step):
+        response = es.options(request_timeout=60).bulk(
+            operations=operations[start : start + operation_step]
+        )
+        body = response.body if hasattr(response, "body") else response
+        if body.get("errors"):
+            failures = [
+                detail
+                for item in body.get("items", [])
+                for detail in item.values()
+                if int(detail.get("status", 500)) >= 300
+            ]
+            raise RuntimeError(f"ES bulk 写入失败: {failures[:3]}")
+        count += sum(
+            1
+            for item in body.get("items", [])
+            for detail in item.values()
+            if int(detail.get("status", 500)) < 300
+        )
     # 刷新索引使新数据立即可搜索（默认 1s 刷新间隔，显式 refresh 保证实时）
     es.indices.refresh(index="knowledge_chunks")
     return count
@@ -380,20 +410,36 @@ def _dual_write_with_retry(
     es_ok = False
 
     for attempt in range(MAX_DUAL_WRITE_RETRIES):
-        if not milvus_ok:
-            try:
+        jobs: dict[str, object] = {}
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            if not milvus_ok:
                 assert vectors is not None
-                _index_to_milvus(tenant_id, doc_id, doc_filename, chunks, vectors)
-                milvus_ok = True
-            except Exception as e:
-                logger.warning(f"Milvus write attempt {attempt + 1} failed: {e}")
+                jobs["Milvus"] = executor.submit(
+                    _index_to_milvus,
+                    tenant_id,
+                    doc_id,
+                    doc_filename,
+                    chunks,
+                    vectors,
+                )
+            if not es_ok:
+                jobs["ES"] = executor.submit(
+                    _index_to_es,
+                    tenant_id,
+                    doc_id,
+                    doc_filename,
+                    chunks,
+                )
 
-        if not es_ok:
-            try:
-                _index_to_es(tenant_id, doc_id, doc_filename, chunks)
-                es_ok = True
-            except Exception as e:
-                logger.warning(f"ES write attempt {attempt + 1} failed: {e}")
+            for side, future in jobs.items():
+                try:
+                    future.result()  # type: ignore[union-attr]
+                    if side == "Milvus":
+                        milvus_ok = True
+                    else:
+                        es_ok = True
+                except Exception as e:
+                    logger.warning(f"{side} write attempt {attempt + 1} failed: {e}")
 
         if milvus_ok and es_ok:
             break

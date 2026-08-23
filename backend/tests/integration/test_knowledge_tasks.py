@@ -52,8 +52,19 @@ class _FakeIndices:
 
 
 class _FakeES:
+    """模拟 Elasticsearch Bulk API 与索引刷新行为。"""
+
     def __init__(self):
         self.indices = _FakeIndices()  # 属性（_index_to_es 调 es.indices.refresh(...)）
+
+    def options(self, **kwargs):
+        """忽略传输层超时选项并返回自身。"""
+        return self
+
+    def bulk(self, *, operations):
+        """按 action/source 成对返回成功结果。"""
+        items = [{"index": {"status": 201}} for _ in range(0, len(operations), 2)]
+        return {"errors": False, "items": items}
 
     def delete_by_query(self, *a, **k):
         return {}
@@ -174,6 +185,7 @@ class TestProcessDocument:
         from app.tasks.knowledge_tasks import process_document
 
         kt = _patch_infra(monkeypatch)
+        monkeypatch.setattr(kt.settings, "embedding_enabled", True)
         monkeypatch.setattr(kt, "embed_batches", lambda texts: (_ for _ in ()).throw(RuntimeError("embed api down")))
         db = kb_db()
         monkeypatch.setattr(kt, "SessionLocal", lambda: db)

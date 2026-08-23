@@ -11,7 +11,7 @@ backend/app/core/embedding_client.py
 
 关键技术点:
   - bge-m3: 1024 维多语言向量模型，归一化后 IP 等价余弦
-  - 指数退避重试: 1s/2s/4s 三次重试，应对 API 偶发抖动
+  - 分级退避重试: 普通抖动 1s/2s，429 限流至少 5s/10s 并尊重 Retry-After
   - IVF_FLAT + nlist=128: 倒排文件精确索引，适合 10k+ 切片规模，召回精度高
   - partition_key=tenant_id: Milvus 分区键实现租户物理隔离，查询自动带分区裁剪
   - 双 collection: 知识库与长期记忆分开存，schema 不同（记忆多 user_id/fact_type/created_at）
@@ -24,6 +24,7 @@ backend/app/core/embedding_client.py
 
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from pymilvus import (
@@ -39,7 +40,8 @@ from app.config import settings
 
 # ────────── 常量 ──────────
 EMBEDDING_DIM = 1024  # bge-m3 向量维度，决定 Milvus FLOAT_VECTOR 的 dim
-BATCH_SIZE = 16       # 批量 embedding 每批切片数，控制单次 API 请求体大小
+BATCH_SIZE = 512      # 2026-08-23 真实 API 验证单批 512×1024 向量成功，减少大文档请求总数
+MAX_CONCURRENT_BATCHES = 2  # 持续 4 并发会触发供应商 429；双并发兼顾吞吐与稳定性
 MAX_RETRIES = 3       # embedding API 调用最大重试次数
 COLLECTION_NAME = "knowledge_chunks"             # 知识库切片 collection
 MEMORY_COLLECTION_NAME = "user_memories"  # 规格 009 长期记忆 collection
@@ -64,13 +66,13 @@ def embed_texts(texts: Sequence[str]) -> list[list[float]]:
 
     流程:
       1. 空输入直接返回空列表（避免无意义 API 调用）
-      2. 最多重试 MAX_RETRIES 次，每次失败指数退避（1s/2s/4s）
+      2. 最多重试 MAX_RETRIES 次；普通失败指数退避，429 使用更长冷却
       3. 校验返回向量数与输入数一致（防 API 截断返回）
       4. 全部重试失败抛 RuntimeError
 
     设计决策:
-      指数退避而非固定间隔，是因为 API 限流/抖动通常需要递增等待；2**attempt 得到 1/2/4 秒，
-      总等待不超过 7s，可接受。校验返回数量一致是关键--API 偶尔会漏返回部分向量，不校验会导致
+      指数退避而非固定间隔，是因为 API 限流/抖动通常需要递增等待；429 至少等待 5/10 秒
+      并尊重 Retry-After。校验返回数量一致是关键--API 偶尔会漏返回部分向量，不校验会导致
       切片与向量错位，写入 Milvus 后检索结果张冠李戴。
 
     Args:
@@ -110,7 +112,15 @@ def embed_texts(texts: Sequence[str]) -> list[list[float]]:
             return embeddings
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
-                wait = 2**attempt  # 指数退避：1s -> 2s -> 4s
+                wait = 2**attempt  # 普通网络抖动指数退避：1s -> 2s
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+                    retry_after = e.response.headers.get("Retry-After", "")
+                    try:
+                        retry_after_seconds = float(retry_after)
+                    except ValueError:
+                        retry_after_seconds = 0.0
+                    # 限流需要更长冷却，且优先尊重供应商 Retry-After。
+                    wait = max(retry_after_seconds, 5 * (2**attempt))
                 time.sleep(wait)
                 continue
             # 最后一次仍失败：抛出，由调用方决定降级（如知识库任务记录失败切片）
@@ -118,23 +128,36 @@ def embed_texts(texts: Sequence[str]) -> list[list[float]]:
 
 
 def embed_batches(texts: Sequence[str]) -> list[list[float]]:
-    """将 texts 按 BATCH_SIZE 分批，逐批调用 embedding API，返回全部向量。
+    """将文本按 512 条分批并以最多 2 个并发请求完成向量化。
 
     流程:
       1. 按 BATCH_SIZE 切片
-      2. 逐批调 embed_texts（每批内部自带重试）
-      3. 累积所有向量
+      2. 最多 2 批并行调用 embed_texts（每批内部自带重试）
+      3. 按原批次顺序拼接，保证切片与向量严格对齐
 
     设计决策:
-      分批是为了控制单次 API 请求体大小--几百个切片一次性发可能超 body 限制或超时。
+      2026-08-23 使用真实硅基流动 bge-m3 验证：单批 512 条返回 512×1024 向量，
+      约 3.7 秒完成。持续 4 批并发在 9.5MB 文档上触发 429，因此改为 512 条大批次、
+      最多 2 批并发，把约 4,800 个切片压缩为约 10 次请求并降低限流概率。
       注意：单批失败会抛异常中断整批，而非跳过继续。这是知识库场景的正确选择：宁可整批失败
       重试，也不要部分成功导致切片缺失（知识库完整性优先于部分可用）。
     """
+    batches = [texts[i : i + BATCH_SIZE] for i in range(0, len(texts), BATCH_SIZE)]
+    if not batches:
+        return []
+    if len(batches) == 1:
+        return embed_texts(batches[0])
+
+    ordered_results: list[list[list[float]] | None] = [None] * len(batches)
+    with ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_BATCHES, len(batches))) as executor:
+        futures = [executor.submit(embed_texts, batch) for batch in batches]
+        for index, future in enumerate(futures):
+            ordered_results[index] = future.result()
+
     all_vectors: list[list[float]] = []
-    for i in range(0, len(texts), BATCH_SIZE):
-        batch = texts[i : i + BATCH_SIZE]
-        vectors = embed_texts(batch)
-        all_vectors.extend(vectors)
+    for batch_vectors in ordered_results:
+        assert batch_vectors is not None
+        all_vectors.extend(batch_vectors)
     return all_vectors
 
 

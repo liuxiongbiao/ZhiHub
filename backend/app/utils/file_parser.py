@@ -1,12 +1,12 @@
 """
 backend/app/utils/file_parser.py
 
-职责: 文件类型检测、大小校验、轻量文档切片（简化替代 RagFlow）
+职责: 文件类型检测、大小校验、轻量语义切片（RagFlow 不可用时的本地降级）
 
 核心设计:
-  切片规则: Markdown 按 ## 标题分段，标题作为上下文前缀；
-            PDF/Word 先提取纯文本，按双换行分段，再按 512 字符做二级切分。
-  chunk_size ≈ 512 tokens（约 300-400 中文字符），chunk_overlap ≈ 128 tokens。
+  切片规则: Markdown 按 ## 标题识别语义单元，PDF/Word 按段落识别语义单元；
+            相邻短单元合并为 500-800 字的完整切片，长单元优先在句末切分。
+  目标长度 700 字，最大 800 字；仅长段落滑窗切分时保留 80 字重叠。
 """
 
 import io
@@ -24,9 +24,11 @@ def _max_file_size() -> int:
 # 解压后文本上限（ 压缩炸弹防护）: 10MB 原始文件限制不覆盖解压后膨胀
 # （docx zip/PDF 解压后可放大数倍），提取后统一校验
 MAX_TEXT_LENGTH = 5 * 1024 * 1024
-# 切片参数
-CHUNK_SIZE_CHARS = 512     # ~512 tokens ≈ 300-400 中文字符
-CHUNK_OVERLAP_CHARS = 128  # ~128 tokens ≈ 80-100 中文字符
+# 本地降级切片以 500-800 字为主，兼顾检索粒度与大文档入库吞吐（PRD §3.2）。
+CHUNK_TARGET_CHARS = 700
+CHUNK_MIN_CHARS = 500
+CHUNK_MAX_CHARS = 800
+CHUNK_OVERLAP_CHARS = 80
 
 
 @dataclass
@@ -228,10 +230,10 @@ def _extract_docx_text(content: bytes) -> str:
 
 # ────────── 文本切片 ──────────
 def chunk_text(text: str, filename: str) -> list[Chunk]:
-    """将文本按段落+标题规则切片.
+    """按标题或段落识别语义单元，再合并为 500-800 字切片。
 
-    Markdown 文件：按 ## 标题分段。
-    其他文件：按双换行分段，再按 CHUNK_SIZE_CHARS 做二级切分。
+    Markdown 文件按二级标题识别单元，其他文件按空行识别段落；相邻短单元会合并，
+    避免大文档因大量短小标题产生数万条碎片并拖垮向量化管道。
     """
     if filename.endswith(".md"):
         return _chunk_markdown(text)
@@ -240,64 +242,110 @@ def chunk_text(text: str, filename: str) -> list[Chunk]:
 
 
 def _chunk_markdown(text: str) -> list[Chunk]:
-    """Markdown 切片：按 ## 标题分段，标题作为该段的上下文前缀."""
-    # 按 ## 标题分割（保留标题行）
+    """识别 Markdown 标题单元，并合并相邻短小节以保留语义上下文。"""
     sections = re.split(r"\n(?=## )", text)
-    chunks: list[Chunk] = []
-    idx = 0
+    units: list[tuple[str | None, str]] = []
 
     for section in sections:
-        # 取第一行作为 heading
-        lines = section.strip().split("\n", 1)
-        heading = lines[0].lstrip("# ") if lines else None
-        body = lines[1] if len(lines) > 1 else ""
-
-        if not body.strip():
+        section = section.strip()
+        if not section:
             continue
-
-        # 如果段落过长，做二级切分
-        if len(body) > CHUNK_SIZE_CHARS:
-            sub_chunks = _split_by_size(body, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS)
-            for sub in sub_chunks:
-                chunks.append(Chunk(index=idx, text=sub, heading=heading))
-                idx += 1
+        lines = section.split("\n", 1)
+        if lines[0].startswith("## "):
+            heading = lines[0].lstrip("# ").strip()
+            body = lines[1].strip() if len(lines) > 1 else ""
         else:
-            chunks.append(Chunk(index=idx, text=body, heading=heading))
-            idx += 1
+            heading = None
+            body = section
+        if body:
+            units.append((heading, body))
 
-    return chunks
+    return _merge_semantic_units(units)
 
 
 def _chunk_generic(text: str) -> list[Chunk]:
-    """通用文本切片：按双换行分段，二级按字符数切分."""
+    """识别通用文档段落，并合并相邻短段以减少碎片。"""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks: list[Chunk] = []
-    idx = 0
+    return _merge_semantic_units([(None, paragraph) for paragraph in paragraphs])
 
-    for para in paragraphs:
-        if len(para) > CHUNK_SIZE_CHARS:
-            sub_chunks = _split_by_size(para, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS)
-            for sub in sub_chunks:
-                chunks.append(Chunk(index=idx, text=sub))
-                idx += 1
+
+def _merge_semantic_units(units: list[tuple[str | None, str]]) -> list[Chunk]:
+    """把相邻标题/段落单元合并为接近 700 字的语义完整切片。"""
+    pending_text = ""
+    pending_heading: str | None = None
+    merged: list[tuple[str, str | None]] = []
+
+    def flush_pending() -> None:
+        """提交当前缓冲区；缓冲只在语义单元边界处刷新。"""
+        nonlocal pending_text, pending_heading
+        if pending_text:
+            merged.append((pending_text, pending_heading))
+        pending_text = ""
+        pending_heading = None
+
+    for heading, body in units:
+        body = body.strip()
+        if not body:
+            continue
+        heading_prefix = f"{heading}\n" if heading else ""
+        unit_text = f"{heading_prefix}{body}"
+
+        if len(unit_text) > CHUNK_MAX_CHARS:
+            flush_pending()
+            available = max(CHUNK_MIN_CHARS, CHUNK_MAX_CHARS - len(heading_prefix))
+            for part in _split_by_size(body, available, CHUNK_OVERLAP_CHARS):
+                merged.append((f"{heading_prefix}{part}", heading))
+            continue
+
+        candidate = f"{pending_text}\n\n{unit_text}" if pending_text else unit_text
+        if pending_text and len(candidate) > CHUNK_MAX_CHARS:
+            flush_pending()
+            pending_text = unit_text
+            pending_heading = heading
         else:
-            chunks.append(Chunk(index=idx, text=para))
-            idx += 1
+            pending_text = candidate
+            if pending_heading is None:
+                pending_heading = heading
 
-    return chunks
+        if len(pending_text) >= CHUNK_TARGET_CHARS:
+            flush_pending()
+
+    flush_pending()
+
+    # 尾片过短且可安全并入前片时合并，避免文档末尾产生孤立的一两句话。
+    if len(merged) >= 2 and len(merged[-1][0]) < CHUNK_MIN_CHARS:
+        previous_text, previous_heading = merged[-2]
+        tail_text, _ = merged[-1]
+        combined = f"{previous_text}\n\n{tail_text}"
+        if len(combined) <= CHUNK_MAX_CHARS:
+            merged[-2] = (combined, previous_heading)
+            merged.pop()
+
+    return [
+        Chunk(index=index, text=chunk_text, heading=heading)
+        for index, (chunk_text, heading) in enumerate(merged)
+    ]
 
 
 def _split_by_size(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """按固定字符数滑动窗口切分."""
+    """长文本优先在句末切分，找不到边界时才按字符滑窗切分。"""
     if len(text) <= chunk_size:
         return [text]
 
     result = []
     start = 0
     while start < len(text):
-        end = min(start + chunk_size, len(text))
+        hard_end = min(start + chunk_size, len(text))
+        end = hard_end
+        if hard_end < len(text):
+            window = text[start:hard_end]
+            boundaries = [match.end() for match in re.finditer(r"[。！？；.!?;\n]", window)]
+            if boundaries and boundaries[-1] >= CHUNK_MIN_CHARS:
+                end = start + boundaries[-1]
         result.append(text[start:end])
-        start += chunk_size - overlap
+        if end >= len(text):
+            break
+        start = max(start + 1, end - overlap)
     return result
 
 
