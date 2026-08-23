@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_tech_compare.py
 
-职责: 测试 009 技术栈对比与智能体增强的契约（FC 对比 / 长期记忆 / Agent 评测 helpers）
+职责: 测试 规格 009 技术栈对比与智能体增强的契约（FC 对比 / 长期记忆 / Agent 评测 helpers）
 
 测试内容:
   - TestFunctionCallingAgent: FC 版工单 Agent（tools schema 结构 + 缺 phone 反问 +
@@ -43,7 +43,7 @@ class TestFunctionCallingAgent:
         assert result["current_agent"] == "ticket_agent_fc"
 
     def test_fc_dispatches_via_tool_call(self, monkeypatch):
-        """FC 模式: LLM 返回 tool_calls -> 调 mcp_service.call_tool（复用 006）。"""
+        """FC 模式: LLM 返回 tool_calls -> 调 mcp_service.call_tool（复用 规格 006）。"""
         from app.agents.nodes import ticket_agent_fc
 
         # mock LLM 返回 tool_call
@@ -92,7 +92,7 @@ class TestFunctionCallingAgent:
 
 # ═══════════════════════════════════════════════════════════
 # T008: 长期记忆（User Story 2）
-# SC-003: 会话 A 偏好 -> 会话 B 召回体现
+# SC-003: 会话 A 偏好 → 会话 B 召回体现
 # ═══════════════════════════════════════════════════════════
 class TestMemoryService:
     """memory_service 长期记忆契约。"""
@@ -101,10 +101,11 @@ class TestMemoryService:
         """LLM 抽取关键事实 -> 结构化列表。"""
         from app.services import memory_service
 
-        class MockOutput:
-            output = [type("F", (), {"fact_type": "plan", "content": "企业版套餐"})()]
+        class FakeChain:
+            def invoke(self, messages):
+                return [memory_service.Fact(fact_type="plan", content="企业版套餐")]
 
-        monkeypatch.setattr(memory_service._extract_agent, "run_sync", lambda *a, **k: MockOutput())
+        monkeypatch.setattr(memory_service, "_extract_agent", FakeChain())
 
         facts = memory_service.extract_facts("我是企业版套餐用户")
         assert len(facts) == 1
@@ -115,10 +116,11 @@ class TestMemoryService:
         """无关键事实 -> 空列表。"""
         from app.services import memory_service
 
-        class MockOutput:
-            output = []
+        class FakeChain:
+            def invoke(self, messages):
+                return []
 
-        monkeypatch.setattr(memory_service._extract_agent, "run_sync", lambda *a, **k: MockOutput())
+        monkeypatch.setattr(memory_service, "_extract_agent", FakeChain())
 
         assert memory_service.extract_facts("今天天气不错") == []
 

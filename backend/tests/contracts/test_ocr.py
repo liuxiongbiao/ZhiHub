@@ -25,7 +25,7 @@ class TestOcrClient:
         assert client.is_mock is True
 
     def test_mock_recognize_returns_empty(self):
-        """mock 模式 recognize 返回空串（不允许占位文本伪装识别结果污染知识库，closure-plan P1-1）。"""
+        """mock 模式 recognize 返回空串（不允许占位文本伪装识别结果污染知识库，）。"""
         reset_ocr_client()
         client = get_ocr_client()
         text = client.recognize(b"fake-image-bytes")
@@ -51,7 +51,7 @@ class TestOcrFallback:
     """PDF 文本提取失败时 OCR 兜底契约。"""
 
     def test_pdf_empty_text_raises_without_ocr_key(self, monkeypatch):
-        """PDF 无文本层 + 未配置 OCR key -> 报错而非入库假内容（closure-plan P1-1）。"""
+        """PDF 无文本层 + 未配置 OCR key -> 报错而非入库假内容。"""
 
         # mock PdfReader: pages[0].extract_text() 返回空串
         class _FakePage:
@@ -62,7 +62,7 @@ class TestOcrFallback:
             def __init__(self, stream):
                 self.pages = [_FakePage()]
 
-        monkeypatch.setattr("PyPDF2.PdfReader", _FakeReader)
+        monkeypatch.setattr("pypdf.PdfReader", _FakeReader)
         reset_ocr_client()
 
         from app.utils.file_parser import extract_text, FileParseError
@@ -77,7 +77,7 @@ class TestOcrFallback:
             def __init__(self, stream):
                 raise RuntimeError("corrupted pdf")
 
-        monkeypatch.setattr("PyPDF2.PdfReader", _BrokenReader)
+        monkeypatch.setattr("pypdf.PdfReader", _BrokenReader)
         reset_ocr_client()
 
         from app.utils.file_parser import extract_text, FileParseError
@@ -96,7 +96,7 @@ class TestOcrFallback:
             def __init__(self, stream):
                 self.pages = [_FakePage()]
 
-        monkeypatch.setattr("PyPDF2.PdfReader", _FakeReader)
+        monkeypatch.setattr("pypdf.PdfReader", _FakeReader)
 
         # mock OCR 使其返回空串（模拟 OCR 失败）
         from app.core import ocr_client

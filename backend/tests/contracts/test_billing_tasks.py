@@ -1,13 +1,13 @@
 """
 backend/tests/contracts/test_billing_tasks.py
 
-职责: 资金逻辑回归防护（T1/T9 修复，此前零测试）
+职责: 资金逻辑回归防护（/ 修复，此前零测试）
 
 测试内容:
   - TestAggregateDailyUsage: 聚合任务崩溃修复（浮点计数）+ 当日增量 + is_overage
   - TestGenerateInvoiceByPeriod: 账单按账期 period 读配额 key（月初账单超额费正确）
 
-背景: 这组测试曾零覆盖——T1 的 int("12.5") 崩溃、T9 的月初账单超额费恒 0
+背景: 这组测试曾零覆盖—— 的 int("12.5") 崩溃、 的月初账单超额费恒 0
       都因无测试而漏过，现补回归防护。
 """
 import pytest
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 
 class TestAggregateDailyUsage:
-    """T1: 聚合任务 — 浮点不崩溃 / 幂等 / 当日增量 / is_overage。"""
+    """: 聚合任务 — 浮点不崩溃 / 幂等 / 当日增量 / is_overage。"""
 
     def test_float_count_no_crash_and_round(self, db, monkeypatch, fake_redis):
         """INCRBYFLOAT 计数（"12.5"）不崩溃且正确取整（13）。"""
@@ -107,7 +107,7 @@ class TestAggregateDailyUsage:
 
 
 class TestGenerateInvoiceByPeriod:
-    """T9: 账单按账期 period 读配额 key（月初生成上月账单）。"""
+    """: 账单按账期 period 读配额 key（月初生成上月账单）。"""
 
     def test_previous_month_invoice_reads_previous_quota(self, db, fake_redis):
         """月初生成上月账单: 读上月 key，超额费正确；当前月计数不串扰。"""

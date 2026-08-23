@@ -32,7 +32,7 @@ DEEPSEEK_MODEL = "deepseek/deepseek-chat"
 
 # 人工标注的标准答案（Context Recall 的 ground_truth）
 # ⚠️ eval_questions.md 的"预期"列是检索预期描述，不能作 RAGAS ground_truth；
-#    这里给出每题的标准答案要点，用于 Context Recall 覆盖度评判。
+# 这里给出每题的标准答案要点，用于 Context Recall 覆盖度评判。
 REFERENCE_ANSWERS: dict[str, str] = {
     "Q1": "TK-20240001 工单的当前状态为待处理（open）。",
     "Q2": "订单 ORD-20240002 的金额为 599 元。",
@@ -198,7 +198,7 @@ def compute_metric_llm(metric: str, question: str, contexts: list[str],
 def format_results_table(results: list[dict]) -> str:
     """格式化 RAGAS 量化结果为 markdown 表。"""
     lines = [
-        "## RAGAS 量化指标（008-observability-eval）",
+        "## RAGAS 量化指标（规格 008）",
         "",
         "| # | 类型 | 方法 | Faithfulness | Answer Relevancy | Context Recall |",
         "|---|---|---|---|---|---|",

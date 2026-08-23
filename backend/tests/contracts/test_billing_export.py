@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_billing_export.py
 
-职责: 用量明细 CSV 导出端点 GET /billing/usage/export（PRD 3.9，审查 P1-5）。
+职责: 用量明细 CSV 导出端点 GET /billing/usage/export（PRD 3.9，审查 ）。
 契约: 仅 admin；返回 text/csv；含表头与会话/Token 明细。
 """
 

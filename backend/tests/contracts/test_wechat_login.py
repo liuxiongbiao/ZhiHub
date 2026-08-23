@@ -58,13 +58,13 @@ def _patch_wechat(monkeypatch, *, openid="wx_openid_test"):
 
 
 def _issue_state(fake_redis, state="st_valid"):
-    """向 Redis 预置一次性 state（模拟 wechat_login_start 服务端签发，T12）。"""
+    """向 Redis 预置一次性 state（模拟 wechat_login_start 服务端签发，）。"""
     fake_redis.set(f"wechat:state:{state}", "1", ex=600)
     return state
 
 
 # ═══════════════════════════════════════════════════════════
-# T1: mock 模式（key 为空时自动降级）
+# mock 模式（key 为空时自动降级）
 # ═══════════════════════════════════════════════════════════
 class TestWechatMockMode:
     """未配置 wechat_app_id 时 client 走 mock 模式（不调真实网关）。"""
@@ -78,7 +78,7 @@ class TestWechatMockMode:
         assert client.is_mock is True
 
         url = client.get_auth_url("https://example.com/cb", "state123")
-        assert "mock" in url  # T34: 原 or url.startswith("http") 对任何 URL 恒真
+        assert "mock" in url  # : 原 or url.startswith("http") 对任何 URL 恒真
 
         openid = client.exchange_code_for_openid("abc123")
         assert openid == "mock_openid_abc123"
@@ -94,7 +94,7 @@ class TestWechatMockMode:
 
 
 # ═══════════════════════════════════════════════════════════
-# T2: get_auth_url 契约
+# get_auth_url 契约
 # ═══════════════════════════════════════════════════════════
 class TestWechatAuthUrl:
     """get_auth_url 生成授权 URL，包含 redirect_uri 和 state。"""
@@ -122,13 +122,13 @@ class TestWechatAuthUrl:
 
 
 # ═══════════════════════════════════════════════════════════
-# T3: wechat_login_start 返回授权 URL
+# wechat_login_start 返回授权 URL
 # ═══════════════════════════════════════════════════════════
 class TestWechatLoginStart:
     """wechat_login_start 服务层：返回授权 URL 给前端跳转。"""
 
     def test_login_start_returns_auth_url_with_server_state(self, monkeypatch, fake_redis):
-        """服务端签发 state 并内嵌 auth_url（T12: 不再信任客户端 state）。"""
+        """服务端签发 state 并内嵌 auth_url（: 不再信任客户端 state）。"""
         _patch_wechat(monkeypatch)
         from app.services import auth_service
 
@@ -143,7 +143,7 @@ class TestWechatLoginStart:
 
 
 # ═══════════════════════════════════════════════════════════
-# T4: 已绑定用户回调 -> 登录返回 token
+# 已绑定用户回调 → 登录返回 token
 # ═══════════════════════════════════════════════════════════
 class TestWechatCallbackBound:
     """回调换 openid -> 查到绑定 -> 签发 JWT 登录。"""
@@ -184,7 +184,7 @@ class TestWechatCallbackBound:
 
 
 # ═══════════════════════════════════════════════════════════
-# T5: 未绑定用户回调 -> 返回 need_bind + openid
+# 未绑定用户回调 → 返回 need_bind + openid
 # ═══════════════════════════════════════════════════════════
 class TestWechatCallbackUnbound:
     """回调换 openid -> 查不到绑定 -> 返回 need_bind=True + openid。"""
@@ -212,7 +212,7 @@ class TestWechatCallbackUnbound:
 
 
 # ═══════════════════════════════════════════════════════════
-# T6: 已登录用户绑定 openid
+# 已登录用户绑定 openid
 # ═══════════════════════════════════════════════════════════
 class TestWechatBind:
     """wechat_bind：已登录用户将 openid 绑定到自己的账号。"""
@@ -241,7 +241,7 @@ class TestWechatBind:
 
 
 # ═══════════════════════════════════════════════════════════
-# T7: openid 已绑定其他账号 -> 冲突
+# openid 已绑定其他账号 → 冲突
 # ═══════════════════════════════════════════════════════════
 class TestWechatBindConflict:
     """一个 openid 只能绑定一个账号，重复绑定 -> 冲突拒绝。"""
@@ -256,7 +256,7 @@ class TestWechatBindConflict:
         # reg1 先绑定
         auth_service.wechat_bind(db, user_id=reg1.user_id, code="wx_conflict_001")
 
-        # reg2 试图绑定同一 openid -> 冲突
+        # reg2 试图绑定同一 openid → 冲突
         with pytest.raises(WechatBindConflict):
             auth_service.wechat_bind(db, user_id=reg2.user_id, code="wx_conflict_001")
 
@@ -272,7 +272,7 @@ class TestWechatBindConflict:
 
 
 # ═══════════════════════════════════════════════════════════
-# T8: HTTP 端点契约
+# HTTP 端点契约
 # ═══════════════════════════════════════════════════════════
 class TestWechatEndpoints:
     """HTTP 端点契约：/wechat/auth、/wechat/callback、/wechat/bind。"""
@@ -370,7 +370,7 @@ class TestWechatEndpoints:
 
 
 # ═══════════════════════════════════════════════════════════
-# T12: state 校验（OAuth CSRF 防护）
+# state 校验（OAuth CSRF 防护）
 # ═══════════════════════════════════════════════════════════
 class TestWechatState:
     """回调 state 必须由 wechat_login_start 签发且一次性使用。"""
@@ -403,7 +403,7 @@ class TestWechatState:
         # 第一次消费成功
         result = auth_service.wechat_login_callback(db, code="code1", state=state)
         assert result.need_bind is True
-        # 第二次（同一 state）-> 拒绝
+        # 第二次（同一 state）→ 拒绝
         with pytest.raises(WechatStateError):
             auth_service.wechat_login_callback(db, code="code2", state=state)
 

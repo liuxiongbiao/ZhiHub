@@ -1,11 +1,11 @@
 """
 backend/tests/unit/test_asyncio_compat.py
 
-职责: 修复 PydanticAI run_sync 在事件循环线程中的降级问题
-      （async 端点 /session/message/stream → graph.invoke → run_sync 内部 asyncio.run
+职责: 修复同步 LLM 调用在事件循环线程中的降级问题
+      （async 端点 /session/message/stream → graph.invoke → 链内部 asyncio.run
         抛 "This event loop is already running" → Router/记忆抽取持续降级）。
 
-对应: 013 UI 联调发现的 P0 问题（connectivity-api.err.log 实证）。
+对应: 规格 013 UI 联调发现的 P0 问题（connectivity-api.err.log 实证）。
 
 测试内容:
   - run_sync_in_thread: 事件循环中执行内部 asyncio.run 的函数不抛错
@@ -22,7 +22,7 @@ from app.utils.asyncio_compat import run_sync_in_thread
 
 
 def _make_run_sync_like(value):
-    """模拟 PydanticAI run_sync：内部使用 asyncio.run（事件循环中会抛错）。"""
+    """模拟内部使用 asyncio.run 的同步调用（事件循环中会抛错）。"""
 
     def _run_sync(_prompt):
         async def _inner():
@@ -55,9 +55,17 @@ async def test_router_node_keeps_confidence_inside_event_loop(monkeypatch):
     fake_output = router.RouterOutput(
         intent="knowledge_consult", confidence=0.9, sentiment="normal", slots={}
     )
-    monkeypatch.setattr(
-        router._router_agent, "run_sync", _make_run_sync_like(SimpleNamespace(output=fake_output))
-    )
+
+    class FakeChainWithAsyncRun:
+        """模拟 LangChain 链：invoke 内部用 asyncio.run（事件循环中最坏情况）。"""
+
+        def invoke(self, messages):
+            async def _inner():
+                return fake_output
+
+            return asyncio.run(_inner())
+
+    monkeypatch.setattr(router, "_router_agent", FakeChainWithAsyncRun())
     state = {"messages": [{"role": "user", "content": "你好"}]}
     result = router.router_node(state)
     assert result["intent"] == "knowledge_consult"
@@ -72,13 +80,13 @@ async def test_extract_facts_keeps_facts_inside_event_loop(monkeypatch):
 
     fake_facts = [SimpleNamespace(fact_type="plan", content="企业客户")]
 
-    class FakeExtractAgent:
-        def run_sync(self, user_message):
+    class FakeExtractChain:
+        def invoke(self, messages):
             async def _inner():
-                return SimpleNamespace(output=fake_facts)
+                return fake_facts
 
             return asyncio.run(_inner())
 
-    monkeypatch.setattr(memory_service, "_extract_agent", FakeExtractAgent())
+    monkeypatch.setattr(memory_service, "_extract_agent", FakeExtractChain())
     facts = memory_service.extract_facts("我们企业客户主要使用智枢系统")
     assert facts == [{"fact_type": "plan", "content": "企业客户"}]

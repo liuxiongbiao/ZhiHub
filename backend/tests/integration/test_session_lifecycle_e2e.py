@@ -1,10 +1,10 @@
 """
 backend/tests/integration/test_session_lifecycle_e2e.py
 
-职责: 007 会话生命周期与转人工增强的端到端 4 场景集成测试
+职责: 规格 007 会话生命周期与转人工增强的端到端 4 场景集成测试
 
 测试内容:
-  - TestE2ERoundsHandoff: 连续3轮可解决类意图 -> 转人工；知识咨询豁免
+  - TestE2ERoundsHandoff: 连续3轮相同意图（含知识咨询）-> 转人工
   - TestE2EIdleCleanup: agent_handling 31min->resolved->61min->closed；活跃会话保留
   - TestE2ELeaveMessageAndCSAT: 转人工无坐席留言建单 -> 关闭 -> CSAT -> 重复 409
   - TestE2EMessageRateLimit: 预填10次后第11条 429，且不落库 messages
@@ -40,14 +40,14 @@ class TestE2ERoundsHandoff:
             rounds = incr_rounds(sid, "ticket_query")
         assert should_handoff_by_rounds(rounds) is True
 
-    def test_knowledge_consult_exempt(self):
-        """知识咨询连发3轮不触发（仅 total 增长）。"""
+    def test_knowledge_consult_three_rounds_triggers(self):
+        """PRD V1.6：知识咨询连续相同意图 3 轮同样触发转人工。"""
         from app.services.session_service import incr_rounds, should_handoff_by_rounds
 
         sid = 20002
         for _ in range(3):
             rounds = incr_rounds(sid, "knowledge_consult")
-        assert should_handoff_by_rounds(rounds) is False
+        assert should_handoff_by_rounds(rounds) is True
 
 
 # ═══════════════════════════════════════════════════════════
@@ -63,13 +63,13 @@ class TestE2EIdleCleanup:
         session_crud.update_status(db, s, "agent_handling")
         db.commit()
 
-        # 31min -> resolved
+        # 31min → resolved
         _set_updated_at(db, s.id, 31)
         cleanup_idle_sessions(db)
         db.refresh(s)
         assert s.status == "resolved"
 
-        # 61min -> closed
+        # 61min → closed
         _set_updated_at(db, s.id, 61)
         cleanup_idle_sessions(db)
         db.refresh(s)

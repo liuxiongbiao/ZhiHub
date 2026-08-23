@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_observability_eval.py
 
-职责: 测试 008 可观测性与效果评测的契约（PII 脱敏 / Langfuse 降级 / RAGAS helpers）
+职责: 测试 规格 008 可观测性与效果评测的契约（PII 脱敏 / Langfuse 降级 / RAGAS helpers）
 
 测试内容:
   - TestMaskPii: mask_pii 手机号脱敏（138****0001），不误伤工单号/订单号，不可逆

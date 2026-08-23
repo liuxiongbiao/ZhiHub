@@ -37,7 +37,7 @@ def _register(client, phone="13800138000"):
 
 
 # ═══════════════════════════════════════════════════════════
-# #8 降级模式告警横幅（PRD 3.4/3.8）
+# #8 降级模式告警横幅（PRD §3.4/3.8）
 # ═══════════════════════════════════════════════════════════
 class TestDegradationBanner:
     """检索降级标记: vector/bm25 召回失败时 Redis 标记 degradation:{tenant_id}。"""
@@ -45,6 +45,8 @@ class TestDegradationBanner:
     def test_vector_recall_failure_sets_degradation(self, monkeypatch, fake_redis):
         """vector_recall 失败 -> 设置 degradation:{tenant_id} 标记。"""
         from app.services import retrieval_service
+
+        monkeypatch.setattr(retrieval_service.settings, "embedding_enabled", True)
 
         class FakeCollection:
             def search(self, **kwargs):
@@ -56,6 +58,24 @@ class TestDegradationBanner:
         result = retrieval_service.vector_recall("test query", tenant_id=42)
         assert result == []
         assert fake_redis.exists("degradation:42") == 1
+
+    def test_vector_recall_skips_all_external_work_when_embedding_disabled(self, monkeypatch):
+        """关闭 embedding 时向量路直接降级，不连接 Milvus，也不调用 embedding API。"""
+        from app.services import retrieval_service
+
+        monkeypatch.setattr(retrieval_service.settings, "embedding_enabled", False)
+        monkeypatch.setattr(
+            retrieval_service,
+            "get_milvus_collection",
+            lambda: (_ for _ in ()).throw(AssertionError("Milvus must not be touched")),
+        )
+        monkeypatch.setattr(
+            retrieval_service,
+            "embed_texts",
+            lambda texts: (_ for _ in ()).throw(AssertionError("embedding API must not be called")),
+        )
+
+        assert retrieval_service.vector_recall("关闭向量服务", tenant_id=42) == []
 
     def test_bm25_recall_failure_sets_degradation(self, monkeypatch, fake_redis):
         """bm25_recall 失败 -> 设置 degradation:{tenant_id} 标记。"""
@@ -74,6 +94,8 @@ class TestDegradationBanner:
     def test_degradation_ttl_one_hour(self, monkeypatch, fake_redis):
         """降级标记 TTL = 3600 秒（1 小时）。"""
         from app.services import retrieval_service
+
+        monkeypatch.setattr(retrieval_service.settings, "embedding_enabled", True)
 
         class FakeCollection:
             def search(self, **kwargs):
@@ -128,7 +150,7 @@ class TestDegradationBanner:
 
 
 # ═══════════════════════════════════════════════════════════
-# #9 预警站内红色横幅（PRD 3.9）
+# #9 预警站内红色横幅（PRD §3.9）
 # ═══════════════════════════════════════════════════════════
 class TestWarningBanner:
     """配额预警横幅: incr_usage 触发预警时 Redis 标记 warning_banner:{tenant}:{level}。"""

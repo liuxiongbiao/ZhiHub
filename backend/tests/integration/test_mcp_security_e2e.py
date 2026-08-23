@@ -1,7 +1,7 @@
 """
 backend/tests/integration/test_mcp_security_e2e.py
 
-职责: 006 MCP 协议化与智能体安全加固的端到端 4 场景集成测试
+职责: 规格 006 MCP 协议化与智能体安全加固的端到端 4 场景集成测试
 
 测试内容:
   - TestE2ETwoFactor: 双因子校验（Agent 反问 phone + /tools/call 不匹配/匹配 + 客户端 tenant_id 被覆盖）
@@ -86,7 +86,7 @@ class TestE2ETwoFactor:
                                 "tenant_id": 999}},
             headers=_auth(token),
         )
-        # 服务端注入 tenant_id=1 -> 命中 seeded_ticket -> 成功
+        # 服务端注入 tenant_id=1 → 命中 seeded_ticket → 成功
         assert r.json()["result"]["ticket_no"] == "TK-E2E0001"
 
 
@@ -182,11 +182,11 @@ class TestE2ECircuitBreaker:
             lambda tool_name, params, *, db=None: {"ticket_no": "", "status": ""},
         )
 
-        # 连续5次 -> 熔断
+        # 连续5次 → 熔断
         for _ in range(5):
             r = client.post(url, json=payload, headers=_auth(token))
             assert "result" in r.json()
-        # 第6次 -> -32001 + 兜底话术
+        # 第6次 → -32001 + 兜底话术
         r = client.post(url, json=payload, headers=_auth(token))
         body = r.json()
         assert body["error"]["code"] == -32001
@@ -206,5 +206,5 @@ class TestE2ECircuitBreaker:
         for _ in range(3):
             r = client.post(url, json=payload, headers=_auth(token))
             assert "result" in r.json()
-        # 3次成功 -> closed
+        # 3次成功 → closed
         assert get_state("get_ticket_status")["state"] == STATE_CLOSED

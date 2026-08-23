@@ -1,3 +1,9 @@
+/**
+ * frontend/tests/components/AdminLayout.spec.ts
+ *
+ * 被测对象: AdminLayout.vue（企业管理后台布局）。
+ * 覆盖场景: 布局挂载、租户信息加载与菜单渲染行为。
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -16,6 +22,7 @@ const { getTenantHome } = await import('@/api/tenant')
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  localStorage.clear()
   vi.clearAllMocks()
 })
 
@@ -78,5 +85,24 @@ describe('AdminLayout.vue', () => {
     await w.find('.user-trigger').trigger('mouseenter')
     await flushPromises()
     expect(document.body.textContent).toContain('退出登录')
+  })
+
+  it('hides every admin-only navigation entry from agents', () => {
+    localStorage.setItem('zhihub:user', JSON.stringify({
+      token: 'agent-token', refresh_token: 'refresh-token',
+      user_id: 2, tenant_id: 1, role: 'agent', phone: '13800000002',
+    }))
+
+    const w = mountLayout()
+    const text = w.text()
+
+    expect(text).not.toContain('品牌定制')
+    expect(text).not.toContain('知识管理')
+    expect(text).not.toContain('会话监控')
+    expect(text).not.toContain('计费')
+    expect(text).not.toContain('配置向导')
+    expect(text).not.toContain('规则配置')
+    expect(text).not.toContain('审计日志')
+    expect(text).toContain('工单与订单')
   })
 })

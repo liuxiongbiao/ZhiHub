@@ -2,7 +2,7 @@
 backend/tests/contracts/test_streaming_agent.py
 
 职责: 测试流式端点 /session/message/stream 复用 Agent 主链路（修复审查报告 6.2）。
-对应 feature: 013-prd-coverage-gap-closure / US6 / T013
+对应 feature: 规格 013 / US6 / T013
 
 核心契约: 流式响应内容必须来自 agent_service.handle_message（经路由/检索/工具/安全/计费），
 而非直接调 litellm.completion（裸 LLM）。

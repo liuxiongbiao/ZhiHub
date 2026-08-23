@@ -1,6 +1,6 @@
 /**
  * tests/components/ChatStream.spec.ts
- * 013 US7 (T052): ChatWindow 流式发送逐字渲染 chunk
+ * 规格 013 US7 (T052): ChatWindow 流式发送逐字渲染 chunk
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -36,7 +36,7 @@ function mountWindow() {
   })
 }
 
-describe('ChatWindow SSE 流式 (013 US7)', () => {
+describe('ChatWindow SSE 流式 (规格 013 US7)', () => {
   it('streams chunks into the assistant message bubble', async () => {
     mocks.getSessionDetail.mockResolvedValue({ data: { session_id: 1, status: 'agent_handling', messages: [] } })
     // 流式回调：先 H 后 i

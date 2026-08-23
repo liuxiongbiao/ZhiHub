@@ -38,7 +38,7 @@ def _make_upload_file(filename: str = "test.md", content: bytes = b"# Test\n\nhe
 
 
 class TestKnowledgeCountLimit:
-    """套餐知识库数量上限契约（018）。"""
+    """套餐知识库数量上限契约。"""
 
     def test_trial_limit_1(self, db):
         """trial 套餐上限 1: 0 个时允许，1 个后达上限。"""
@@ -87,7 +87,7 @@ class TestKnowledgeCountLimit:
         tenant = tenant_crud.create_tenant(db, name="t4", plan_type="trial")
         db.flush()
 
-        # 1 个最新 + 2 个归档旧版本 -> current 应为 1（trial 上限 1，达上限）
+        # 1 个最新 + 2 个归档旧版本 → current 应为 1（trial 上限 1，达上限）
         db.add(_make_doc(tenant.id, "a.md", is_latest=True))
         db.add(_make_doc(tenant.id, "a.md", is_latest=False))
         db.add(_make_doc(tenant.id, "a.md", is_latest=False))

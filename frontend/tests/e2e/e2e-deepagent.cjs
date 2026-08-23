@@ -10,6 +10,7 @@ function record(id, ok, detail = '') {
 }
 
 (async () => {
+  const t0 = Date.now();
   const creds = JSON.parse(fs.readFileSync(path.join(__dirname, 'e2e-cred.json'), 'utf8'));
   const browser = await launch();
   const page = await newPage(browser);
@@ -19,13 +20,17 @@ function record(id, ok, detail = '') {
   await inputs.nth(1).fill(creds.password);
   await page.locator('button:visible', { hasText: '登录' }).click();
   await page.waitForTimeout(2500);
+  console.log('[t] login done', Date.now() - t0);
 
   await page.goto('http://localhost:5173/agent-report', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1200);
+  console.log('[t] page ready', Date.now() - t0);
   // 输入目标并执行
-  const goalInput = page.locator('input').last();
+  // 目标输入框位于 .input-area（历史任务查询框在页面底部，避免选错）
+  const goalInput = page.locator('.input-area input').first();
   await goalInput.fill('分析本租户工单处理效率，给出改进建议');
   await page.locator('button:visible', { hasText: '执行' }).click();
+  console.log('[t] submitted', Date.now() - t0);
 
   // 等待报告出现（DeepAgent 3 步：统计 → SOP → 报告，真实 LLM 可能 1-3 分钟）
   const deadline = Date.now() + 180000;
@@ -43,8 +48,10 @@ function record(id, ok, detail = '') {
       if (t) console.log('   执行中:', t.slice(0, 100).replace(/\n/g, ' | '));
     }
   }
+  console.log('[t] loop done', Date.now() - t0);
   record('F801', reportText.length > 20, `reportLen=${reportText.length}`);
   console.log('   报告片段:', reportText.slice(0, 150).replace(/\n/g, ' '));
+  console.log('   页面错误:', JSON.stringify(page.errors.slice(-10)));
   await page.screenshot({ path: path.join(__dirname, 'e2e-shots', 'F801-deepagent.png') });
 
   await browser.close();

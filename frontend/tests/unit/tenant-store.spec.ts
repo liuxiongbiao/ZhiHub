@@ -1,3 +1,9 @@
+/**
+ * frontend/tests/unit/tenant-store.spec.ts
+ *
+ * 被测对象: store/modules/tenant.ts（租户状态管理）。
+ * 覆盖场景: 租户信息加载、状态更新与 API 调用约定。
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 

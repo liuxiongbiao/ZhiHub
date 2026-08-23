@@ -13,6 +13,14 @@ backend/tests/conftest.py
         不在夹具里写死角色，由各测试按需传参（admin/agent/过期）。
 """
 
+import os
+
+# /: 测试环境统一为 test —— 验证码回显、邮箱激活行为与生产隔离
+os.environ.setdefault("APP_ENV", "test")
+# 测试禁止向真实 Langfuse 账号导出 trace（本机 .env 含真实 key）
+os.environ.setdefault("LANGFUSE_PUBLIC_KEY", "")
+os.environ.setdefault("LANGFUSE_SECRET_KEY", "")
+
 import fakeredis
 import pytest
 from fastapi.testclient import TestClient
@@ -37,6 +45,7 @@ from app.models import notification as _notification  # noqa: F401
 from app.models import order as _order  # noqa: F401
 from app.models import quick_reply as _quick_reply  # noqa: F401
 from app.models import refund_approval as _ra  # noqa: F401
+from app.models import refund_approval_event as _rae  # noqa: F401
 from app.models import refund_outbox as _ro  # noqa: F401
 from app.models import session as _sess  # noqa: F401
 from app.models import billing_invoice as _bi  # noqa: F401
@@ -103,6 +112,17 @@ def client(db):
     """TestClient：覆盖 get_db 指向内存库，中间件链路（auth/tenant）保持真实，测到完整请求链。"""
     from app.main import app
 
+    class _CSRFInjectingClient(TestClient):
+        """自动为带 Authorization 的请求注入 X-CSRF-Token（对齐前端 request.ts 行为）。"""
+
+        def request(self, method, url, **kwargs):
+            headers = dict(kwargs.get("headers") or {})
+            auth = headers.get("Authorization") or ""
+            if auth.startswith("Bearer "):
+                headers["X-CSRF-Token"] = auth[len("Bearer "):].strip()
+                kwargs["headers"] = headers
+            return super().request(method, url, **kwargs)
+
     def _override_get_db():
         try:
             yield db
@@ -110,7 +130,7 @@ def client(db):
             pass  # 会话生命周期由 db 夹具管理
 
     app.dependency_overrides[get_db] = _override_get_db
-    with TestClient(app) as c:
+    with _CSRFInjectingClient(app) as c:
         yield c
     app.dependency_overrides.clear()
 
@@ -119,11 +139,11 @@ def client(db):
 def make_token():
     """令牌工厂：不写死角色，由测试按需传参 make_token(user_id, tenant_id, role) → JWT。"""
 
-    def _make(user_id: int = 1, tenant_id: int = 1, role: str = "admin") -> str:
-        return create_access_token(
-            subject=str(user_id),
-            extra_claims={"tenant_id": tenant_id, "role": role},
-        )
+    def _make(user_id: int = 1, tenant_id: int = 1, role: str = "admin", ws: bool = False) -> str:
+        claims: dict = {"tenant_id": tenant_id, "role": role}
+        if ws:
+            claims["ws"] = True  # : 坐席工作台 WS 需短效令牌声明
+        return create_access_token(subject=str(user_id), extra_claims=claims)
 
     return _make
 

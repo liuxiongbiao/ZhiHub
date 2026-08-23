@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_notifications.py
 
-职责: 站内信闭环（closure-plan P1-5）。
+职责: 站内信闭环。
 契约:
   - 创建站内信 -> GET list 可见 / unread-count / mark_read 后已读
   - 配额预警任务触发 -> 写库一条 quota_warning 通知

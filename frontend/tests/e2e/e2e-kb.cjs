@@ -32,6 +32,15 @@ async function login(page, creds) {
   // 获取 token 供 API 轮询
   const token = await page.evaluate(() => { try { return JSON.parse(localStorage.getItem('zhihub:user') || '{}').token || ''; } catch { return ''; } });
 
+  // 清理历史 e2e-kb 文档（失败/旧版本会占用套餐配额，删除后重新上传）
+  {
+    const list = await apiJson('/knowledge/list?page_size=50', { token });
+    const stale = (list.data?.items || []).filter((d) => (d.filename || d.name || '').includes('e2e-kb'));
+    for (const d of stale) {
+      await apiJson(`/knowledge/${d.doc_id}`, { method: 'DELETE', token });
+    }
+  }
+
   // F201 上传文档
   {
     await page.goto('http://localhost:5173/knowledge/list', { waitUntil: 'networkidle' });

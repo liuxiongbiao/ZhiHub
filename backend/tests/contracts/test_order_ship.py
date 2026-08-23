@@ -1,8 +1,8 @@
-﻿"""
+"""
 backend/tests/contracts/test_order_ship.py
 
 职责: 测试 PRD 3.6 订单发货端点 POST /order/{order_id}/ship（修复审查报告 6.1）。
-对应 feature: 013-prd-coverage-gap-closure / US6 / T008
+对应 feature: 规格 013 / US6 / T008
 
 测试内容（HTTP 契约）:
   - paid 订单发货 -> 200，status=shipped，tracking_no 写入
@@ -73,7 +73,7 @@ class TestOrderShip:
         assert resp.status_code == 422
 
     def test_ship_cross_tenant_404(self, client, db, make_token):
-        # tenant_id=2 的订单，用 tenant_id=1 的 token 访问 -> 404（租户隔离）
+        # tenant_id=2 的订单，用 tenant_id=1 的 token 访问 → 404（租户隔离）
         o = _make_paid_order(db, tenant_id=2, order_no="ORD-SHIP-004")
         token = make_token(user_id=1, tenant_id=1, role="admin")
         resp = client.post(
@@ -85,7 +85,7 @@ class TestOrderShip:
 
 
 class TestOrderListTrackingNo:
-    """订单列表/详情响应必须包含 tracking_no（前端物流单号列依赖，修复 013 UI 联调 bug）。"""
+    """订单列表/详情响应必须包含 tracking_no（前端物流单号列依赖，修复审计发现的 UI 联调缺陷）。"""
 
     def test_list_orders_includes_tracking_no(self, client, db, make_token):
         o = _make_paid_order(db, order_no="ORD-SHIP-LIST-01")

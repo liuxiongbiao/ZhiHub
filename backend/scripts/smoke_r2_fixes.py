@@ -1,12 +1,12 @@
-"""第二轮修复真实环境冒烟:迁移后真实库 + 真实 Redis + 修复关键路径(H1/H2/M6/M7/M1-M3/L5)
+"""第二轮修复真实环境冒烟:迁移后真实库 + 真实 Redis + 修复关键路径(H1/H2///-/L5)
 
 验证项:
   1. 应用在迁移后真实库(d16-d20)上启动
-  2. 注册+登录走真实 Redis(M1/M2/M3 新代码)
+  2. 注册+登录走真实 Redis(// 新代码)
   3. MCP request_refund:幂等 namespace=order_id + Decimal 比较 + 状态机 + 乐观锁
   4. 幂等重试返回与首次一致结构(L5)
-  5. 审批 CAS 先行(T7)+ mock alipay
-  6. M6:同一账单两个 trade_no 回调,第二个不覆盖 payment_trade_no
+  5. 审批 CAS 先行()+ mock alipay
+  6. :同一账单两个 trade_no 回调,第二个不覆盖 payment_trade_no
   7. H1:聚合任务当月过滤不污染(写入 usage_records 检查)
 """
 import os
@@ -43,7 +43,7 @@ phone = "138" + "".join(__import__("random").choices("0123456789", k=8))
 r = c.post("/api/v1/auth/register", json={"phone": phone, "password": "Test1234abc", "tenant_name": "smoke-r2"})
 step("register", r.status_code in (201, 409), f"HTTP {r.status_code}")
 r = c.post("/api/v1/auth/login", json={"phone": phone, "password": "Test1234abc"})
-step("login(真实 Redis, M1/M2/M3)", r.status_code == 200, f"HTTP {r.status_code}")
+step("login(真实 Redis, //)", r.status_code == 200, f"HTTP {r.status_code}")
 token = r.json()["access_token"]
 tenant_id = r.json()["tenant_id"]
 headers = {"Authorization": f"Bearer {token}"}
@@ -72,7 +72,7 @@ res2 = r2.json().get("result", {})
 step("幂等重试结构一致(L5)", res2.get("cached") is True and res2.get("id") == approval_id and res2.get("amount") == 50.0,
      f"body={r2.text[:200]}")
 
-# 5. 审批(CAS 先行 T7 + mock alipay)
+# 5. 审批(CAS 先行  + mock alipay)
 r = c.post(f"/api/v1/order/refunds/{approval_id}/approve", json={"decision": "approved"}, headers=headers)
 step("approve refund(CAS先行)", r.status_code == 200, f"HTTP {r.status_code} {r.text[:150]}")
 
@@ -83,7 +83,7 @@ db.close()
 step("order->refunded", o2.status == "refunded", f"status={o2.status}")
 step("approval->approved", ap.status == "approved", f"status={ap.status}")
 
-# 6. M6: 同一账单两个 trade_no, 第二个不覆盖 payment_trade_no
+# 6. : 同一账单两个 trade_no, 第二个不覆盖 payment_trade_no
 from app.services.billing_service import generate_invoice  # noqa: E402
 db = SessionLocal()
 inv = generate_invoice(db, tenant_id=tenant_id, period="2026-08")
@@ -100,7 +100,7 @@ r = c.post("/api/v1/billing/alipay/notify",
 db = SessionLocal()
 inv2 = db.execute(select(BillingInvoice).where(BillingInvoice.id == invoice_id)).scalar_one()
 db.close()
-step("M6: 第二个 trade_no 不覆盖", inv2.payment_trade_no == "T-SMOKE-1" and inv2.status == "paid",
+step(": 第二个 trade_no 不覆盖", inv2.payment_trade_no == "T-SMOKE-1" and inv2.status == "paid",
      f"trade_no={inv2.payment_trade_no} status={inv2.status}")
 
 # 7. H1: 聚合任务只处理当月 key

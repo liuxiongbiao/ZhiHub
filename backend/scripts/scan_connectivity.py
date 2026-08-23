@@ -68,7 +68,7 @@ def analyze(path: str):
         if isinstance(node, ast.Name):
             used.add(node.id)
         elif isinstance(node, ast.Attribute):
-            # a.b -> a 视为使用
+            # a.b → a 视为使用
             if isinstance(node.value, ast.Name):
                 used.add(node.value.id)
 

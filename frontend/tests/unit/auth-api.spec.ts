@@ -1,6 +1,6 @@
 /**
  * tests/unit/auth-api.spec.ts
- * 013 US1 (T016): auth api 调用契约与路径断言。
+ * 规格 013 US1 (T016): auth api 调用契约与路径断言。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -13,7 +13,7 @@ import { register, login, logout, smsSend, loginSms, registerEmail, loginEmail, 
 
 beforeEach(() => { vi.clearAllMocks() })
 
-describe('auth api (013 US1)', () => {
+describe('auth api (规格 013 US1)', () => {
   it('register posts to /auth/register with code', async () => {
     mockRequest.post.mockResolvedValue({ data: { user_id: 1 } })
     await register({ phone: '138', password: 'abc12345', tenant_name: 'T', code: '123456' })

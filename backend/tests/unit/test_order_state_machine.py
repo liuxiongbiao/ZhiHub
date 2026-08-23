@@ -25,8 +25,8 @@ class TestValidTransitions:
     def test_paid_to_shipped(self):
         assert "shipped" in VALID_TRANSITIONS["paid"]
 
-    def test_paid_to_refunding(self):
-        assert "refunding" in VALID_TRANSITIONS["paid"]
+    def test_paid_to_refund_requested(self):
+        assert "refund_requested" in VALID_TRANSITIONS["paid"]
 
     def test_shipped_to_completed(self):
         assert "completed" in VALID_TRANSITIONS["shipped"]

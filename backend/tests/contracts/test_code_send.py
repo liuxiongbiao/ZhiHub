@@ -30,7 +30,7 @@ class TestCodeSend:
         assert resp.status_code == 200
 
     def test_rate_limited(self, client, fake_redis):
-        # 先清频率限制，发送一次后第二次 -> 429
+        # 先清频率限制，发送一次后第二次 → 429
         client.post("/api/v1/auth/code/send", json={"target": "13800138113", "code_type": "sms"})
         resp = client.post("/api/v1/auth/code/send", json={"target": "13800138113", "code_type": "sms"})
         assert resp.status_code == 429

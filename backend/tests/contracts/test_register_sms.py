@@ -2,7 +2,7 @@
 backend/tests/contracts/test_register_sms.py
 
 职责: 测试 PRD 3.1.1 注册环节短信验证码校验（修复审查报告 6.3）。
-对应 feature: 013-prd-coverage-gap-closure / US1 / T004
+对应 feature: 规格 013 / US1 / T004
 
 测试内容（HTTP 契约）:
   - 正确验证码注册 -> 201
@@ -83,7 +83,7 @@ class TestRegisterSmsVerification:
         })
         assert resp1.status_code == 201
 
-        # 同一验证码再次注册（不同手机号）-> 已被消费/不属于该号 -> 401
+        # 同一验证码再次注册（不同手机号）→ 已被消费/不属于该号 → 401
         resp2 = client.post("/api/v1/auth/register", json={
             "phone": "13900139006",
             "password": "abc12345",

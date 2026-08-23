@@ -42,9 +42,14 @@ def email_user(db):
     """注册一个邮箱用户（供邮箱登录/密码找回/绑定测试用）。"""
     from app.services import auth_service
 
-    return auth_service.register_by_email(
+    result = auth_service.register_by_email(
         db, email="user@example.com", password="abc12345", tenant_name="邮箱科技"
     )
+    from app.crud import user as user_crud
+    user = user_crud.get_by_email(db, "user@example.com")
+    user.email_verified = True
+    db.commit()
+    return result
 
 
 # ═══════════════════════════════════════════════════════════
@@ -54,26 +59,28 @@ class TestSendVerificationCode:
     """验证码发送: 写 Redis + 频率限制 1min/次、24h/10次。"""
 
     def test_send_sms_code_stores_in_redis(self, fake_redis):
-        """发送短信验证码 -> 6 位码写入 Redis，TTL 5min。"""
+        """发送短信验证码 -> Redis 仅保存哈希，TTL 5min。"""
+        import hashlib
         from app.services import auth_service
 
         result = auth_service.send_verification_code("13800138000", code_type="sms")
 
         assert len(result.code) == 6
         assert result.expires_in == 300
-        # Redis 中存有验证码
+        # Redis 中只保存验证码哈希，避免缓存泄露后直接用于登录。
         stored = fake_redis.get("vcode:sms:13800138000")
-        assert stored == result.code
+        assert stored == hashlib.sha256(result.code.encode("utf-8")).hexdigest()
 
     def test_send_email_code_stores_in_redis(self, fake_redis):
-        """发送邮箱验证码 -> 写入 Redis。"""
+        """发送邮箱验证码 -> Redis 仅保存哈希。"""
+        import hashlib
         from app.services import auth_service
 
         result = auth_service.send_verification_code("user@example.com", code_type="email")
 
         assert len(result.code) == 6
         stored = fake_redis.get("vcode:email:user@example.com")
-        assert stored == result.code
+        assert stored == hashlib.sha256(result.code.encode("utf-8")).hexdigest()
 
     def test_freq_limit_1min(self, fake_redis):
         """1 分钟内重复发送 -> RateLimitExceeded。"""
@@ -161,7 +168,7 @@ class TestCodeBruteForce:
             except Exception:
                 pass
 
-        # 第 3 次正确码 -> 验证成功
+        # 第 3 次正确码 → 验证成功
         assert auth_service.verify_code("13800138006", correct_code, code_type="sms") is True
 
 
@@ -307,7 +314,7 @@ class TestEmailLogin:
 
 
 # ═══════════════════════════════════════════════════════════
-# 密码找回（#16 验证码验证身份 -> 重置密码）
+# 密码找回（#16 验证码验证身份 → 重置密码）
 # ═══════════════════════════════════════════════════════════
 class TestPasswordReset:
     """密码找回: 验证码验证身份 -> 重置密码 -> 新密码可登录。"""
@@ -533,6 +540,12 @@ class TestAccountExtAPI:
         auth_service.register_by_email(
             db, email="apilogin@example.com", password="abc12345", tenant_name="API登录"
         )
+        # 邮箱注册后需先激活才能登录
+        from app.crud import user as user_crud
+        u = user_crud.get_by_email(db, "apilogin@example.com")
+        u.email_verified = True
+        db.commit()
+
         resp = client.post("/api/v1/auth/login/email", json={
             "email": "apilogin@example.com", "password": "abc12345"
         })
@@ -552,13 +565,13 @@ class TestAccountExtAPI:
         assert resp.status_code == 401
 
     def test_email_login_ip_rate_limit_429(self, client, fake_redis):
-        """M3: /login/email IP 限流 30/min，第 31 次 -> 429（此前该端点无任何暴力破解防护）。"""
+        """: /login/email IP 限流 30/min，第 31 次 -> 429（此前该端点无任何暴力破解防护）。"""
         body = {"email": "nobody@example.com", "password": "whatever"}
-        # 前 30 次：限流放行（凭据无效 -> 401）
+        # 前 30 次：限流放行（凭据无效 → 401）
         for _ in range(30):
             r = client.post("/api/v1/auth/login/email", json=body)
             assert r.status_code == 401, f"前 30 次应放行: {r.status_code} {r.text}"
-        # 第 31 次：IP 限流 -> 429
+        # 第 31 次：IP 限流 → 429
         r = client.post("/api/v1/auth/login/email", json=body)
         assert r.status_code == 429, f"第 31 次应限流: {r.status_code} {r.text}"
 
@@ -575,15 +588,11 @@ class TestAccountExtAPI:
         })
         assert resp.status_code == 200
 
-    def test_enterprise_approve_endpoint(self, client, db, make_token):
-        """POST /api/v1/tenant/enterprise/approve -> 200，status=active。"""
+    def test_enterprise_approve_endpoint(self, client, db, make_token, monkeypatch):
+        """POST /api/v1/tenant/enterprise/approve（：X-Platform-Token）-> 200，status=active。"""
         from app.services import auth_service
-
-        # 注册一个 trial 租户的 admin（作为审批者）
-        admin_reg = auth_service.register(
-            db, phone="13800138010", password="abc12345", tenant_name="审批方"
-        )
-        token = make_token(admin_reg.user_id, admin_reg.tenant_id, "admin")
+        from app.config import settings
+        monkeypatch.setattr(settings, "platform_ops_token", "test-ops-token")
 
         # 注册一个企业版租户（待审批）
         ent_reg = auth_service.register_by_email(
@@ -594,7 +603,7 @@ class TestAccountExtAPI:
         resp = client.post(
             "/api/v1/tenant/enterprise/approve",
             json={"tenant_id": ent_reg.tenant_id},
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"X-Platform-Token": "test-ops-token"},
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "active"
@@ -618,6 +627,57 @@ class TestAccountExtAPI:
             "/api/v1/tenant/enterprise/approve",
             json={"tenant_id": ent_reg.tenant_id},
             headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+
+    def test_email_activate_endpoint(self, client, db, fake_redis):
+        """: 激活链接生效后，邮箱登录成功。"""
+        from app.services import auth_service
+        from app.crud import user as user_crud
+
+        auth_service.register_by_email(
+            db, email="activate@example.com", password="abc12345", tenant_name="激活测试"
+        )
+        keys = list(fake_redis.scan_iter("email_verify:*"))
+        assert len(keys) == 1
+        token = keys[0].split(":", 1)[1]
+
+        resp = client.post("/api/v1/auth/email/activate", json={"token": token})
+        assert resp.status_code == 200
+        u = user_crud.get_by_email(db, "activate@example.com")
+        assert u.email_verified is True
+
+        resp2 = client.post("/api/v1/auth/login/email", json={
+            "email": "activate@example.com", "password": "abc12345"
+        })
+        assert resp2.status_code == 200
+
+    def test_email_login_unverified_403(self, client, db, fake_redis):
+        """: 未激活邮箱登录 -> 403。"""
+        from app.services import auth_service
+
+        auth_service.register_by_email(
+            db, email="unverified@example.com", password="abc12345", tenant_name="未激活"
+        )
+        resp = client.post("/api/v1/auth/login/email", json={
+            "email": "unverified@example.com", "password": "abc12345"
+        })
+        assert resp.status_code == 403
+
+    def test_enterprise_approve_wrong_token_403(self, client, db, fake_redis, monkeypatch):
+        """: 错误/缺失平台令牌 -> 403。"""
+        from app.services import auth_service
+        from app.config import settings
+        monkeypatch.setattr(settings, "platform_ops_token", "test-ops-token")
+
+        ent_reg = auth_service.register_by_email(
+            db, email="entwrong@example.com", password="abc12345",
+            tenant_name="令牌错误", plan_type="enterprise"
+        )
+        resp = client.post(
+            "/api/v1/tenant/enterprise/approve",
+            json={"tenant_id": ent_reg.tenant_id},
+            headers={"X-Platform-Token": "wrong-token"},
         )
         assert resp.status_code == 403
 

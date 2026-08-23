@@ -133,7 +133,7 @@ class TestIdempotencyDemo:
         assert cached["resource_id"] == 1
 
     def test_cross_order_same_id_not_shared(self):
-        """跨订单（跨租户）同 client_request_id 不共享幂等记录（T6 防碰撞）."""
+        """跨订单（跨租户）同 client_request_id 不共享幂等记录（ 防碰撞）."""
         from app.core.idempotency import check_idempotency, record_idempotency
 
         cid = "TEST-XORD-" + str(id({}))

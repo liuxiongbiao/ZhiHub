@@ -49,13 +49,13 @@ class TestWSConnect:
 
     def test_agent_connect(self, client, make_token):
         """agent 角色 token 成功连接（进入 with 不抛异常即 accept 成功）。"""
-        token = make_token(user_id=10, tenant_id=1, role="agent")
+        token = make_token(user_id=10, tenant_id=1, role="agent", ws=True)
         with client.websocket_connect(f"/api/v1/ws/agent?token={token}"):
             pass
 
     def test_admin_connect(self, client, make_token):
         """admin 角色 token 成功连接。"""
-        token = make_token(user_id=11, tenant_id=1, role="admin")
+        token = make_token(user_id=11, tenant_id=1, role="admin", ws=True)
         with client.websocket_connect(f"/api/v1/ws/agent?token={token}"):
             pass
 
@@ -108,9 +108,9 @@ class TestWSBroadcast:
         session_crud.update_status(db, s, "waiting_human")
         db.commit()
 
-        token_a = make_token(user_id=100, tenant_id=1, role="agent")
+        token_a = make_token(user_id=100, tenant_id=1, role="agent", ws=True)
         with client.websocket_connect(f"/api/v1/ws/agent?token={token_a}") as ws:
-            # 同步认领 -> 内部 broadcast_to_tenant_sync 提交广播协程到 portal 循环
+            # 同步认领 → 内部 broadcast_to_tenant_sync 提交广播协程到 portal 循环
             claim_session(db, session_id=s.id, agent_id=200, tenant_id=1)
             # receive_json 触发循环运行，广播协程执行 send_json
             msg = ws.receive_json()
@@ -132,9 +132,9 @@ class TestWSBroadcast:
         session_crud.update_status(db, s, "waiting_human")
         db.commit()
 
-        token_t2 = make_token(user_id=300, tenant_id=2, role="agent")
+        token_t2 = make_token(user_id=300, tenant_id=2, role="agent", ws=True)
         with client.websocket_connect(f"/api/v1/ws/agent?token={token_t2}") as ws:
-            # 租户1 认领 -> 广播只发 tenant=1，不应到达租户2
+            # 租户1 认领 → 广播只发 tenant=1，不应到达租户2
             claim_session(db, session_id=s.id, agent_id=200, tenant_id=1)
             # 主动给租户2 发 ping
             manager.broadcast_to_tenant_sync(2, {"event": "ping"})

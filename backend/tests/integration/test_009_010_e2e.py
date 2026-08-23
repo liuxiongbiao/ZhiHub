@@ -1,7 +1,7 @@
 """
 backend/tests/integration/test_009_010_e2e.py
 
-职责: 009 技术栈对比 + 010 业务闭环的端到端 smoke 测试（需 Docker 基础设施）
+职责: 规格 009 技术栈对比 + 规格 010 业务闭环的端到端 smoke 测试（需 Docker 基础设施）
 
 测试内容:
   - Test009E2E: FC agent tools schema + memory 降级 + agent_eval 测试集结构
@@ -12,7 +12,7 @@ import pytest
 
 
 class Test009E2E:
-    """009 技术栈对比 smoke。"""
+    """规格 009 技术栈对比 smoke。"""
 
     def test_fc_tools_schema(self):
         from app.agents.nodes.ticket_agent_fc import _build_tools
@@ -33,19 +33,26 @@ class Test009E2E:
 
 
 class Test010E2E:
-    """010 业务闭环 smoke。"""
+    """规格 010 业务闭环 smoke。"""
 
-    def test_sse_endpoint_exists(self, client, make_token):
-        """SSE 端点返回 text/event-stream。"""
-        token = make_token(tenant_id=1, role="admin")
+    def test_sse_endpoint_exists(self, client, db, make_token):
+        """SSE 端点返回 text/event-stream（：需存在 active 租户才能建会话）。"""
+        from app.models.tenant import Tenant
+
+        t = Tenant(name="SSE租户", plan_type="trial", seat_limit=1, status="active")
+        db.add(t)
+        db.commit()
+        token = make_token(tenant_id=t.id, role="admin")
         sid = client.post("/api/v1/session", json={}, headers={"Authorization": f"Bearer {token}"}).json()["session_id"]
         # 非知识咨询走同步兜底（不测真实流式，避免 LLM 依赖）
         assert sid > 0
 
     def test_quality_check(self):
         from app.tasks.knowledge_tasks import check_quality
-        assert check_quality(["正常中文"]) < 0.3
-        assert check_quality(["\xff\xfe\x00\x01"]) > 0.3
+        rate, empty_ratio = check_quality(["正常中文"])
+        assert rate < 0.3 and empty_ratio < 0.2
+        rate, empty_ratio = check_quality(["\xff\xfe\x00\x01"])
+        assert rate > 0.3
 
     def test_billing_weighting(self):
         from app.services.billing_service import incr_usage

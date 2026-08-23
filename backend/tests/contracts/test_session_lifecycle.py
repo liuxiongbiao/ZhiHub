@@ -1,11 +1,11 @@
 """
 backend/tests/contracts/test_session_lifecycle.py
 
-职责: 测试 007 会话生命周期与转人工增强的契约（轮次转人工/空闲收尾/留言建单/CSAT/限流）
+职责: 测试 规格 007 会话生命周期与转人工增强的契约（轮次转人工/空闲收尾/留言建单/CSAT/限流）
 
 测试内容:
-  - TestRoundBasedHandoff: 轮次计数（连续3轮可解决类意图相同 / 累计15轮转人工；
-    知识咨询不计 consecutive；意图变化重置 streak；reset 保留 total）
+  - TestRoundBasedHandoff: 轮次计数（连续3轮相同意图（含知识咨询，PRD 3.4 判定口径）/
+    累计15轮转人工；意图变化重置 streak；reset 保留 total）
   - TestIdleCleanup: 空闲超时收尾（agent_handling/waiting_human 30min->resolved；
     resolved 60min->closed；活跃会话跳过）
   - TestAgentPresence: 在线坐席 presence（Redis SET 标记 + 租户隔离）
@@ -19,7 +19,7 @@ import pytest
 
 # ═══════════════════════════════════════════════════════════
 # T002: 轮次触发转人工（User Story 1）
-# SC-001: 连续3轮可解决类意图未解决 / 累计15轮 100% 转人工；知识咨询不计入 consecutive
+# SC-001: 连续3轮相同意图未解决 / 累计15轮 100% 转人工（含知识咨询，PRD §3.4 判定口径）
 # ═══════════════════════════════════════════════════════════
 class TestRoundBasedHandoff:
     """session_service 轮次计数契约。"""
@@ -34,15 +34,15 @@ class TestRoundBasedHandoff:
         assert rounds["consecutive"] == 3
         assert should_handoff_by_rounds(rounds) is True
 
-    def test_knowledge_consult_no_consecutive(self):
-        """知识咨询不计入 consecutive，连发3轮不触发（仅 total 增长）。"""
+    def test_knowledge_consult_consecutive_triggers(self):
+        """知识咨询计入 consecutive（PRD 3.4 判定口径），连发3轮触发转人工。"""
         from app.services.session_service import incr_rounds, should_handoff_by_rounds
 
         sid = 9002
         for _ in range(3):
             rounds = incr_rounds(sid, "knowledge_consult")
-        assert rounds["consecutive"] == 0
-        assert should_handoff_by_rounds(rounds) is False
+        assert rounds["consecutive"] == 3
+        assert should_handoff_by_rounds(rounds) is True
         assert rounds["total"] == 3
 
     def test_intent_change_starts_new_streak(self):
@@ -93,7 +93,7 @@ class TestRoundBasedHandoff:
 
 # ═══════════════════════════════════════════════════════════
 # T005: 空闲超时收尾（User Story 2）
-# SC-002: 30min 无活动 -> RESOLVED；再 30min -> CLOSED；活跃会话跳过
+# SC-002: 30min 无活动 → RESOLVED；再 30min → CLOSED；活跃会话跳过
 # ═══════════════════════════════════════════════════════════
 import datetime
 from sqlalchemy import text
@@ -181,7 +181,7 @@ class TestIdleCleanup:
 # ═══════════════════════════════════════════════════════════
 # T008: 留言建单 + CSAT（User Story 3）
 # SC-003: 无坐席留言 100% 建单 category=message；有坐席 409；
-#         CSAT 仅 closed 可提交且不可重复
+# CSAT 仅 closed 可提交且不可重复
 # ═══════════════════════════════════════════════════════════
 class TestAgentPresence:
     """在线坐席 presence 契约。"""

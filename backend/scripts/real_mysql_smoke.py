@@ -116,7 +116,7 @@ def a2(c):
     r = c.post("/api/v1/auth/login/email", json={"email": email, "password": "Test1234abc"})
     step("A2 login/email", r.status_code == 200, f"HTTP {r.status_code}")
 
-    # 密码重置：独立手机号（首次发码无 60s 频率限制）-> reset -> 新密码登录
+    # 密码重置：独立手机号（首次发码无 60s 频率限制）→ reset → 新密码登录
     phone3 = "13900000020"
     _ensure_account(c, phone3, tenant_name="smoke-A2r")
     r = c.post("/api/v1/auth/sms/send", json={"phone": phone3})
@@ -179,7 +179,7 @@ def a4(c):
     r = c.get("/api/v1/billing/invoices", headers=H)
     step("A4 invoices", r.status_code == 200, f"HTTP {r.status_code}")
 
-    # pay 不存在的账单 -> 400（验证端点可达 + service 校验）
+    # pay 不存在的账单 → 400（验证端点可达 + service 校验）
     r = c.post("/api/v1/billing/pay/999999", headers=H)
     step("A4 pay不存在账单(400)", r.status_code == 400, f"HTTP {r.status_code}")
 
@@ -202,7 +202,7 @@ def a5(c):
     r = c.get("/api/v1/order/list", headers=H)
     step("A5 order/list", r.status_code == 200, f"HTTP {r.status_code}")
 
-    # approve 不存在的退款 -> 400
+    # approve 不存在的退款 → 400
     r = c.post("/api/v1/order/refunds/999999/approve", json={"decision": "approved"}, headers=H)
     step("A5 approve不存在(400)", r.status_code == 400, f"HTTP {r.status_code}")
 
@@ -287,7 +287,7 @@ def a8(c):
     r = c.get("/api/v1/session/list", headers=H)
     step("A8 session/list", r.status_code == 200, f"HTTP {r.status_code}")
 
-    # send_message 走 graph.invoke -> llm_complete -> litellm（DEEPSEEK_API_KEY 未填，可能 500）
+    # send_message 走 graph.invoke → llm_complete → litellm（DEEPSEEK_API_KEY 未填，可能 500）
     r = c.post("/api/v1/session/message", json={"session_id": sid, "content": "你好"}, headers=H)
     step("A8 send_message", r.status_code == 200, f"HTTP {r.status_code} (LLM key 未填可能失败) body={r.text[:50]}")
 
@@ -300,15 +300,15 @@ def a8(c):
     r = c.post(f"/api/v1/session/{sid}/return-to-agent", headers=H)
     step("A8 return-to-agent", r.status_code == 200, f"HTTP {r.status_code}")
 
-    # leave-message 需 waiting_human + 无在线坐席；当前状态不符 -> 403/409 均算端点可达
+    # leave-message 需 waiting_human + 无在线坐席；当前状态不符 → 403/409 均算端点可达
     r = c.post(f"/api/v1/session/{sid}/leave-message", json={"content": "留言测试"}, headers=H)
     step("A8 leave-message 可达", r.status_code in (200, 403, 409), f"HTTP {r.status_code}")
 
-    # csat 需 closed；未关闭 -> 403 算端点可达
+    # csat 需 closed；未关闭 → 403 算端点可达
     r = c.post(f"/api/v1/session/{sid}/csat", json={"score": 5, "comment": "good"}, headers=H)
     step("A8 csat 可达", r.status_code in (201, 403, 409), f"HTTP {r.status_code}")
 
-    # feedback 用不存在 message_id -> 404 算端点可达
+    # feedback 用不存在 message_id → 404 算端点可达
     r = c.post("/api/v1/session/message/999999/feedback", json={"score": 1, "comment": "useful"}, headers=H)
     step("A8 feedback 可达", r.status_code in (201, 404), f"HTTP {r.status_code}")
 
@@ -357,8 +357,8 @@ def b1(c):
     token, tid = _ensure_account(c, "13900000071", tenant_name="smoke-B1")
     H = {"Authorization": f"Bearer {token}"}
 
-    # 上传 .md 知识库文档（trial 套餐上限 1 篇，重跑会 403 -> 复用已有文档）
-    # 注意 _chunk_markdown 按 ## 标题分段，内容须含 ## 标题否则 chunks 为空 -> failed
+    # 上传 .md 知识库文档（trial 套餐上限 1 篇，重跑会 403 → 复用已有文档）
+    # 注意 _chunk_markdown 按 ## 标题分段，内容须含 ## 标题否则 chunks 为空 → failed
     content = (
         "## 产品介绍\n"
         "智枢ZhiHub是企业级智能客服平台，支持知识库管理、多租户隔离、AI对话编排。\n\n"
@@ -379,7 +379,7 @@ def b1(c):
     step("B1 upload", r.status_code in (201, 403), f"HTTP {r.status_code} doc_id={doc_id} (403=trial上限重跑复用)")
 
     if not doc_id:
-        # 超限或重跑 -> 从 list 取已有文档
+        # 超限或重跑 → 从 list 取已有文档
         r = c.get("/api/v1/knowledge/list", headers=H)
         items = r.json().get("items", []) if r.status_code == 200 else []
         if items:

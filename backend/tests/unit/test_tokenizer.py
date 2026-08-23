@@ -71,7 +71,7 @@ class TestTruncateMessages:
         result = truncate_messages(msgs, max_tokens=100, keep_recent=2)
         # 应大幅减少
         assert len(result) < len(msgs)
-        # T34: 核心语义——保留最近消息（原只断言"变少了"，从中间砍也照样绿）
+        # 核心语义——保留最近消息（原只断言"变少了"，从中间砍也照样绿）
         assert result[-1]["content"] == msgs[-1]["content"]
 
     def test_keep_recent_minimum(self):

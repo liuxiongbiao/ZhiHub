@@ -186,6 +186,7 @@ class TestLlmCompleteIntegration:
         from app.config import settings
         from app.services.retrieval_service import rewrite_query
 
+        monkeypatch.setattr(settings, "llm_enabled", True)
         monkeypatch.setattr(settings, "llm_primary_model", "deepseek/primary-model")
         monkeypatch.setattr(settings, "llm_backup_model", "deepseek/backup-model")
 
@@ -225,8 +226,9 @@ class TestLlmCompleteIntegration:
 
         monkeypatch.setattr(litellm, "completion", mock_completion)
 
-        answer = _generate_answer("怎么退款", "（无检索结果）", [])
+        answer, generation_ok = _generate_answer("怎么退款", "（无检索结果）", [])
         assert answer == "LLM 回答"
+        assert generation_ok is True
         assert "deepseek/backup-model" in calls
 
     def test_planner_generate_report_uses_llm_complete(self, monkeypatch):

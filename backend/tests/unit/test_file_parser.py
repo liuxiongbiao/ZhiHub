@@ -85,7 +85,7 @@ class TestExtractText:
         assert result == text
 
     def test_extract_docx(self, monkeypatch):
-        """Word 文档应提取文本（T34: 桩 python-docx，原 skip 补真测试）。"""
+        """Word 文档应提取文本（: 桩 python-docx，原 skip 补真测试）。"""
         class _FakeDoc:
             def __init__(self):
                 self.paragraphs = [type("P", (), {"text": "Word 段落一"}), type("P", (), {"text": "段落二"})]
@@ -95,7 +95,7 @@ class TestExtractText:
         assert "Word 段落一" in result and "段落二" in result
 
     def test_extract_pdf(self, monkeypatch):
-        """PDF 文档应提取文本（T34: 桩 PyPDF2，原 skip 补真测试，复用 test_ocr 桩技术）。"""
+        """PDF 文档应提取文本（: 桩 PyPDF2，原 skip 补真测试，复用 test_ocr 桩技术）。"""
         class _FakePage:
             def extract_text(self):
                 return "PDF 第一页内容"
@@ -210,7 +210,7 @@ def _make_min_xlsx(rows):
 
 
 class TestXlsxSupport:
-    """PRD 3.2 spreadsheet support (review P2-1)."""
+    """PRD 3.2 spreadsheet support (review -1)."""
 
     def test_xlsx_in_allowed_extensions(self):
         assert ".xlsx" in ALLOWED_EXTENSIONS

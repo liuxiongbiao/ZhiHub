@@ -43,6 +43,7 @@ def _make_refunding_order(db, *, tenant_id=1, order_no="ORD-AUD-001", amount=100
         tenant_id=tenant_id, order_no=order_no, amount=299.0,
         paid_amount=299.0, status="refunding",
     )
+    order.payment_trade_no = "ALIPAY-AUD-001"
     db.add(order)
     db.flush()
     approval = RefundApproval(
@@ -71,7 +72,7 @@ def _patch_alipay(monkeypatch, *, verify=True, refund_ok=True):
 
     monkeypatch.setattr(ac.AlipayClient, "create_payment", lambda self, *a, **k: "mock")
     monkeypatch.setattr(ac.AlipayClient, "verify_callback", lambda self, form_data: verify)
-    monkeypatch.setattr(ac.AlipayClient, "refund", lambda self, trade_no, amount: refund_ok)
+    monkeypatch.setattr(ac.AlipayClient, "refund", lambda self, trade_no, amount, request_no=None: refund_ok)
 
 
 def _make_tenant_with_admin(db, *, tenant_id=1, wizard_step="basic"):
@@ -98,7 +99,7 @@ def _count_audit_logs(db, *, tenant_id=None, action=None):
 
 
 # ═══════════════════════════════════════════════════════════
-# T1: 退款审批 -> audit_logs
+# 退款审批 → audit_logs
 # ═══════════════════════════════════════════════════════════
 class TestRefundApproveAudit:
     """approve_refund 成功后应写入 refund_approve 审计记录。"""
@@ -158,7 +159,7 @@ class TestRefundApproveAudit:
 
 
 # ═══════════════════════════════════════════════════════════
-# T2: 退款撤销 -> audit_logs
+# 退款撤销 → audit_logs
 # ═══════════════════════════════════════════════════════════
 class TestRefundCancelAudit:
     """cancel_refund 成功后应写入 refund_cancel 审计记录。"""
@@ -169,7 +170,7 @@ class TestRefundCancelAudit:
         order, approval = _make_refunding_order(db, amount=100.0)
         db.commit()
 
-        cancel_refund(db, approval_id=approval.id, tenant_id=1)
+        cancel_refund(db, approval_id=approval.id, tenant_id=1, reason="测试撤销")
 
         count = _count_audit_logs(db, tenant_id=1, action="refund_cancel")
         assert count == 1
@@ -180,7 +181,7 @@ class TestRefundCancelAudit:
         order, approval = _make_refunding_order(db, amount=100.0)
         db.commit()
 
-        cancel_refund(db, approval_id=approval.id, tenant_id=1)
+        cancel_refund(db, approval_id=approval.id, tenant_id=1, reason="测试撤销")
 
         log = db.execute(
             select(AuditLog).where(AuditLog.action == "refund_cancel")
@@ -190,7 +191,7 @@ class TestRefundCancelAudit:
 
 
 # ═══════════════════════════════════════════════════════════
-# T3: 登录 -> audit_logs
+# 登录 → audit_logs
 # ═══════════════════════════════════════════════════════════
 class TestLoginAudit:
     """login 成功后应写入 login 审计记录。"""
@@ -229,7 +230,7 @@ class TestLoginAudit:
 
 
 # ═══════════════════════════════════════════════════════════
-# T4: 登出 -> audit_logs
+# 登出 → audit_logs
 # ═══════════════════════════════════════════════════════════
 class TestLogoutAudit:
     """logout 后应写入 logout 审计记录。"""
@@ -263,7 +264,7 @@ class TestLogoutAudit:
 
 
 # ═══════════════════════════════════════════════════════════
-# T5: 向导推进 -> audit_logs
+# 向导推进 → audit_logs
 # ═══════════════════════════════════════════════════════════
 class TestWizardAdvanceAudit:
     """advance_wizard 后应写入 wizard_advance 审计记录。"""
@@ -290,7 +291,7 @@ class TestWizardAdvanceAudit:
 
 
 # ═══════════════════════════════════════════════════════════
-# T6: 支付回调 -> audit_logs
+# 支付回调 → audit_logs
 # ═══════════════════════════════════════════════════════════
 class TestPaymentCallbackAudit:
     """handle_payment_callback 成功后应写入 payment 审计记录。"""
@@ -353,7 +354,7 @@ class TestPaymentCallbackAudit:
 
 
 # ═══════════════════════════════════════════════════════════
-# T7: 租户隔离
+# 租户隔离
 # ═══════════════════════════════════════════════════════════
 class TestAuditTenantIsolation:
     """审计日志按 tenant_id 隔离，跨租户互不可见。"""
@@ -381,7 +382,7 @@ class TestAuditTenantIsolation:
 
 
 # ═══════════════════════════════════════════════════════════
-# T8: 审计日志查询端点（admin 分页）
+# 审计日志查询端点（admin 分页）
 # ═══════════════════════════════════════════════════════════
 @pytest.fixture()
 def tenant_for_endpoint(db):
@@ -482,7 +483,7 @@ class TestAuditLogEndpoint:
 
 
 # ═══════════════════════════════════════════════════════════
-# T9: 角色权限
+# 角色权限
 # ═══════════════════════════════════════════════════════════
 class TestAuditLogEndpointForbidden:
     """非 admin 角色不可访问审计日志端点。"""

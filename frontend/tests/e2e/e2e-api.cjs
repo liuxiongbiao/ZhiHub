@@ -1,7 +1,7 @@
 // e2e-api.cjs — 阶段4：API 连通性补充（CSAT / 留言建单 / WebSocket）
 const fs = require('fs');
 const path = require('path');
-const { apiJson } = require('./e2e-helper.cjs');
+const { apiJson, seedE2E } = require('./e2e-helper.cjs');
 
 const results = [];
 function record(id, ok, detail = '') {
@@ -13,6 +13,8 @@ function record(id, ok, detail = '') {
   const creds = JSON.parse(fs.readFileSync(path.join(__dirname, 'e2e-cred.json'), 'utf8'));
   const login = await apiJson('/auth/login', { method: 'POST', body: { phone: creds.phone, password: creds.password } });
   const token = login.data.access_token;
+  // 预置 closed / waiting_human 会话等数据（幂等）
+  if (login.data.tenant_id) seedE2E(login.data.tenant_id);
 
   // 找到 closed 会话与 waiting_human 会话
   const list = await apiJson('/session/list?page_size=50', { token });
@@ -39,8 +41,11 @@ function record(id, ok, detail = '') {
 
   // A004 WebSocket：带 token 连接成功；无 token 被拒（1008）
   {
+    // : 必须使用 /auth/ws-token 签发的短效工作台令牌
+    const wsTokenResp = await apiJson('/auth/ws-token', { method: 'POST', token });
+    const wsToken = wsTokenResp.data?.token;
     const wsOk = await new Promise((resolve) => {
-      const ws = new WebSocket(`ws://localhost:8000/api/v1/ws/agent?token=${encodeURIComponent(token)}`);
+      const ws = new WebSocket(`ws://localhost:8000/api/v1/ws/agent?token=${encodeURIComponent(wsToken)}`);
       const t = setTimeout(() => { ws.close(); resolve(false); }, 8000);
       ws.onopen = () => { clearTimeout(t); ws.close(); resolve(true); };
       ws.onerror = () => { clearTimeout(t); resolve(false); };

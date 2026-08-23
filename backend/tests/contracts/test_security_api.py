@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_security_api.py
 
-职责: 测试 006 终端用户双因子身份校验 + Prompt 注入检测契约
+职责: 测试 规格 006 终端用户双因子身份校验 + Prompt 注入检测契约
 
 测试内容:
   - TestEndUserTwoFactor: 双因子校验（SC-001 仅手机号查询 100% 被拒；
@@ -86,7 +86,7 @@ class TestEndUserTwoFactor:
         result = order_agent_node(state)
         assert "手机号" in result["final_response"]
 
-    # ─── Server 校验层：phone 不匹配 -> -32602 "未查询到匹配信息" ───
+    # ─── Server 校验层：phone 不匹配 → -32602 "未查询到匹配信息" ───
     def test_ticket_phone_mismatch_returns_32602(self, db, bound_ticket):
         """SC-002: 手机号与工单不匹配 -> 返回"未查询到匹配信息"，不泄露工单存在。"""
         resp = _call(db, "get_ticket_status",
@@ -114,7 +114,7 @@ class TestEndUserTwoFactor:
         assert resp["error"]["code"] == -32602
         assert "未查询到匹配信息" in resp["error"]["message"]
 
-    # ─── phone 匹配 -> 返回结果 ───
+    # ─── phone 匹配 → 返回结果 ───
     def test_ticket_phone_match_returns_result(self, db, bound_ticket):
         """FR-002/SC: 手机号后4位匹配 -> 返回工单详情。"""
         resp = _call(db, "get_ticket_status",
@@ -152,7 +152,7 @@ class TestEndUserTwoFactor:
 
 # ═══════════════════════════════════════════════════════════
 # T015: Prompt 注入检测（User Story 3）
-# 契约: security-api.md detect_prompt_injection -> InjectionResult
+# 契约: security-api.md detect_prompt_injection → InjectionResult
 # SC-004: 典型注入话术 100% 被检测并转人工；正常查询误判率 < 5%
 # ═══════════════════════════════════════════════════════════
 class TestPromptInjectionDetection:
@@ -290,7 +290,7 @@ class TestInjectionIntegration:
         # 转人工提示（不拒绝服务，宪法 IV）
         assert "人工" in resp["content"]
         assert resp["metadata"]["intent"] == "prompt_injection"
-        # 会话状态 -> waiting_human
+        # 会话状态 → waiting_human
         db.refresh(s)
         assert s.status == "waiting_human"
         # 安全事件已记录（FR-008）

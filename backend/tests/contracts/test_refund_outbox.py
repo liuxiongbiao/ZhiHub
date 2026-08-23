@@ -1,4 +1,4 @@
-"""契约测试：P1-1 审批只追加 + P1-2 退款 Outbox。"""
+"""契约测试： 审批只追加 +  退款 Outbox。"""
 
 import json
 
@@ -11,6 +11,7 @@ from app.models.refund_outbox import RefundOutbox
 
 def _make_refund(db, *, amount=100.0, status="pending"):
     order = Order(tenant_id=1, order_no="ORD-OBX-1", amount=299.0, paid_amount=299.0, status="refunding")
+    order.payment_trade_no = "ALIPAY-OBX-1"
     db.add(order)
     db.flush()
     approval = RefundApproval(
@@ -44,7 +45,7 @@ class TestReviewHistoryAppendOnly:
     def test_cancel_appends_review(self, db):
         from app.services.order_service import cancel_refund
         _, approval = _make_refund(db)
-        cancel_refund(db, approval_id=approval.id, tenant_id=1)
+        cancel_refund(db, approval_id=approval.id, tenant_id=1, reason="测试撤销")
         db.refresh(approval)
         history = json.loads(approval.review_history)
         assert history[-1]["action"] == "cancel"
@@ -66,7 +67,7 @@ class TestRefundOutbox:
         from app.services import order_service as osvc
         order, approval = _make_refund(db)
 
-        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None: False)
+        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None, request_no=None: False)
         with pytest.raises(osvc.RefundError):
             osvc.approve_refund(db, approval_id=approval.id, decision="approved",
                                 approver_id=1, tenant_id=1, role="admin")
@@ -77,7 +78,7 @@ class TestRefundOutbox:
         assert outbox.status == "pending"
 
         # 重试成功
-        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None: True)
+        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None, request_no=None: True)
         assert osvc.process_refund_outbox(db, approval.id) is True
         db.expire_all()
         assert db.get(Order, order.id).status == "refunded"
@@ -90,7 +91,7 @@ class TestRefundOutbox:
         invoked = []
         monkeypatch.setattr(
             osvc, "_invoke_alipay_refund",
-            lambda db_, order_, amount, trade_no=None: invoked.append(1) or True,
+            lambda db_, order_, amount, trade_no=None, request_no=None: invoked.append(1) or True,
         )
         monkeypatch.setattr(
             osvc.order_crud, "update_status_optimistic",
@@ -114,6 +115,6 @@ class TestRefundOutbox:
             amount=approval.amount, trade_no="t1", status="pending",
         ))
         db.commit()
-        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None: True)
+        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None, request_no=None: True)
         res = osvc.process_refund_outbox_batch(db)
         assert res == {"success": 1, "failed": 0}

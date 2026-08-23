@@ -125,7 +125,7 @@ class TestLogin:
             auth_service.login(db, phone="13900000000", password="abc12345")
 
     def test_login_fail_open_on_redis_error(self, db, monkeypatch):
-        """M1: Redis 故障时登录 fail-open（不抛 500），与 T13 中间件哲学一致。"""
+        """: Redis 故障时登录 fail-open（不抛 500），与中间件哲学一致。"""
         from app.services import auth_service
         from app.core import redis as redis_module
 
@@ -134,7 +134,7 @@ class TestLogin:
         def _boom(*args, **kwargs):
             raise ConnectionError("redis down")
 
-        # 锁定检查 / 失败计数 / 清零 全部故障 -> 应 fail-open 放行，不抛异常
+        # 锁定检查 / 失败计数 / 清零 全部故障 → 应 fail-open 放行，不抛异常
         monkeypatch.setattr(redis_module, "get_lock_ttl", _boom)
         monkeypatch.setattr(redis_module, "get_lock_ttl_ip", _boom)
         monkeypatch.setattr(redis_module, "incr_login_fail", _boom)
@@ -145,7 +145,7 @@ class TestLogin:
         assert result.access_token  # fail-open：正确密码仍能登录
 
     def test_ip_fail_count_not_cleared_on_success(self, db):
-        """M2: 成功登录不清 IP 维度计数（防攻击者用自己合法账号重置 IP 锁绕过 credential stuffing）。"""
+        """: 成功登录不清 IP 维度计数（防攻击者用自己合法账号重置 IP 锁绕过 credential stuffing）。"""
         from app.services import auth_service
         from app.core.redis import get_redis, get_login_fail
 
@@ -161,7 +161,7 @@ class TestLogin:
         # 成功登录
         auth_service.login(db, phone="13800138000", password="abc12345", ip=ip)
 
-        # IP 计数不清（M2 修复）；phone 计数清零
+        # IP 计数不清（ 修复）；phone 计数清零
         assert int(get_redis().get(f"login_fail_ip:{ip}")) == 4, "IP 计数不应被成功登录清零"
         assert get_login_fail("13800138000") == 0, "phone 计数应清零"
 

@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_metrics.py
 
-职责: Prometheus 监控探针（审查 P2 补齐）契约。
+职责: Prometheus 监控探针（审查  补齐）契约。
 契约:
   GET /metrics -> 200 + text/plain; version=0.0.4（Prometheus 文本格式）
   包含 http_requests_total 指标；访问 /health 后该指标计数出现 200 标签

@@ -23,8 +23,8 @@ from sqlalchemy import text
 
 
 # ═══════════════════════════════════════════════════════════
-# PRD 3.6: 订单超时自动流转
-#   created 超 30min -> cancelled；shipped 超 7 天 -> completed
+# PRD §3.6: 订单超时自动流转
+# created 超 30min → cancelled；shipped 超 7 天 → completed
 # ═══════════════════════════════════════════════════════════
 
 
@@ -101,9 +101,9 @@ class TestOrderTimeoutCleanup:
 
 
 # ═══════════════════════════════════════════════════════════
-# PRD 3.1: 试用版30天降级只读
-#   trial 且 created_at 超 30 天 且 status=active -> readonly
-#   只阻断新会话；进行中会话由 cleanup_idle_sessions 走完（降级不中断）
+# PRD §3.1: 试用版30天降级只读
+# trial 且 created_at 超 30 天 且 status=active → readonly
+# 只阻断新会话；进行中会话由 cleanup_idle_sessions 走完（降级不中断）
 # ═══════════════════════════════════════════════════════════
 
 

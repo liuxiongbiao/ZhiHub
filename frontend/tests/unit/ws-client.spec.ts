@@ -1,6 +1,6 @@
 /**
  * tests/unit/ws-client.spec.ts
- * 013 US8 (T054): WsClient 连接/消息分发/重连/关闭
+ * 规格 013 US8 (T054): WsClient 连接/消息分发/重连/关闭
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WsClient } from '@/utils/ws-client'
@@ -23,12 +23,12 @@ class MockWS {
 beforeEach(() => { MockWS.instances = []; vi.stubGlobal('WebSocket', MockWS) })
 afterEach(() => { vi.unstubAllGlobals() })
 
-describe('WsClient (013 US8)', () => {
-  it('connects and dispatches messages to listeners', () => {
+describe('WsClient (规格 013 US8)', () => {
+  it('connects and dispatches messages to listeners', async () => {
     const client = new WsClient('ws://test')
     const received: any[] = []
     client.onMessage((m) => received.push(m))
-    client.connect()
+    await client.connect()
     const ws = MockWS.instances[0]
     ws.onopen?.()
     ws.onmessage?.({ data: JSON.stringify({ type: 'new_session', session_id: 1 }) })
@@ -36,33 +36,33 @@ describe('WsClient (013 US8)', () => {
     expect(received[0].type).toBe('new_session')
   })
 
-  it('schedules reconnect on close', () => {
+  it('schedules reconnect on close', async () => {
     vi.useFakeTimers()
     const client = new WsClient('ws://test')
-    client.connect()
+    await client.connect()
     const ws = MockWS.instances[0]
     ws.onclose?.()
     // 应安排重连
-    vi.advanceTimersByTime(2000)
+    await vi.advanceTimersByTimeAsync(2000)
     expect(MockWS.instances.length).toBeGreaterThanOrEqual(2)
     client.close()
     vi.useRealTimers()
   })
 
-  it('close() stops reconnect', () => {
+  it('close() stops reconnect', async () => {
     vi.useFakeTimers()
     const client = new WsClient('ws://test')
-    client.connect()
+    await client.connect()
     client.close()
     const countBefore = MockWS.instances.length
-    vi.advanceTimersByTime(35000)
+    await vi.advanceTimersByTimeAsync(35000)
     expect(MockWS.instances.length).toBe(countBefore) // 不再重连
     vi.useRealTimers()
   })
 
-  it('send() forwards JSON when open', () => {
+  it('send() forwards JSON when open', async () => {
     const client = new WsClient('ws://test')
-    client.connect()
+    await client.connect()
     const ws = MockWS.instances[0]
     ws.onopen?.()
     client.send({ type: 'typing', session_id: 1, is_typing: true })

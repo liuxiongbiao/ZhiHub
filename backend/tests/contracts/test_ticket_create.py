@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_ticket_create.py
 
-职责: 用户主动提交工单（closure-plan P1-4，PRD 3.8）。
+职责: 用户主动提交工单（PRD §3.8）。
 契约:
   POST /ticket -> 201 + ticket_no(TK-...)
   缺标题 -> 422；未登录 -> 401；category 透传

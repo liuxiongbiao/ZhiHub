@@ -10,6 +10,7 @@ vi.mock('@/api/knowledge', () => ({
   getDocumentList: vi.fn(),
   uploadDocument: vi.fn(),
   rebuildDocument: vi.fn(),
+  deleteDocument: vi.fn(),
 }))
 
 import { getDocumentList } from '@/api/knowledge'

@@ -70,7 +70,7 @@ def fresh_db():
 
 
 def test_from_scratch_upgrade_creates_all_model_tables_and_columns(fresh_db):
-    """从零 alembic upgrade head 后,Base.metadata 全部表与列都在 DB 中存在(SC-001/002)。"""
+    """从零 alembic upgrade head 后,Base.metadata 全部表与列都在 DB 中存在(SC-001/SC-002)。"""
     from app.config import settings
     from app.models import Base  # 触发 __init__.py 注册全部模型到 metadata
 

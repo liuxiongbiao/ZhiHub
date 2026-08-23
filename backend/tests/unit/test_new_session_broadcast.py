@@ -2,7 +2,7 @@
 backend/tests/unit/test_new_session_broadcast.py
 
 职责: 转人工（waiting_human）时向同租户在线坐席广播 new_session 事件
-      （013 UI 联调发现：前端 AgentConsole 监听 type='new_session'，
+      （规格 013 UI 联调发现：前端 AgentConsole 监听 type='new_session'，
       但后端转人工时从不广播 —— PRD 3.7 新会话实时推送缺口）。
 
 事件契约（与前端 ws-client/AgentConsole 对齐）:
@@ -87,6 +87,8 @@ class TestNewSessionBroadcast:
         source = open(agent_service.__file__, encoding="utf-8").read()
         assert "_notify_new_session" in source
         # 确认在 should_interrupt 分支调用
-        idx = source.find("if should_interrupt")
+        # 用 rfind 定位转人工广播块（前面的状态更新行含 "if should_interrupt else"，
+        # 计费修复在其间插入了 effective_reply 标记，故用精确的 "if should_interrupt:"）
+        idx = source.rfind("if should_interrupt:")
         assert idx != -1
-        assert "broadcast_to_tenant_sync" in source[idx:idx + 400] or "_notify_new_session" in source[idx:idx + 400]
+        assert "_notify_new_session" in source[idx:idx + 400]

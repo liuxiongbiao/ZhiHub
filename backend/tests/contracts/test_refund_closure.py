@@ -1,4 +1,4 @@
-"""契约测试：016 退款闭环（P0-4/P0-5）。"""
+"""契约测试：规格 016 退款闭环。"""
 
 import pytest
 
@@ -18,8 +18,8 @@ def _mk_order(db, *, status="paid", phone="13800138000", paid_amount=200.0, orde
 
 
 class TestShippedRefund:
-    def test_shipped_to_refunding_allowed(self):
-        assert "refunding" in VALID_TRANSITIONS["shipped"]
+    def test_shipped_to_refund_requested_allowed(self):
+        assert "refund_requested" in VALID_TRANSITIONS["shipped"]
 
     def test_request_refund_from_shipped(self, db, fake_redis):
         _mk_order(db, status="shipped", order_no="ORD-SHIPPED-1")
@@ -28,7 +28,7 @@ class TestShippedRefund:
             reason="已发货退款", client_request_id="cid-shipped-1", phone="13800138000",
         )
         assert res["status"] == "pending"
-        assert db.get(Order, res["order_id"]).status == "refunding"
+        assert db.get(Order, res["order_id"]).status == "refund_requested"
 
 
 class TestRefundIdentity:

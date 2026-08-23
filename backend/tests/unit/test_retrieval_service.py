@@ -9,6 +9,9 @@ backend/tests/unit/test_retrieval_service.py
   - TestRetrievalResult: 空知识库标记 + 正常结果字段
 """
 
+import sys
+import types
+
 import pytest
 
 from app.services.retrieval_service import (
@@ -130,3 +133,57 @@ class TestRetrievalResult:
         assert result.elapsed_ms == 500
         assert len(result.vector_results) == 1
         assert len(result.hybrid_results) == 1
+
+
+class TestRetrievalMockMode:
+    def test_disabled_llm_and_embedding_use_keyword_path_without_external_calls(self, monkeypatch):
+        from app.services import retrieval_service
+
+        external_calls = {"llm": 0, "rerank": 0, "hyde": 0}
+
+        def _forbidden_llm(**kwargs):
+            external_calls["llm"] += 1
+            raise AssertionError("LLM must stay disabled")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "app.core.llm_client",
+            types.SimpleNamespace(llm_complete=_forbidden_llm),
+        )
+        monkeypatch.setattr(retrieval_service.settings, "llm_enabled", False)
+        monkeypatch.setattr(retrieval_service.settings, "embedding_enabled", False)
+        monkeypatch.setattr(retrieval_service, "_is_knowledge_base_empty", lambda tenant_id: False)
+        monkeypatch.setattr(retrieval_service, "vector_recall", lambda *a, **k: [])
+        monkeypatch.setattr(
+            retrieval_service,
+            "bm25_recall",
+            lambda *a, **k: [{
+                "doc_id": 7,
+                "doc_filename": "refund.md",
+                "chunk_index": 0,
+                "chunk_text": "退款申请流程",
+                "score": 3.2,
+                "source": "bm25",
+            }],
+        )
+        monkeypatch.setattr(
+            retrieval_service,
+            "rerank_api",
+            lambda **kwargs: external_calls.__setitem__("rerank", external_calls["rerank"] + 1),
+        )
+        monkeypatch.setattr(
+            retrieval_service,
+            "_hyde_retrieval",
+            lambda *a, **k: external_calls.__setitem__("hyde", external_calls["hyde"] + 1),
+        )
+
+        result = retrieval_service.hybrid_search(
+            "退款",
+            tenant_id=1,
+            history=[{"role": "user", "content": "上一轮"}],
+        )
+
+        assert external_calls == {"llm": 0, "rerank": 0, "hyde": 0}
+        assert result.rewritten_query is None
+        assert len(result.hybrid_results) == 1
+        assert result.hybrid_results[0].source == "bm25"

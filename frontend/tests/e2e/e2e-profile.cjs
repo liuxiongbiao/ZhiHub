@@ -1,4 +1,4 @@
-// e2e-profile.cjs — 013 第三轮：个人中心 / 品牌定制 / 审计日志 页面连通性
+// e2e-profile.cjs — 规格 013 第三轮：个人中心 / 品牌定制 / 审计日志 页面连通性
 const fs = require('fs');
 const path = require('path');
 const { launch, newPage } = require('./e2e-helper.cjs');
@@ -55,7 +55,7 @@ async function goto(page, p, wait = 1800) {
       await page.waitForTimeout(2000);
     }
     const body2 = await page.locator('body').innerText();
-    record('P-WIDGET-EMBED', body2.includes('cdn.zhihub.com/widget.js'), `embed=${body2.includes('cdn.zhihub.com/widget.js')}`);
+    record('P-WIDGET-EMBED', body2.includes('/widget.js'), `embed=${body2.includes('/widget.js')}`);
     await page.screenshot({ path: path.join(__dirname, 'e2e-shots', 'P-WIDGET.png') });
   }
 

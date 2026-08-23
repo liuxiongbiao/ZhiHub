@@ -26,7 +26,7 @@ class TestUploadEndpoint:
         assert resp.status_code == 401
 
     def test_upload_unsupported_format(self, client, make_token):
-        """不支持格式（.exe）应返回 400（T34: 原 skip 补真测试）。"""
+        """不支持格式（.exe）应返回 400（: 原 skip 补真测试）。"""
         token = make_token(user_id=1, tenant_id=1, role="admin")
         resp = client.post(
             "/api/v1/knowledge/upload",
@@ -36,13 +36,14 @@ class TestUploadEndpoint:
         assert resp.status_code == 400, resp.text
 
     def test_upload_file_too_large(self, client, make_token):
-        """超大文件应返回 400（T34: 原 skip 补真测试）。"""
-        from app.utils.file_parser import MAX_FILE_SIZE
+        """超大文件应返回 400（: 原 skip 补真测试）。"""
+        from app.config import settings
 
         token = make_token(user_id=1, tenant_id=1, role="admin")
+        size = settings.upload_max_file_size_mb * 1024 * 1024
         resp = client.post(
             "/api/v1/knowledge/upload",
-            files={"file": ("big.md", b"x" * (MAX_FILE_SIZE + 1), "text/markdown")},
+            files={"file": ("big.md", b"x" * (size + 1), "text/markdown")},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 400, resp.text

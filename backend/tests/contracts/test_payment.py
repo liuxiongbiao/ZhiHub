@@ -48,16 +48,16 @@ def _patch_alipay(monkeypatch, *, verify=True, refund_ok=True, pay_url="https://
     def fake_verify(form_data):
         return verify
 
-    def fake_refund(trade_no, amount):
+    def fake_refund(trade_no, amount, request_no=None):
         return refund_ok
 
     monkeypatch.setattr(ac.AlipayClient, "create_payment", lambda self, trade_no, amount, subject: fake_create(trade_no, amount, subject))
     monkeypatch.setattr(ac.AlipayClient, "verify_callback", lambda self, form_data: fake_verify(form_data))
-    monkeypatch.setattr(ac.AlipayClient, "refund", lambda self, trade_no, amount: fake_refund(trade_no, amount))
+    monkeypatch.setattr(ac.AlipayClient, "refund", lambda self, trade_no, amount, request_no=None: fake_refund(trade_no, amount, request_no))
 
 
 # ═══════════════════════════════════════════════════════════
-# T1: 创建支付订单 -> 生成支付链接 + trade_no
+# 创建支付订单 → 生成支付链接 + trade_no
 # ═══════════════════════════════════════════════════════════
 class TestCreatePayment:
     """create_payment 契约：生成 trade_no 与支付链接。"""
@@ -101,7 +101,7 @@ class TestCreatePayment:
 
 
 # ═══════════════════════════════════════════════════════════
-# T2: 异步回调验签通过 -> 账单 paid
+# 异步回调验签通过 → 账单 paid
 # ═══════════════════════════════════════════════════════════
 class TestCallbackVerifySuccess:
     """回调验签通过，账单置为 paid 并回填 trade_no/paid_at。"""
@@ -144,7 +144,7 @@ class TestCallbackVerifySuccess:
 
 
 # ═══════════════════════════════════════════════════════════
-# T3: 验签失败 -> 拒绝
+# 验签失败 → 拒绝
 # ═══════════════════════════════════════════════════════════
 class TestCallbackVerifyFail:
     """验签失败，账单保持 unpaid。"""
@@ -166,7 +166,7 @@ class TestCallbackVerifyFail:
 
 
 # ═══════════════════════════════════════════════════════════
-# T4: 回调幂等（trade_no 去重）
+# 回调幂等（trade_no 去重）
 # ═══════════════════════════════════════════════════════════
 class TestCallbackIdempotent:
     """同一 trade_no 重复回调不重复入账。"""
@@ -182,14 +182,14 @@ class TestCallbackIdempotent:
         first = handle_payment_callback(db, form_data=form, tenant_id=1)
         assert first["cached"] is False
 
-        # 第二次同 trade_no 回调 -> 命中幂等
+        # 第二次同 trade_no 回调 → 命中幂等
         second = handle_payment_callback(db, form_data=form, tenant_id=1)
         assert second["cached"] is True
         assert second["invoice_id"] == inv.id
 
 
 # ═══════════════════════════════════════════════════════════
-# T5: 退款 approved -> 调支付宝退款 -> 订单 refunded
+# 退款 approved → 调支付宝退款 → 订单 refunded
 # ═══════════════════════════════════════════════════════════
 class TestRefundViaAlipay:
     """approve_refund approved 时调 alipay_client.refund，成功则订单 refunded。"""
@@ -199,6 +199,7 @@ class TestRefundViaAlipay:
             tenant_id=1, order_no="ORD-PAY-001", amount=299.0,
             paid_amount=299.0, status="refunding",
         )
+        order.payment_trade_no = "ALIPAY-PAY-001"
         db.add(order)
         db.flush()
         approval = RefundApproval(
@@ -216,7 +217,7 @@ class TestRefundViaAlipay:
         monkeypatch.setattr(ac.AlipayClient, "create_payment", lambda self, *a, **k: "mock")
         monkeypatch.setattr(ac.AlipayClient, "verify_callback", lambda self, *a, **k: True)
 
-        def fake_refund(self, trade_no, amount):
+        def fake_refund(self, trade_no, amount, request_no=None):
             called["refund"] += 1
             return True
         monkeypatch.setattr(ac.AlipayClient, "refund", fake_refund)
@@ -242,7 +243,7 @@ class TestRefundViaAlipay:
         from app.core import alipay_client as ac
         monkeypatch.setattr(ac.AlipayClient, "create_payment", lambda self, *a, **k: "mock")
         monkeypatch.setattr(ac.AlipayClient, "verify_callback", lambda self, *a, **k: True)
-        monkeypatch.setattr(ac.AlipayClient, "refund", lambda self, trade_no, amount: False)
+        monkeypatch.setattr(ac.AlipayClient, "refund", lambda self, trade_no, amount, request_no=None: False)
 
         from app.services.order_service import approve_refund, RefundError
 
@@ -258,7 +259,7 @@ class TestRefundViaAlipay:
 
 
 # ═══════════════════════════════════════════════════════════
-# T6: 默认 mock 模式（key 为空）
+# 默认 mock 模式（key 为空）
 # ═══════════════════════════════════════════════════════════
 class TestMockModeDefault:
     """未配置支付宝 key 时 client 走 mock 模式（不调真实网关）。"""
@@ -291,12 +292,12 @@ class TestMockModeDefault:
         monkeypatch.setattr(settings, "alipay_app_id", "2021000xxxxxxxxx")
         # is_mock 仅由 app_id 是否为空决定（真实 key 待用户填）
         client = AlipayClient()
-        # app_id 非空 -> is_mock=False（即便 key 非法，模式判定仍以 app_id 为准，方法降级）
+        # app_id 非空 → is_mock=False（即便 key 非法，模式判定仍以 app_id 为准，方法降级）
         assert client.is_mock is False
 
 
 # ═══════════════════════════════════════════════════════════
-# T7: HTTP 端点契约
+# HTTP 端点契约
 # ═══════════════════════════════════════════════════════════
 class TestPaymentEndpoints:
     """HTTP 端点契约：/pay 与 /alipay/notify。"""
@@ -339,7 +340,7 @@ class TestPaymentEndpoints:
             data={"trade_no": "ALIPAY-HTTP-001", "out_trade_no": f"ALI-{inv.id}-abcd1234", "trade_status": "TRADE_SUCCESS"},
         )
         assert resp.status_code == 200
-        # T34: 原三重 or 任何含 "success" 都过，改为精确断言（端点返回纯文本 "success"）
+        # 原三重 or 任何含 "success" 都过，改为精确断言（端点返回纯文本 "success"）
         assert resp.text.strip('"') == "success"
 
     def test_alipay_notify_verify_fail_returns_fail(self, client, db, monkeypatch):

@@ -1,4 +1,4 @@
-// e2e-closure.cjs — closure-plan P1 闭环功能验证
+// e2e-closure.cjs — P1 闭环功能验证
 // 覆盖：订单创建 / 工单提交 / 通知站内信（API + UI 存在性）
 const fs = require('fs');
 const path = require('path');

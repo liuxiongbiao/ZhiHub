@@ -1,6 +1,6 @@
 /**
  * tests/components/Register.spec.ts
- * 013 US1 (T020): 含验证码输入步骤；缺验证码不提交
+ * 规格 013 US1 (T020): 含验证码输入步骤；缺验证码不提交
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -39,7 +39,7 @@ function mountRegister() {
   return mount(Register, { global: { plugins: [createPinia(), router, ElementPlus] } })
 }
 
-describe('Register.vue (013 US1)', () => {
+describe('Register.vue (规格 013 US1)', () => {
   it('renders phone and email registration tabs', () => {
     const html = mountRegister().html()
     expect(html).toContain('手机号注册')

@@ -93,7 +93,7 @@ class TestRouterOutput:
     """Router 节点输出测试."""
 
     def test_router_output_model(self):
-        """RouterOutput BaseModel 结构正确（011 PydanticAI）."""
+        """RouterOutput BaseModel 结构正确（结构化输出模型）."""
         from app.agents.nodes.router import RouterOutput
         r = RouterOutput(intent="ticket_query", confidence=0.9, sentiment="normal", slots={"ticket_no": "TK-001"})
         assert r.intent == "ticket_query"
@@ -129,7 +129,7 @@ class TestGraphBuild:
         assert "human_handoff" in nodes
 
     def test_graph_routing_decision(self, monkeypatch):
-        """知识咨询意图 -> 图完整走通（T34/M8: mock LLM 节点，原真调 LLM 依赖 key）。"""
+        """知识咨询意图 -> 图完整走通（/: mock LLM 节点，原真调 LLM 依赖 key）。"""
         from app.agents.graph import build_graph
 
         # 桩掉 LLM 节点: patch 目标必须是 graph 模块的绑定引用——
@@ -164,7 +164,7 @@ class TestGraphBuild:
             "final_response": "",
         }
 
-        # 图完整执行（LLM 已桩）: router 路由到 knowledge_agent -> final_response
+        # 图完整执行（LLM 已桩）: router 路由到 knowledge_agent → final_response
         result = graph.invoke(state)
         assert "final_response" in result
         assert result.get("intent") == "knowledge_consult"

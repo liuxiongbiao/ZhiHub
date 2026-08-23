@@ -46,10 +46,10 @@ class TestClaimSessionLogic:
         from app.services.human_service import CLAIM_LOCK_PREFIX, CLAIM_LOCK_TTL
 
         lock_key = f"{CLAIM_LOCK_PREFIX}999"
-        # 第一次 SETNX: key 不存在 -> True
+        # 第一次 SETNX: key 不存在 → True
         first = fake_redis.set(lock_key, "agent-1", ex=CLAIM_LOCK_TTL, nx=True)
         assert first is True
-        # 第二次 SETNX: key 已存在 -> None (False)
+        # 第二次 SETNX: key 已存在 → None (False)
         second = fake_redis.set(lock_key, "agent-2", ex=CLAIM_LOCK_TTL, nx=True)
         assert second is None
 
@@ -62,11 +62,11 @@ class TestClaimSessionLogic:
         session_crud.update_status(db, s, "waiting_human")
         db.commit()
 
-        # 第一次认领 -> 成功
+        # 第一次认领 → 成功
         result = claim_session(db, session_id=s.id, agent_id=101, tenant_id=1)
         assert result["status"] == "human_handling"
 
-        # 第二次认领（不同坐席）-> Redis 锁仍存在 -> SessionAlreadyClaimed
+        # 第二次认领（不同坐席）→ Redis 锁仍存在 → SessionAlreadyClaimed
         with pytest.raises(SessionAlreadyClaimed):
             claim_session(db, session_id=s.id, agent_id=202, tenant_id=1)
 
@@ -87,7 +87,7 @@ class TestRateLimit:
         for i in range(USER_RATE):
             r = check_rate_limit(tenant_id=1, user_id=1)
             assert r["allowed"] is True
-        # 第 USER_RATE+1 次 -> 用户维度超限 -> allowed=False
+        # 第 USER_RATE+1 次 → 用户维度超限 → allowed=False
         result = check_rate_limit(tenant_id=1, user_id=1)
         assert result["allowed"] is False
         assert result["user_count"] >= USER_RATE

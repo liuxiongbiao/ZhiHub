@@ -1,4 +1,4 @@
-"""契约测试：014 Widget 公共通道（P0-1）。"""
+"""契约测试：规格 014 Widget 公共通道。"""
 
 import pytest
 
@@ -173,7 +173,7 @@ class TestWidgetRefundCancel:
         resp = client.post(
             f"/api/v1/widget/refunds/{res['id']}/cancel",
             headers={"Authorization": f"Bearer {sess['token']}"},
-            json={"session_id": sess["session_id"], "phone": "13800138000"},
+            json={"session_id": sess["session_id"], "phone": "13800138000", "reason": "测试撤销"},
         )
         assert resp.status_code == 200, resp.text
 
@@ -201,6 +201,6 @@ class TestWidgetRefundCancel:
         resp = client.post(
             f"/api/v1/widget/refunds/{res['id']}/cancel",
             headers={"Authorization": f"Bearer {sess['token']}"},
-            json={"session_id": sess["session_id"], "phone": "13900139000"},
+            json={"session_id": sess["session_id"], "phone": "13900139000", "reason": "测试撤销"},
         )
         assert resp.status_code == 400

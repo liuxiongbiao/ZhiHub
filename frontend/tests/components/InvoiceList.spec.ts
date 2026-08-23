@@ -1,6 +1,6 @@
 /**
  * tests/components/InvoiceList.spec.ts
- * 013 US2 (T024): unpaid 显示支付按钮，paid 不显示；点击调 payInvoice
+ * 规格 013 US2 (T024): unpaid 显示支付按钮，paid 不显示；点击调 payInvoice
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -16,7 +16,11 @@ const { mocks } = vi.hoisted(() => ({
 vi.mock('@/api/billing', () => mocks)
 vi.mock('element-plus', async (o) => {
   const a = await o<typeof import('element-plus')>()
-  return { ...a, ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }
+  return {
+    ...a,
+    ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+    ElMessageBox: { confirm: vi.fn().mockResolvedValue('confirm') },
+  }
 })
 
 import InvoiceList from '@/views/billing/InvoiceList.vue'
@@ -30,7 +34,7 @@ function mountList() {
   return mount(InvoiceList, { global: { plugins: [createPinia(), ElementPlus] } })
 }
 
-describe('InvoiceList.vue (013 US2)', () => {
+describe('InvoiceList.vue (规格 013 US2)', () => {
   it('shows pay button for unpaid invoice, hides for paid', async () => {
     mocks.getInvoices.mockResolvedValue({
       data: { items: [

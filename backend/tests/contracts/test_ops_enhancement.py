@@ -25,7 +25,7 @@ from app.models.tenant import Tenant
 
 
 # ═══════════════════════════════════════════════════════════
-# #20 Widget 品牌定制（PRD 3.8）
+# #20 Widget 品牌定制（PRD §3.8）
 # ═══════════════════════════════════════════════════════════
 class TestWidgetBrand:
     """Widget 品牌配置 + 嵌入代码契约。"""
@@ -67,7 +67,8 @@ class TestWidgetBrand:
         assert r.json()["logo_url"] == "https://cdn.example.com/logo.png"
 
     def test_get_embed_code(self, client, db, make_token):
-        """GET /widget/embed-code 返回自托管 widget.js + API Key 占位 + 主题色。"""
+        """GET /widget/embed-code 返回自托管 widget.js + API Key 占位 + 主题色。
+        : script/endpoint/ws 均为绝对地址（test 环境回退开发默认 localhost:5173）。"""
         tenant = tenant_crud.create_tenant(db, name="w3", plan_type="basic")
         db.commit()
         token = make_token(tenant_id=tenant.id, role="admin")
@@ -80,7 +81,8 @@ class TestWidgetBrand:
         code = r.json()["embed_code"]
         assert '/widget.js' in code
         assert 'data-api-key' in code
-        assert 'data-endpoint="/api/v1/widget"' in code
+        assert 'data-endpoint="http://localhost:5173/api/v1/widget"' in code
+        assert 'data-ws-endpoint="ws://localhost:5173/api/v1/ws"' in code
         assert 'data-theme-color="#1890ff"' in code
 
     def test_non_admin_widget_forbidden(self, client, db, make_token):
@@ -98,7 +100,7 @@ class TestWidgetBrand:
 
 
 # ═══════════════════════════════════════════════════════════
-# #21 回答反馈（PRD 3.8）
+# #21 回答反馈（PRD §3.8）
 # ═══════════════════════════════════════════════════════════
 class TestAnswerFeedback:
     """回答反馈 👍/👎 + 去重 + 租户隔离契约。"""
@@ -174,7 +176,7 @@ class TestAnswerFeedback:
 
 
 # ═══════════════════════════════════════════════════════════
-# #22 快捷回复（PRD 3.7）
+# #22 快捷回复（PRD §3.7）
 # ═══════════════════════════════════════════════════════════
 class TestQuickReply:
     """快捷回复模板 CRUD + 租户隔离契约。"""
@@ -231,7 +233,7 @@ class TestAngryVipPriority:
 
     def test_angry_sessions_first(self, db):
         """angry 会话排在 normal/unhappy 之前，即使 created_at 更旧。"""
-        # 创建顺序: angry(最旧) -> unhappy -> normal(最新)
+        # 创建顺序: angry(最旧) → unhappy → normal(最新)
         s_angry = session_crud.create_session(db, tenant_id=1)
         session_crud.update_intent(db, s_angry, intent="ticket_query", sentiment="angry")
 
@@ -266,7 +268,7 @@ class TestAngryVipPriority:
         db.commit()
 
         items, _ = session_crud.list_sessions(db, tenant_id=1, page=1, page_size=10)
-        # 无 angry -> 按 created_at desc，s2(新) 排前
+        # 无 angry → 按 created_at desc，s2(新) 排前
         assert items[0]["session_id"] == s2.id
 
 

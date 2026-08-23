@@ -1,7 +1,7 @@
 // e2e-features.cjs — 阶段3：PRD 功能端到端（非 LLM 类，真实浏览器 + 预置数据）
 const fs = require('fs');
 const path = require('path');
-const { launch, newPage, apiJson } = require('./e2e-helper.cjs');
+const { launch, newPage, apiJson, seedE2E } = require('./e2e-helper.cjs');
 
 const results = [];
 function record(id, ok, detail = '') {
@@ -44,6 +44,11 @@ async function gotoPageRobust(page, path, wait = 2500) {
   const page = await newPage(browser);
   const okLogin = await login(page, creds);
   record('F-SETUP', okLogin, '功能测试登录');
+  // 为当前租户预置工单/订单/退款/账单/会话数据（幂等，可重复执行）
+  const tenantId = await page.evaluate(() => {
+    try { return JSON.parse(localStorage.getItem('zhihub:user') || '{}').tenant_id; } catch { return null; }
+  });
+  if (tenantId) seedE2E(tenantId);
 
   // F601 首页：租户信息卡
   {

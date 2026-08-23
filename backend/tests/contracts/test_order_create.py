@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_order_create.py
 
-职责: 订单业务创建入口（closure-plan P1-3，PRD 3.6）。
+职责: 订单业务创建入口（PRD §3.6）。
 契约:
   POST /order -> 201 + status=created
   重复 order_no -> 409；非法金额 -> 422；租户隔离校验

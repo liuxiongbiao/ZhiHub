@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_billing_plan.py
 
-职责: 套餐配额矩阵（fresh-eyes P1-2，PRD 3.9）。
+职责: 套餐配额矩阵（fresh-eyes ，PRD 3.9）。
 契约:
   - basic 租户配额 2000 / pro 10000 / 未知套餐降级 trial 100
   - incr_usage 支持自定义 quota，超限/预警按该 quota 判定

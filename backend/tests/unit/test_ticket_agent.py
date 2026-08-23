@@ -48,7 +48,7 @@ class TestTicketSlotFilling:
         result = ticket_agent_node(state)
         # ticket_no 被提取到 slots 中（无 phone 时会反问手机号，而非反问工单号）
         assert result["slots"]["ticket_no"] == "TK-20240001"
-        # 因缺 phone 反问手机号，而非反问工单号 -> 证明 ticket_no 已成功提取
+        # 因缺 phone 反问手机号，而非反问工单号 → 证明 ticket_no 已成功提取
         assert "手机号" in result["final_response"]
 
 
@@ -65,7 +65,7 @@ class TestOrderSlotFilling:
         result = order_agent_node(state)
         # order_no 被提取到 slots 中（无 phone 时会反问手机号，而非反问订单号）
         assert result["slots"]["order_no"] == "ORD-20240001"
-        # 因缺 phone 反问手机号，而非反问订单号 -> 证明 order_no 已成功提取
+        # 因缺 phone 反问手机号，而非反问订单号 → 证明 order_no 已成功提取
         assert "手机号" in result["final_response"]
 
     def test_missing_order_no_asks(self):

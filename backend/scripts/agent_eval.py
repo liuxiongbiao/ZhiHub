@@ -58,7 +58,7 @@ def calculate_accuracy(results: list[dict]) -> dict:
 def format_report(results: list[dict], accuracy: dict) -> str:
     """格式化评测报告 markdown。"""
     lines = [
-        "# Agent 评测报告（009-tech-compare-agent-enhance）",
+        "# Agent 评测报告（规格 009）",
         "",
         f"## 意图识别准确率: {accuracy['intent_accuracy']*100:.1f}%（{int(accuracy['intent_accuracy']*accuracy['total'])}/{accuracy['total']}）",
         f"## 工具调用成功率: {accuracy['tool_accuracy']*100:.1f}%（{int(accuracy['tool_accuracy']*accuracy['total'])}/{accuracy['total']}）",

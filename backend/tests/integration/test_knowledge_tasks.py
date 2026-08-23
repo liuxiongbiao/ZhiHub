@@ -1,7 +1,7 @@
 """
 backend/tests/integration/test_knowledge_tasks.py
 
-职责: 知识库异步任务测试（T34: 原 5 个无条件 skip 改为 mock 基础设施的真测试）
+职责: 知识库异步任务测试（: 原 5 个无条件 skip 改为 mock 基础设施的真测试）
 
 测试内容:
   - TestProcessDocument: pending->ready 状态流转 / embedding 失败标 failed / 临时文件缺失降级
@@ -79,6 +79,12 @@ def _patch_infra(monkeypatch):
     monkeypatch.setattr(kt, "embed_batches", lambda texts: [[0.1] * 8 for _ in texts])
     monkeypatch.setattr(kt, "get_milvus_collection", lambda: _FakeCollection())
     monkeypatch.setattr(kt, "get_es_client", lambda: _FakeES())
+    from app.core import ragflow_client
+
+    class _MockRagFlow:
+        is_mock = True
+
+    monkeypatch.setattr(ragflow_client, "get_ragflow_client", lambda: _MockRagFlow())
     return kt
 
 
@@ -125,6 +131,43 @@ class TestProcessDocument:
         assert fresh.status == "ready", f"应 ready, got {fresh.status}"
         assert fresh.chunk_count > 0
 
+    def test_embedding_disabled_indexes_keywords_without_external_call(self, kb_db, monkeypatch):
+        """关闭 embedding 时不发外部请求，仍写 ES 并把文档置为 ready。"""
+        from app.models.knowledge_document import KnowledgeDocument
+        from app.tasks.knowledge_tasks import process_document
+
+        kt = _patch_infra(monkeypatch)
+        monkeypatch.setattr(kt.settings, "embedding_enabled", False)
+        monkeypatch.setattr(
+            kt,
+            "embed_batches",
+            lambda texts: (_ for _ in ()).throw(AssertionError("embedding must stay disabled")),
+        )
+        writes = {"milvus": 0, "es": 0}
+        monkeypatch.setattr(
+            kt,
+            "_index_to_milvus",
+            lambda *a, **k: writes.__setitem__("milvus", writes["milvus"] + 1),
+        )
+        monkeypatch.setattr(
+            kt,
+            "_index_to_es",
+            lambda *a, **k: writes.__setitem__("es", writes["es"] + 1),
+        )
+        db = kb_db()
+        monkeypatch.setattr(kt, "SessionLocal", lambda: db)
+        doc = _make_doc(db, filename="keyword-only.md")
+        _write_temp_file(doc.id, doc.filename, "关闭向量服务时仍应支持关键词检索\n第二条知识\n")
+        doc_id = doc.id
+
+        process_document(doc_id, tenant_id=1)
+
+        check_db = kb_db()
+        fresh = check_db.get(KnowledgeDocument, doc_id)
+        assert fresh.status == "ready", f"{fresh.status}: {fresh.error_message}"
+        assert fresh.chunk_count > 0
+        assert writes == {"milvus": 0, "es": 1}
+
     def test_embedding_api_failure_marks_failed(self, kb_db, monkeypatch):
         """Embedding API 失败 -> 文档标记 failed。"""
         from app.models.knowledge_document import KnowledgeDocument
@@ -144,8 +187,8 @@ class TestProcessDocument:
         fresh = check_db.get(KnowledgeDocument, doc_id)
         assert fresh.status == "failed"
 
-    def test_temp_file_missing_falls_back_ready(self, kb_db, monkeypatch):
-        """临时文件缺失 -> 降级 ready + 0 chunks（不阻塞队列）。"""
+    def test_temp_file_missing_marks_failed(self, kb_db, monkeypatch):
+        """文件缺失 -> 标记 failed，严禁 ready + 0 chunks。"""
         from app.models.knowledge_document import KnowledgeDocument
         from app.tasks.knowledge_tasks import process_document
 
@@ -159,7 +202,9 @@ class TestProcessDocument:
 
         check_db = kb_db()
         fresh = check_db.get(KnowledgeDocument, doc_id)
-        assert fresh.status == "ready" and fresh.chunk_count == 0
+        assert fresh.status == "failed"
+        assert fresh.chunk_count == 0
+        assert fresh.error_message
 
 
 class TestDualWrite:

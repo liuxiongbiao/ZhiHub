@@ -1,6 +1,6 @@
 /**
  * tests/unit/session-api.spec.ts
- * 013 US3/US4/US5 (T026/T029/T038): getTrace/returnToAgent/submitCsat/leaveMessage/getQuickReplies
+ * 规格 013 US3/US4/US5 (T026/T029/T038): getTrace/returnToAgent/submitCsat/leaveMessage/getQuickReplies
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { mockRequest } = vi.hoisted(() => ({
@@ -9,7 +9,7 @@ const { mockRequest } = vi.hoisted(() => ({
 vi.mock('@/api/request', () => ({ default: mockRequest }))
 import { getTrace, returnToAgent, submitCsat, leaveMessage, getQuickReplies } from '@/api/session'
 beforeEach(() => { vi.clearAllMocks() })
-describe('session api (013 US3/US4/US5)', () => {
+describe('session api (规格 013 US3/US4/US5)', () => {
   it('getTrace gets /session/{id}/trace', async () => {
     mockRequest.get.mockResolvedValue({ data: { traces: [] } })
     await getTrace(9)
@@ -26,7 +26,7 @@ describe('session api (013 US3/US4/US5)', () => {
     expect(mockRequest.post).toHaveBeenCalledWith('/session/9/csat', { score: 5, comment: 'good' })
   })
   it('leaveMessage posts to /session/{id}/leave-message', async () => {
-    mockRequest.post.mockResolvedValue({ data: { ticket_no: 'T1' } })
+    mockRequest.post.mockResolvedValue({ data: { ticket_no: '' } })
     await leaveMessage(9, 'help')
     expect(mockRequest.post).toHaveBeenCalledWith('/session/9/leave-message', { content: 'help' })
   })
@@ -38,8 +38,8 @@ describe('session api (013 US3/US4/US5)', () => {
 })
 
 
-// ---- 013 US7 (T050): sendMessageStream SSE 解析 ----
-describe('sendMessageStream (013 US7)', () => {
+// ———— 规格 013 US7 (T050): sendMessageStream SSE 解析 ————
+describe('sendMessageStream (规格 013 US7)', () => {
   it('parses SSE chunks and calls onChunk', async () => {
     const { sendMessageStream } = await import('@/api/session')
     const chunks: string[] = []

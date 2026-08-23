@@ -2,7 +2,7 @@
 tests/e2e/test_account_flow.py
 
 端到端全链路：注册(含短信验证码)→登录→进后台首页；登出即时失效；坐席越权 403。
-覆盖 spec SC-001/002/004/005，走真实中间件链路（TestClient）。
+覆盖 spec SC-001/SC-002/SC-004/SC-005，走真实中间件链路（TestClient）。
 TDD: 先写并 FAIL，再实现路由与中间件。
 """
 
@@ -44,13 +44,13 @@ class TestRegisterEndpoint:
 
     def test_register_duplicate_returns_409(self, client, fake_redis):
         _register(client, phone="13800138000")
-        # 清除短信频率限制后重新获取验证码注册同号 -> 409（手机号已存在）
+        # 清除短信频率限制后重新获取验证码注册同号 → 409（手机号已存在）
         fake_redis.delete("vcode_freq:sms:13800138000")
         resp = _register(client, phone="13800138000")
         assert resp.status_code == 409
 
     def test_register_weak_password_returns_422(self, client):
-        # 弱密码 + 有效验证码 -> 422
+        # 弱密码 + 有效验证码 → 422
         resp = client.post(
             REGISTER,
             json={"phone": "13800138002", "password": "12345678", "tenant_name": "A", "code": _code(client, "13800138002")},

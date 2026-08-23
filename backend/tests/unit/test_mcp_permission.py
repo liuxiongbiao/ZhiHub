@@ -58,3 +58,49 @@ class TestParamValidation:
     def test_refund_amount_negative(self):
         with pytest.raises(InvalidParams, match="退款金额"):
             validate_params("request_refund", {"order_no": "ORD-12345678", "phone": "13800000001", "amount": -100})
+
+
+class TestQueryOrderTracking:
+    """: 订单查询工具返回物流单号（演示剧本断言 SF1234567890 依赖）。"""
+
+    def test_shipped_order_includes_tracking_no(self, db):
+        from app.mcp_servers.order_server import _query_order
+        from app.models.order import Order
+        order = Order(tenant_id=1, order_no="ORD-TRACK-001", amount=899.0,
+                      paid_amount=899.0, status="shipped", phone="13911112222",
+                      tracking_no="SF1234567890", version=1)
+        db.add(order)
+        db.commit()
+        result = _query_order(db, tenant_id=1, params={"order_no": "ORD-TRACK-001", "phone": "2222"})
+        assert result["tracking_no"] == "SF1234567890"
+        assert result["status"] == "shipped"
+        assert float(result["amount"]) == 899.0
+
+
+class TestOrderAgentTrackingLine:
+    """: order_agent 确定性回复模板包含物流单号。"""
+
+    def test_shipped_order_reply_includes_tracking_no(self, db, monkeypatch):
+        from app.agents.nodes import order_agent as node
+        from app.models.order import Order
+
+        order = Order(tenant_id=1, order_no="ORD-TRACK-002", amount=899.0,
+                      paid_amount=899.0, status="shipped", phone="13911112222",
+                      tracking_no="SF1234567890", version=1)
+        db.add(order)
+        db.commit()
+
+        from app.services import mcp_service
+        monkeypatch.setattr(mcp_service, "call_tool", lambda *a, **k: {"result": {
+            "order_id": order.id, "order_no": "ORD-TRACK-002",
+            "amount": 899.0, "paid_amount": 899.0, "status": "shipped",
+            "tracking_no": "SF1234567890",
+        }})
+
+        result = node.order_agent_node({
+            "messages": [
+                {"role": "user", "content": "查订单 ORD-TRACK-002，手机号 13911112222"},
+            ],
+            "tenant_id": 1,
+        })
+        assert "物流单号：SF1234567890" in result["final_response"]

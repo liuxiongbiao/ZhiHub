@@ -13,7 +13,7 @@ import pytest
 from app.utils.validators import validate_password_strength, validate_phone
 
 
-# ---------- 手机号格式 ----------
+# ────────── 手机号格式 ──────────
 class TestValidatePhone:
     @pytest.mark.parametrize("phone", ["13800138000", "15912345678", "18888888888"])
     def test_valid_phone_passes(self, phone):
@@ -36,7 +36,7 @@ class TestValidatePhone:
             validate_phone(phone)
 
 
-# ---------- 密码强度 ----------
+# ────────── 密码强度 ──────────
 class TestValidatePasswordStrength:
     @pytest.mark.parametrize("pw", ["abc12345", "Passw0rd", "zh1hub2026"])
     def test_strong_password_passes(self, pw):

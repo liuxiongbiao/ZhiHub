@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_business_streaming.py
 
-职责: 测试 010 业务闭环与流式输出的契约（退款撤销/分级/SSE/知识库质量/计费折算）
+职责: 测试 规格 010 业务闭环与流式输出的契约（退款撤销/分级/SSE/知识库质量/计费折算）
 
 测试内容:
   - TestRefundCancel: 退款撤销契约（pending 可撤，approved 不可撤）
@@ -20,6 +20,7 @@ def _make_refund(db, amount=100.0, status="pending"):
     from app.models.refund_approval import RefundApproval
 
     order = Order(tenant_id=1, order_no="ORD-T001", amount=299.0, paid_amount=299.0, status="refunding")
+    order.payment_trade_no = "ALIPAY-T001"
     db.add(order)
     db.flush()
     approval = RefundApproval(
@@ -41,7 +42,7 @@ class TestRefundCancel:
         from app.services.order_service import cancel_refund
         _, approval = _make_refund(db, amount=100.0, status="pending")
         db.commit()
-        result = cancel_refund(db, approval_id=approval.id, tenant_id=1)
+        result = cancel_refund(db, approval_id=approval.id, tenant_id=1, reason="测试撤销")
         assert result["status"] == "cancelled"
 
     def test_cancel_non_pending_rejected(self, db):
@@ -49,7 +50,7 @@ class TestRefundCancel:
         _, approval = _make_refund(db, amount=100.0, status="approved")
         db.commit()
         with pytest.raises(OrderError, match="不可撤销"):
-            cancel_refund(db, approval_id=approval.id, tenant_id=1)
+            cancel_refund(db, approval_id=approval.id, tenant_id=1, reason="测试撤销")
 
 
 class TestRefundGradedApproval:
@@ -118,12 +119,12 @@ class TestRefundOrderState:
         from app.services.order_service import cancel_refund
         order, approval = _make_refund(db, amount=100.0, status="pending")
         db.commit()
-        cancel_refund(db, approval_id=approval.id, tenant_id=1)
+        cancel_refund(db, approval_id=approval.id, tenant_id=1, reason="测试撤销")
         db.expire_all()
         assert db.get(Order, order.id).status == "paid"
 
     def test_money_moved_cas_conflict_does_not_duplicate_refund(self, db, monkeypatch):
-        """P1-2: 资金已动但订单 CAS 冲突 -> outbox 置 success 防重复退款，标记人工复核。"""
+        """: 资金已动但订单 CAS 冲突 -> outbox 置 success 防重复退款，标记人工复核。"""
         from app.services import order_service as osvc
         from app.models.refund_outbox import RefundOutbox
         order, approval = _make_refund(db, amount=100.0, status="pending")
@@ -131,7 +132,7 @@ class TestRefundOrderState:
 
         invoked: list = []
         monkeypatch.setattr(osvc, "_invoke_alipay_refund",
-                            lambda db_, order_, amount, trade_no=None: invoked.append(1) or True)
+                            lambda db_, order_, amount, trade_no=None, request_no=None: invoked.append(1) or True)
         monkeypatch.setattr(osvc.order_crud, "update_status_optimistic",
                             lambda db_, order_, s: False)
         with pytest.raises(osvc.RefundError):
@@ -143,7 +144,7 @@ class TestRefundOrderState:
         assert "manual review" in (outbox.last_error or "")
 
     def test_external_refund_failure_keeps_outbox_pending(self, db, monkeypatch):
-        """P1-2: 外部退款失败 -> RefundError；审批 approved、订单 refunding、outbox pending（后台可重试）。"""
+        """: 外部退款失败 -> RefundError；审批 approved、订单 refunding、outbox pending（后台可重试）。"""
         from app.models.order import Order
         from app.models.refund_approval import RefundApproval
         from app.models.refund_outbox import RefundOutbox
@@ -151,7 +152,7 @@ class TestRefundOrderState:
         order, approval = _make_refund(db, amount=100.0, status="pending")
         db.commit()
 
-        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None: False)
+        monkeypatch.setattr(osvc, "_invoke_alipay_refund", lambda db_, order_, amount, trade_no=None, request_no=None: False)
         with pytest.raises(osvc.RefundError):
             osvc.approve_refund(db, approval_id=approval.id, decision="approved",
                                 approver_id=1, tenant_id=1, role="admin")
@@ -210,14 +211,16 @@ class TestKnowledgeQuality:
     def test_quality_check_normal(self):
         """正常文本乱码率低。"""
         from app.tasks.knowledge_tasks import check_quality
-        rate = check_quality(["这是正常的中文内容，包含有意义的文字。"])
+        rate, empty_ratio = check_quality(["这是正常的中文内容，包含有意义的文字。"])
         assert rate < 0.3
+        assert empty_ratio < 0.2
 
     def test_quality_check_garbage(self):
         """乱码文本乱码率高。"""
         from app.tasks.knowledge_tasks import check_quality
-        rate = check_quality(["\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0b\x0c\x0e\x0f"])
+        rate, empty_ratio = check_quality(["\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0b\x0c\x0e\x0f"])
         assert rate > 0.3
+        assert empty_ratio < 0.2
 
     def test_storage_limit_under(self, db):
         """未超存储上限 -> 允许上传。"""
@@ -261,5 +264,5 @@ class TestBillingWeighting:
         """逾期检查不抛异常。"""
         from app.services.billing_service import check_overdue
         result = check_overdue(db)
-        # T34: 原"or isinstance(result, dict)"对任何 dict 恒真，改为真断言
+        # 原"or isinstance(result, dict)"对任何 dict 恒真，改为真断言
         assert isinstance(result, dict) and "degraded" in result

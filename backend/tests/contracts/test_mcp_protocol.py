@@ -1,7 +1,7 @@
 """
 backend/tests/contracts/test_mcp_protocol.py
 
-职责: 测试 006 MCP JSON-RPC 2.0 标准协议信封 + 熔断降级契约
+职责: 测试 规格 006 MCP JSON-RPC 2.0 标准协议信封 + 熔断降级契约
 
 测试内容:
   - TestJSONRPCEnevelope: JSON-RPC 2.0 信封结构（成功 result / -32601 方法不存在 /
@@ -113,7 +113,7 @@ class TestJSONRPCEnevelope:
             {"ticket_no": "TK-PROTO01", "phone": "13800000001", "tenant_id": 999},
         )
         resp = call_tool("agent", env, tenant_id=1, db=db)
-        # 服务端注入 tenant_id=1 -> 命中 seeded_ticket -> 返回成功
+        # 服务端注入 tenant_id=1 → 命中 seeded_ticket → 返回成功
         assert "result" in resp
         assert resp["result"]["ticket_no"] == "TK-PROTO01"
 
@@ -165,7 +165,7 @@ class TestCircuitBreaker:
             resp = call_tool("agent", env, tenant_id=1, db=db)
             assert "result" in resp
 
-        # 第6次：已达熔断阈值 -> -32001 + 兜底话术
+        # 第6次：已达熔断阈值 → -32001 + 兜底话术
         resp = call_tool("agent", env, tenant_id=1, db=db)
         assert resp["error"]["code"] == ERR_CIRCUIT_BROKEN
         # 兜底话术含转人工提示（T020）
@@ -260,6 +260,6 @@ class TestCircuitBreaker:
         env = build_request(
             "get_ticket_status", {"ticket_no": "TK-PROTO01", "phone": "13800000001"},
         )
-        # half_open 下一次失败 -> open
+        # half_open 下一次失败 → open
         call_tool("agent", env, tenant_id=1, db=db)
         assert get_state("get_ticket_status")["state"] == STATE_OPEN

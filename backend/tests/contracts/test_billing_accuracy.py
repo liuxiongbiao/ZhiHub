@@ -1,4 +1,4 @@
-"""契约测试：P0-2/P0-3 计费准确性（specs/015-billing-accuracy）。"""
+"""契约测试：规格 015 计费准确性（docs/specs/015-billing-accuracy/spec.md）。"""
 
 import pytest
 
@@ -16,7 +16,7 @@ def _mk_tenant(db, plan_type: str, *, status: str = "active") -> Tenant:
 
 
 class TestUsageQuotaByPlan:
-    """P0-2：incr_usage_for_tenant 必须按租户套餐配额判定超额。"""
+    """：incr_usage_for_tenant 必须按租户套餐配额判定超额。"""
 
     def test_basic_tenant_not_overage_until_2000(self, db, fake_redis):
         t = _mk_tenant(db, "basic")
@@ -43,7 +43,7 @@ class TestUsageQuotaByPlan:
 
 
 class TestInvoiceFormula:
-    """P0-3：账单基础费/超额费按套餐与配置计算。"""
+    """：账单基础费/超额费按套餐与配置计算。"""
 
     def test_basic_invoice_formula(self, db, fake_redis):
         t = _mk_tenant(db, "basic")
@@ -66,14 +66,19 @@ class TestInvoiceFormula:
         """决策开关关闭时，试用租户不生成账单（保留配置逃生口）。"""
         monkeypatch.setattr(settings, "billing_charge_trial", False)
         t = _mk_tenant(db, "trial")
+        tenant_id = t.id
         for _ in range(150):
             billing_service.incr_usage_for_tenant(db, t.id)
         from app.models.billing_invoice import BillingInvoice
         from sqlalchemy import select
 
-        from app.tasks.billing_tasks import generate_monthly_invoices
-        generate_monthly_invoices()
-        rows = db.execute(select(BillingInvoice).where(BillingInvoice.tenant_id == t.id)).scalars().all()
+        from app.tasks import billing_tasks
+
+        monkeypatch.setattr(billing_tasks, "SessionLocal", lambda: db)
+        billing_tasks.generate_monthly_invoices()
+        rows = db.execute(
+            select(BillingInvoice).where(BillingInvoice.tenant_id == tenant_id)
+        ).scalars().all()
         assert rows == []
 
     def test_trial_invoice_by_decision(self, db, fake_redis):
