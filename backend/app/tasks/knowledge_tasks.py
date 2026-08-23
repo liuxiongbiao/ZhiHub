@@ -245,7 +245,10 @@ def _doc_and_tenant_processable(db, doc_id: int, tenant_id: int) -> bool:
 def _compensate_vector_cleanup(doc_id: int) -> None:
     """补偿清理：删除该文档已写入的 Milvus/ES 切片（尽力而为，失败仅记日志）。"""
     try:
-        get_milvus_collection().delete(expr=f"doc_id == {doc_id}")
+        collection = get_milvus_collection()
+        collection.delete(expr=f"doc_id == {doc_id}")
+        # 基准/删除流程会立刻复查；显式 flush 避免已删除切片继续污染后续检索评测。
+        collection.flush()
     except Exception as e:
         logger.warning(f"Compensate milvus cleanup failed for doc {doc_id}: {e}")
     try:

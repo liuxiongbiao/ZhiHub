@@ -52,10 +52,15 @@ class TestRewriteQuery:
 
     def test_colloquial_login_and_plan_terms_are_expanded(self):
         """口语化故障与价格问法补充知识库术语，不降低 0.3 阈值。"""
-        login = rewrite_query([], "登录一直转圈")
-        plan = rewrite_query([], "有没有便宜方案")
+        login = rewrite_query([], "登录的时候一直转圈进不去")
+        plan = rewrite_query([], "有没有便宜点的方案？")
         assert "登录异常" in login
         assert "套餐价格" in plan
+
+    def test_unrelated_cheap_request_is_not_mapped_to_subscription_plan(self):
+        """只有同时出现套餐实体时才扩展，避免把库外的便宜餐厅误映射为套餐。"""
+        query = "附近有没有便宜点的餐厅？"
+        assert rewrite_query([], query) == query
 
     def test_complete_query_with_history_skips_llm(self, monkeypatch):
         """已有历史但当前问句完整时不调用改写 LLM，减少一次外部调用。"""

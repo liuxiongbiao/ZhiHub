@@ -19,6 +19,7 @@ backend/scripts/ragas_eval.py
 import os
 import sys
 import logging
+import argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -243,6 +244,13 @@ def _category_summary(results: list[dict]) -> str:
 
 # ─── 主流程 ───
 def main():
+    parser = argparse.ArgumentParser(description="运行纯向量与混合检索 RAGAS 对照评测")
+    parser.add_argument(
+        "--output",
+        help="独立报告输出路径；省略时保持历史行为，追加到 retrieval_comparison.md",
+    )
+    args = parser.parse_args()
+
     from app.services.retrieval_service import hybrid_search
 
     with open(EVAL_QUESTIONS_PATH, encoding="utf-8") as f:
@@ -271,12 +279,18 @@ def main():
             })
             logger.info(f"  {q['id']} {method}: F={f:.2f} AR={ar:.2f} CR={cr:.2f}")
 
-    # 写入 retrieval_comparison.md（追加，不删现有 Top1 定性表）
+    # 可写独立报告用于版本对照；未指定时追加，不破坏已有 Top1 定性表。
     table = format_results_table(results)
     summary = _category_summary(results)
-    with open(COMPARISON_PATH, "a", encoding="utf-8") as f:
-        f.write("\n\n" + table + summary + "\n")
-    logger.info(f"RAGAS 量化结果已追加到 {COMPARISON_PATH}")
+    output_path = args.output or COMPARISON_PATH
+    if args.output:
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("# 口语化查询改写后 RAGAS 对照报告\n\n" + table + summary + "\n")
+        logger.info(f"RAGAS 量化结果已写入 {output_path}")
+    else:
+        with open(output_path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + table + summary + "\n")
+        logger.info(f"RAGAS 量化结果已追加到 {output_path}")
 
 
 if __name__ == "__main__":

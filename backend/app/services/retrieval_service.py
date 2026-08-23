@@ -111,26 +111,18 @@ class RetrievalResult:
 
 
 # ─── 查询改写 ───
-_COLLOQUIAL_QUERY_EXPANSIONS = (
-    (
-        ("登录一直转圈", "登录转圈", "登录卡住", "登录卡顿", "登录进不去"),
-        "登录页面加载缓慢 登录失败 登录异常 排查 解决方案",
-    ),
-    (
-        ("便宜方案", "便宜的套餐", "最便宜", "省钱套餐", "划算套餐"),
-        "套餐价格 试用版 基础版 专业版 月费 价格对比",
-    ),
-)
-
-
 def _normalize_colloquial_query(query: str) -> str:
-    """为高频口语表达补充知识库术语，不改变置信度阈值。"""
+    """按“业务实体 + 口语意图”补知识库术语，不靠降低 0.3 阈值兜底。"""
     normalized = query.strip()
-    expansions = [
-        terms
-        for phrases, terms in _COLLOQUIAL_QUERY_EXPANSIONS
-        if any(phrase in normalized for phrase in phrases)
-    ]
+    expansions: list[str] = []
+    if "登录" in normalized and any(
+        phrase in normalized for phrase in ("转圈", "卡住", "卡顿", "进不去", "打不开")
+    ):
+        expansions.append("登录页面加载缓慢 登录失败 登录异常 排查 解决方案")
+    if any(entity in normalized for entity in ("方案", "套餐", "版本")) and any(
+        phrase in normalized for phrase in ("便宜", "省钱", "划算", "低价")
+    ):
+        expansions.append("套餐价格 试用版 基础版 专业版 月费 价格对比 降级")
     if not expansions:
         return normalized
     return f"{normalized} {' '.join(expansions)}"
