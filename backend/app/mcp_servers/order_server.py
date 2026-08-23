@@ -56,7 +56,7 @@ ORDER_TOOLS = [
                 "client_request_id": {"type": "string", "description": "幂等键，用于防重"},
                 "tenant_id": {"type": "integer"},
             },
-            "required": ["order_no", "phone", "amount", "client_request_id"],  # T29: tenant_id 服务端注入
+            "required": ["order_no", "phone", "amount", "client_request_id"],  # : tenant_id 服务端注入
         },
     },
 ]
@@ -85,7 +85,7 @@ def handle_order_tool(tool_name: str, params: dict, *, db: Session | None = None
         from app.core.database import SessionLocal
         db = SessionLocal()
     try:
-        # fail-closed（T11）: tenant_id 由 mcp_service.call_tool 注入，
+        # fail-closed: tenant_id 由 mcp_service.call_tool 注入，
         # 缺失说明绕过 call_tool 直调 handler，拒绝（正常链路不可能触发）
         tenant_id = params.get("tenant_id")
         if tenant_id is None:
@@ -142,9 +142,10 @@ def _query_order(db: Session, tenant_id: int, params: dict) -> dict:
     if not verify_phone_suffix(phone, order.phone):
         raise IdentityVerificationError()
 
-    # 返回详情，不含 phone 字段
+    # 返回详情，不含 phone 字段；已发货订单附带物流单号（PRD §3.6 物流查询）
     return {
         "order_id": order.id, "order_no": order.order_no,
         "amount": order.amount, "paid_amount": order.paid_amount,
         "status": order.status,
+        "tracking_no": order.tracking_no,
     }

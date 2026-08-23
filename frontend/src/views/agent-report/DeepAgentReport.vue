@@ -51,7 +51,10 @@
 
       <!-- 报告 -->
       <div v-if="result.report" class="report-section">
-        <h4>分析报告</h4>
+        <div class="report-head">
+          <h4>分析报告</h4>
+          <el-button size="small" @click="downloadReport(result.report, 'deep-agent-report.md')">下载报告</el-button>
+        </div>
         <div class="report-content" v-html="renderMarkdown(result.report)"></div>
       </div>
 
@@ -59,7 +62,7 @@
       <el-alert v-if="result.error" :title="result.error" type="error" show-icon />
     </div>
 
-    <!-- 013 审查 P2-2：历史任务查询（GET /agent/deep-task/{id}） -->
+    <!-- 规格 013 审查 -2：历史任务查询（GET /agent/deep-task/{id}） -->
     <el-card shadow="never" class="history-card">
       <template #header><span class="section-title">查询历史任务</span></template>
       <div class="history-row">
@@ -68,7 +71,10 @@
       </div>
       <el-alert v-if="queryError" :title="queryError" type="error" show-icon class="query-error" />
       <div v-if="taskResult?.report" class="report-section">
-        <h4>历史报告</h4>
+        <div class="report-head">
+          <h4>历史报告</h4>
+          <el-button size="small" @click="downloadReport(taskResult.report, `deep-agent-${taskId}.md`)">下载报告</el-button>
+        </div>
         <div class="report-content" v-html="renderMarkdown(taskResult.report)"></div>
       </div>
     </el-card>
@@ -87,6 +93,17 @@
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '@/api/request'
+
+/** 下载报告为 Markdown 文件（PRD §3.11） */
+function downloadReport(text: string, filename: string) {
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 const goal = ref('')
 const loading = ref(false)
@@ -129,7 +146,15 @@ async function handleExecute() {
   try {
     // DeepAgent 同步执行 3 步规划（真实 LLM 多次调用），需远大于全局 10s 超时
     const res = await request.post('/agent/deep-task', { goal: goal.value.trim() }, { timeout: 300000 })
-    result.value = res.data
+    // DeepAgent 为 Celery 异步任务：轮询 GET 直到 completed/failed（最多 3 分钟）
+    let current = res.data
+    const deadline = Date.now() + 180000
+    while ((current.status === 'pending' || current.status === 'running') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000))
+      const q = await request.get(`/agent/deep-task/${current.task_id}`, { timeout: 10000 })
+      current = q.data
+    }
+    result.value = current
   } catch (e: any) {
     ElMessage.error(e?.message || '执行失败')
   } finally {
@@ -163,6 +188,7 @@ async function handleQueryTask() {
 .steps-section { margin-bottom: 24px; }
 .step-detail { font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; }
 .report-section { margin-top: 24px; }
+.report-head { display: flex; align-items: center; justify-content: space-between; }
 .report-content { background: #fafafa; padding: 20px; border-radius: 8px; line-height: 1.8; }
 .presets { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; }
 .presets h4 { margin-bottom: 8px; }

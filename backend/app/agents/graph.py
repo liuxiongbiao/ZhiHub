@@ -7,7 +7,7 @@ backend/app/agents/graph.py
 核心设计:
   定义 AgentState（TypedDict）作为各节点共享的状态，router 为入口节点，条件边 _route_intent
   按优先级路由（愤怒情绪 > 敏感操作 > 低置信度 > 正常意图）到对应 Agent 节点。
-  各 Agent 节点执行完直连 END。009 加了 AGENT_TOOL_MODE 切换：fc 模式注册 ticket_agent_fc_node，
+  各 Agent 节点执行完直连 END。规格 009 加了 AGENT_TOOL_MODE 切换：fc 模式注册 ticket_agent_fc_node，
   默认 mcp 模式注册 ticket_agent_node，对比两种工具调用范式。转人工用同步标记 should_interrupt
   而非 true interrupt（同步 invoke 架构不支持 pause/resume）。
 
@@ -107,7 +107,7 @@ def build_graph() -> CompiledStateGraph:
     # 注册节点
     builder.add_node("router", router_node)
     builder.add_node("knowledge_agent", knowledge_agent_node)
-    # 009: 按 AGENT_TOOL_MODE 切换 MCP / Function Calling（默认 mcp）
+    # 规格 009: 按 AGENT_TOOL_MODE 切换 MCP / Function Calling（默认 mcp）
     from app.config import settings
     if settings.agent_tool_mode == "fc":
         # FC 模式：注册 Function Calling 版工单 Agent，对比 MCP 范式
@@ -168,7 +168,7 @@ def _route_intent(state: AgentState) -> Literal[
     sentiment = state.get("sentiment", "normal")
     confidence = state.get("confidence", 0.5)
 
-    # 1. 情绪愤怒 -> 必须转人工（最高优先级，压过一切意图）
+    # 1. 情绪愤怒 → 必须转人工（最高优先级，压过一切意图）
     if sentiment == "angry":
         logger.info(f"Route: sentiment=angry -> human_handoff")
         return "human_handoff"
@@ -177,13 +177,13 @@ def _route_intent(state: AgentState) -> Literal[
         logger.info(f"Route: intent=sensitive_action -> human_handoff")
         return "human_handoff"
 
-    # 3. 低置信度 -> 转人工（不让不确定的意图进入业务节点，避免误调工具）
+    # 3. 低置信度 → 转人工（不让不确定的意图进入业务节点，避免误调工具）
     if confidence < 0.4:
         logger.info(f"Route: low confidence ({confidence:.2f}) -> human_handoff")
         return "human_handoff"
 
     # 4. 正常路由：按意图分发到对应 Agent
-    # T23: 白名单归一化——LLM 可能输出映射表外的意图（如 "other"），原样返回会让
+    # 白名单归一化——LLM 可能输出映射表外的意图（如 "other"），原样返回会让
     # LangGraph 条件边查表 KeyError，被 agent_service 裸兜底吞成泛化报错
     allowed = {"knowledge_consult", "ticket_query", "order_query"}
     if intent not in allowed:

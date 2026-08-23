@@ -47,9 +47,13 @@ def list_tickets(
 def create_ticket(
     db: Session, *, tenant_id: int, ticket_no: str, title: str,
     description: str | None = None, priority: str = "medium", category: str = "general",
+    created_by: str = "staff",
 ) -> Ticket:
     """创建工单（含工单号、标题、优先级、分类）。"""
-    ticket = Ticket(tenant_id=tenant_id, ticket_no=ticket_no, title=title, description=description, priority=priority, category=category)
+    ticket = Ticket(
+        tenant_id=tenant_id, ticket_no=ticket_no, title=title,
+        description=description, priority=priority, category=category, created_by=created_by,
+    )
     db.add(ticket)
     db.flush()
     return ticket

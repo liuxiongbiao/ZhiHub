@@ -21,7 +21,7 @@ class AnswerFeedback(BaseModel):
     __tablename__ = "answer_feedback"
 
     # 关联消息 ID（一条消息最多一条反馈，unique 约束兜底去重）
-    message_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("messages.id", name="fk_answer_feedback_message_id"), nullable=False, unique=True, index=True)  # T27 FK
+    message_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("messages.id", name="fk_answer_feedback_message_id"), nullable=False, unique=True, index=True)  #  FK
     # 评分: 1=👍（有用）/ -1=👎（无用）
     score: Mapped[int] = mapped_column(nullable=False)
     # bad_case 标记: 👎 时 True，标记为低质回答待人工复盘

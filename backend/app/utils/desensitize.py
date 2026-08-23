@@ -1,7 +1,7 @@
 r"""
 backend/app/utils/desensitize.py
 
-职责: PII 脱敏（008-observability-eval US3）-- trace 入库前对手机号脱敏，前 3 + **** + 后 4。
+职责: PII 脱敏（规格 008 US3）-- trace 入库前对手机号脱敏，前 3 + **** + 后 4。
 
 核心设计:
   用正则识别中国大陆手机号（1 开头 + 9 位数字共 11 位），脱敏为 138****0001 格式，单向不可逆

@@ -1,14 +1,14 @@
 """
 backend/app/tasks/cleanup_tasks.py
 
-职责: 空闲会话定时收尾（007-session-lifecycle US2）、退款超时取消、文档过期摘除、
+职责: 空闲会话定时收尾（规格 007 US2）、退款超时取消、文档过期摘除、
       订单超时流转（PRD 3.6）、试用版到期降级只读（PRD 3.1）
 
 核心设计:
   后台线程每 5min 扫描，用 Core UPDATE WHERE 条件原子更新状态。
   条件中带 updated_at < threshold，用户并发消息会先刷新 updated_at 使 WHERE 不匹配 -> 跳过（防竞态）。
 
-状态流转（007 session lifecycle）:
+状态流转（规格 007 session lifecycle）:
   AGENT_HANDLING / WAITING_HUMAN（30min 无活动）-> RESOLVED
   RESOLVED（60min 无活动，即收尾后约 30min）-> CLOSED
 
@@ -42,6 +42,7 @@ backend/app/tasks/cleanup_tasks.py
 import logging
 from datetime import datetime, timedelta, timezone
 
+from celery import shared_task
 from sqlalchemy import update
 from sqlalchemy.orm import Session as DbSession
 
@@ -58,17 +59,50 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+@shared_task(name="app.tasks.cleanup_tasks.run_periodic_maintenance")
+def run_periodic_maintenance() -> dict:
+    """Celery beat 周期维护入口；每次任务独立创建并关闭数据库会话。"""
+    from app.core.database import SessionLocal
+    from app.services.order_service import process_refund_outbox_batch
+
+    db = SessionLocal()
+    try:
+        return {
+            "sessions": cleanup_idle_sessions(db),
+            "refunds": cleanup_overdue_refunds(db),
+            "orders": cleanup_expired_orders(db),
+            "documents": cleanup_expired_docs(db),
+            "trials": cleanup_trial_degradation(db),
+            "presence": cleanup_agent_presence(),
+            "reminders": remind_expiring_docs(db),
+            "refund_outbox": process_refund_outbox_batch(db),
+        }
+    finally:
+        db.close()
+
+
+def cleanup_agent_presence() -> dict:
+    """清理无 TTL 或旧 Set 结构的客服 presence；正常过期由 Redis 自身处理。"""
+    from app.services.session_service import cleanup_expired_agent_presence
+
+    removed = cleanup_expired_agent_presence()
+    return {"presence_removed": removed}
+
+
 def cleanup_idle_sessions(db: DbSession) -> dict:
     """收尾空闲会话。返回 {"resolved": N, "closed": N}。
 
     两阶段状态跃迁:
-      阶段1: agent_handling/waiting_human 且 updated_at < now-30min -> resolved
+      阶段1: agent_handling/waiting_human/human_handling 且 updated_at < now-30min -> resolved
       阶段2: resolved 且 updated_at < now-60min -> closed
 
-    防竞态: Core UPDATE WHERE updated_at < threshold 是原子操作。
-    用户在阈值边缘发消息会先刷新 updated_at，WHERE 不匹配 -> 跳过（不会误跃迁）。
-    不 bump updated_at: Core update 不触发 ORM onupdate，RESOLVED 的 updated_at 仍是
-    最后活动时间，故 60min 阈值 = 活动 30min + RESOLVED 窗 30min，恰好"RESOLVED 再过 30min"。
+     计费口径（PRD 3.4/3.9）: 会话进入 RESOLVED 且存在有效回复（effective_reply=True）
+    时，在同一数据库事务原子领取并创建计费事件；Redis 投影失败由 pending 事件重试。
+
+    防竞态: 阶段2 用 Core UPDATE WHERE updated_at < threshold 原子更新；
+    阶段1 用 UPDATE WHERE billed=false 原子领取，billed 与计费事件在同一事务提交。
+    不 bump updated_at: ORM 赋值不触发 onupdate（Core update 同样不触发），
+    RESOLVED 的 updated_at 仍是最后活动时间，故 60min 阈值 = 活动 30min + RESOLVED 窗 30min。
 
     Args:
         db: SQLAlchemy Session（由调用方管理事务）
@@ -80,17 +114,66 @@ def cleanup_idle_sessions(db: DbSession) -> dict:
     active_threshold = now - timedelta(minutes=ACTIVE_TIMEOUT_MINUTES)
     resolved_threshold = now - timedelta(minutes=RESOLVED_TIMEOUT_MINUTES)
 
-    # 阶段1: 活跃态 -> RESOLVED（updated_at < 30min 前表示 30min 无活动）
-    r1 = db.execute(
-        update(Session)
-        .where(
-            Session.status.in_(["agent_handling", "waiting_human"]),
+    # 阶段1: 活跃态（含 human_handling）→ RESOLVED（updated_at < 30min 前表示 30min 无活动）
+    from sqlalchemy import select
+    candidates = db.execute(
+        select(Session).where(
+            Session.status.in_(["agent_handling", "waiting_human", "human_handling"]),
             Session.updated_at < active_threshold,
         )
-        .values(status="resolved")
+    ).scalars().all()
+
+    from app.crud import billing as billing_crud
+    from app.services.billing_service import (
+        consume_pending_billing_events,
+        create_session_billing_event,
     )
 
-    # 阶段2: RESOLVED -> CLOSED（updated_at < 60min 前，= 活动 30min + RESOLVED 30min）
+    resolved_n = 0
+    # 记录本轮回收到 RESOLVED 的会话 id，事务提交后向终端用户广播 session_ended
+    # （widget.js 据此展示"会话已结束"并停止重连；fire-and-forget，不阻塞清理）。
+    ended_session_ids: list[int] = []
+    for s in candidates:
+        # 有效回复：状态跃迁与 billed=false 领取合并为一条条件 UPDATE。
+        if s.effective_reply and not s.billed:
+            if billing_crud.claim_idle_session_for_billing(
+                db,
+                session_id=s.id,
+                active_threshold=active_threshold,
+            ):
+                create_session_billing_event(db, s)
+                resolved_n += 1
+                ended_session_ids.append(s.id)
+            continue
+
+        # 无有效回复或已经有事件的会话只做原子状态跃迁，不创建计费事件。
+        transition = db.execute(
+            update(Session)
+            .where(
+                Session.id == s.id,
+                Session.status.in_(["agent_handling", "waiting_human", "human_handling"]),
+                Session.updated_at < active_threshold,
+            )
+            .values(status="resolved")
+        )
+        resolved_n += transition.rowcount or 0
+        if transition.rowcount:
+            ended_session_ids.append(s.id)
+
+    # 升级兼容：旧流程 Redis 失败后可能留下 resolved/closed + billed=false，
+    # 不再依赖 resolved 扫描执行计费，而是为其补建事件后交给统一消费者。
+    legacy_unbilled = db.execute(
+        select(Session).where(
+            Session.status.in_(["resolved", "closed"]),
+            Session.effective_reply.is_(True),
+            Session.billed.is_(False),
+        )
+    ).scalars().all()
+    for s in legacy_unbilled:
+        if billing_crud.claim_legacy_resolved_session(db, s.id):
+            create_session_billing_event(db, s)
+
+    # 阶段2: RESOLVED → CLOSED（updated_at < 60min 前，= 活动 30min + RESOLVED 30min）
     r2 = db.execute(
         update(Session)
         .where(
@@ -101,18 +184,106 @@ def cleanup_idle_sessions(db: DbSession) -> dict:
     )
 
     db.commit()
-    resolved_n = r1.rowcount or 0
+    # 事件提交后再投影 Redis；失败事件保持 pending，下轮与会话状态无关地重试。
+    consume_pending_billing_events(db)
+    # 向终端用户广播会话结束（事务已提交，状态跃迁生效；无连接时 no-op）
+    from app.core.ws_manager import manager as _ws_manager
+
+    for ended_id in ended_session_ids:
+        _ws_manager.broadcast_to_session_sync(
+            ended_id,
+            {
+                "type": "session_ended",
+                "payload": {"session_id": ended_id, "status": "resolved"},
+            },
+        )
     closed_n = r2.rowcount or 0
     if resolved_n or closed_n:
         logger.info(f"Cleanup: {resolved_n} -> resolved, {closed_n} -> closed")
     return {"resolved": resolved_n, "closed": closed_n}
 
 
+def remind_expiring_docs(db: DbSession) -> dict:
+    """知识库文档到期前 7 天邮件提醒（PRD 3.2 生命周期治理）。
+
+    扫描 expires_at 位于 [now, now+7d] 且未过期的文档，向租户管理员（有邮箱者）发送提醒邮件；
+    每文档成功提醒一次（Redis 去重键，TTL 8 天），发送失败/无管理员邮箱时短冷却后重试。
+    """
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.tenant_member import TenantMember
+    from app.models.user import User
+    from sqlalchemy import select
+
+    from app.core.redis import get_redis
+
+    now = _utcnow()
+    horizon = now + timedelta(days=7)
+    docs = db.execute(
+        select(KnowledgeDocument).where(
+            KnowledgeDocument.expires_at.isnot(None),
+            KnowledgeDocument.expires_at >= now,
+            KnowledgeDocument.expires_at <= horizon,
+            KnowledgeDocument.quality_status != "expired",
+        )
+    ).scalars().all()
+
+    reminded = 0
+    r = get_redis()
+    for doc in docs:
+        key = f"doc_expiry_remind:{doc.id}"
+        if r.exists(key):
+            continue
+
+        emails = [
+            e for e in db.execute(
+                select(User.email)
+                .join(TenantMember, TenantMember.user_id == User.id)
+                .where(
+                    TenantMember.tenant_id == doc.tenant_id,
+                    TenantMember.role == "admin",
+                    User.email.isnot(None),
+                )
+            ).scalars().all() if e
+        ]
+        if not emails:
+            # 管理员暂无邮箱：短冷却后重试（补邮箱后仍可触达）
+            r.set(key, "1", ex=6 * 3600)
+            continue
+
+        from app.core.email_client import EmailSendError, send_email
+
+        sent_ok = True
+        for email in emails:
+            try:
+                send_email(
+                    to=email,
+                    subject="知识库文档即将到期提醒",
+                    text=(
+                        f"知识库文档「{doc.filename}」将于 {doc.expires_at:%Y-%m-%d %H:%M} 到期，"
+                        "到期后将自动从检索库摘除，不再参与回答。"
+                        "请登录运营后台确认是否延期或更新该文档。"
+                    ),
+                )
+            except EmailSendError as e:
+                logger.warning(f"Expiry remind email failed (doc={doc.id}, to={email}): {e}")
+                sent_ok = False
+
+        if sent_ok:
+            r.set(key, "1", ex=8 * 24 * 3600)
+            reminded += 1
+            logger.info(f"Doc expiry remind sent (doc={doc.id}, emails={len(emails)})")
+        else:
+            # 发送失败：短冷却后重试，避免每轮循环反复尝试
+            r.set(key, "1", ex=6 * 3600)
+
+    return {"docs_reminded": reminded}
+
+
 def cleanup_overdue_refunds(db: DbSession) -> dict:
-    """撤销售后超时未审批的退款（010 US1，pending 超 7 天 -> cancelled）。
+    """撤销售后超时未审批的退款（规格 010 US1，pending 超 7 天 -> cancelled）。
 
     防止退款申请无限期挂起，超时自动取消释放配额。
-    T21: 同步把订单 CAS 回 paid——原实现只取消审批，订单永久停 refunding
+    : 同步把订单 CAS 回 paid——原实现只取消审批，订单永久停 refunding
     （不能重新支付、不能退款、不能流转），与手动撤销 cancel_refund 的语义对齐。
     延迟 import: 避免模块加载时循环依赖。
 
@@ -142,7 +313,8 @@ def cleanup_overdue_refunds(db: DbSession) -> dict:
         # （如已 refunded），该审批留给正常流程，不取消
         order = db.get(Order, ap.order_id)
         if order is not None and order.status == "refunding":
-            if not order_crud.update_status_optimistic(db, order, "paid"):
+            restore_status = ap.pre_status or "paid"
+            if not order_crud.update_status_optimistic(db, order, restore_status):
                 continue
         # 审批条件更新（WHERE status=pending）防并发 approve 已处理被覆盖
         res = db.execute(
@@ -159,9 +331,9 @@ def cleanup_overdue_refunds(db: DbSession) -> dict:
 
 
 def cleanup_expired_docs(db: DbSession) -> dict:
-    """到期知识文档摘除（010 US3，expires_at < now -> quality_status=expired）。
+    """到期知识文档摘除（规格 010 US3，expires_at < now -> quality_status=expired）。
 
-    摘除而非仅标记（T22）: 检索切片无 quality_status 字段，标记 expired 后必须
+    摘除而非仅标记: 检索切片无 quality_status 字段，标记 expired 后必须
     物理删除 Milvus/ES 切片（复用版本管理的删除模式），否则到期文档仍被召回。
     原始文档记录保留（MySQL），便于审计/恢复。已标记 expired 的不重复处理。
 
@@ -190,7 +362,7 @@ def cleanup_expired_docs(db: DbSession) -> dict:
     for doc in docs:
         # 先物理删除检索库切片（Milvus + ES），成功后才标记 expired：
         # 若先标 expired 再删，删除失败时 expired 已提交，下轮 WHERE quality_status != 'expired'
-        # 会排除该 doc -> 永不重试，切片残留仍可被召回。删除幂等，失败下轮重试。
+        # 会排除该 doc → 永不重试，切片残留仍可被召回。删除幂等，失败下轮重试。
         try:
             _delete_doc_chunks(doc.id)
             doc.quality_status = "expired"

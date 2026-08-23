@@ -5,13 +5,13 @@ backend/app/agents/nodes/order_agent.py
 
 核心设计:
   与 ticket_agent 同构：槽位收集循环（order_no + phone 双因子），缺槽位反问不调工具（FR-004），
-  双齐后走 MCP 信封调用 query_order。phone 是 006 加的双因子槽位。订单状态机比工单复杂
+  双齐后走 MCP 信封调用 query_order。phone 是 规格 006 加的双因子槽位。订单状态机比工单复杂
   （7 态：created/paid/shipped/completed/cancelled/refunding/refunded），状态映射更全。
 
 关键技术点:
   - 槽位收集循环: 同 ticket_agent，缺槽位反问不调工具
   - 双因子槽位: order_no + phone
-  - MCP 信封调用: build_request + call_tool，复用 006 安全加固
+  - MCP 信封调用: build_request + call_tool，复用 规格 006 安全加固
   - 7 态状态映射: 订单状态机完整中文映射
   - 错误处理: 熔断转人工，身份校验失败防枚举统一提示
 
@@ -30,10 +30,19 @@ from app.mcp_servers.base_server import ERR_CIRCUIT_BROKEN, build_request
 logger = logging.getLogger(__name__)
 
 _PHONE_RE = re.compile(r"1\d{10}")
+# 订单号 token（可含多段连字符，如 ORD-DEMO-0003）
+_ORDER_NO_TOKEN_RE = re.compile(r"ORD-[A-Z0-9]+(?:-[A-Z0-9]+)*", re.IGNORECASE)
+# 独立的 4 位数字（前后都不是数字/字母，且在剔除订单号 token 后搜索）
+_PHONE_SUFFIX_RE = re.compile(r"(?<![0-9A-Za-z])(\d{4})(?![0-9A-Za-z])")
 
 
 def _extract_phone(messages: list[dict], slots: dict) -> str:
-    """从 slots 或最近用户消息提取手机号（与 ticket_agent 同逻辑）。"""
+    """从 slots 或最近用户消息提取手机号（与 ticket_agent 同逻辑）。
+
+    : 接受完整 11 位手机号或独立的 4 位后缀（双因子实际只校验后 4 位）。
+    先找完整号码；找不到再在剔除订单号 token 后的文本里找独立 4 位数字，
+    避免 ORD-DEMO-0003 中的数字段被误当作后缀。
+    """
     phone = slots.get("phone", "").strip()
     if phone:
         return phone
@@ -42,13 +51,19 @@ def _extract_phone(messages: list[dict], slots: dict) -> str:
             match = _PHONE_RE.search(m["content"])
             if match:
                 return match.group(0)
+            stripped = _ORDER_NO_TOKEN_RE.sub(" ", m["content"])
+            suffix = _PHONE_SUFFIX_RE.search(stripped)
+            if suffix:
+                return suffix.group(1)
             break
     return ""
 
 
 def _is_valid_phone(phone: str) -> bool:
-    """校验手机号格式：非空 + 纯数字 + 11 位。"""
-    return bool(phone) and phone.isdigit() and len(phone) == 11
+    """校验手机号格式：完整 11 位纯数字，或 4 位后缀纯数字。"""
+    if not phone or not phone.isdigit():
+        return False
+    return len(phone) in (4, 11)
 
 
 @observe(name="order_agent")
@@ -76,7 +91,7 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     messages: list[dict] = state.get("messages", [])
     slots: dict = state.get("slots", {})
-    tenant_id: int | None = state.get("tenant_id")  # M9: 不默认租户 1，缺失则 None 让 call_tool fail-closed
+    tenant_id: int | None = state.get("tenant_id")  # : 不默认租户 1，缺失则 None 让 call_tool fail-closed
 
     # 1. 提取订单号（slots 优先，否则扫消息正则）
     order_no = slots.get("order_no", "").strip()
@@ -86,12 +101,12 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
             if m.get("role") == "user":
                 last_user = m["content"]
                 break
-        match = re.search(r"ORD-[A-Z0-9]+", last_user, re.IGNORECASE)
+        match = _ORDER_NO_TOKEN_RE.search(last_user)
         if match:
-            order_no = match.group(0)
+            order_no = match.group(0).upper()
             slots["order_no"] = order_no
 
-    # 缺订单号 -> 反问
+    # 缺订单号 → 反问
     if not order_no:
         return {
             "final_response": "请提供您的订单编号（格式：ORD-XXXXXXXX），以便我为您查询订单信息。",
@@ -104,15 +119,18 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     if phone:
         slots["phone"] = phone
 
-    # 3. 缺/格式错手机号 -> 反问（FR-004：不调工具）
+    # 3. 缺/格式错手机号 → 反问（FR-004：不调工具；接受后四位或完整号码）
     if not _is_valid_phone(phone):
         return {
-            "final_response": "为保护您的账户安全，查询订单需验证身份。请提供您在订单中绑定的手机号（11位）。",
+            "final_response": (
+                "为保护您的账户安全，查询订单需验证身份。"
+                "请提供您在订单中绑定的手机号后四位（或完整 11 位手机号）。"
+            ),
             "slots": slots,
             "current_agent": "order_agent",
         }
 
-    # 4. 双槽齐全 -> 调用 MCP（JSON-RPC 信封）
+    # 4. 双槽齐全 → 调用 MCP（JSON-RPC 信封）
     try:
         from app.services.mcp_service import call_tool
 
@@ -124,7 +142,7 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
 
         if "error" in resp:
             err = resp["error"]
-            # 熔断兜底（US4）：工具熔断中 -> 兜底话术 + 转人工
+            # 熔断兜底（US4）：工具熔断中 → 兜底话术 + 转人工
             if err.get("code") == ERR_CIRCUIT_BROKEN:
                 return {
                     "final_response": err.get("message", "订单查询服务暂时不可用，已转接人工客服。"),
@@ -152,6 +170,10 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
             f"金额：{data.get('amount', 0):.2f} 元\n"
             f"实付：{data.get('paid_amount', 0):.2f} 元"
         )
+        # 已发货订单附带物流单号（PRD §3.6 物流查询）
+        tracking_no = data.get("tracking_no")
+        if tracking_no:
+            response += f"\n物流单号：{tracking_no}"
         return {"final_response": response, "current_agent": "order_agent"}
 
     except Exception as e:
@@ -159,4 +181,5 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
         return {
             "final_response": "查询订单时遇到问题，请稍后重试。",
             "current_agent": "order_agent",
+            "generation_failed": True,
         }

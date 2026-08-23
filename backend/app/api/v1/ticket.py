@@ -33,11 +33,14 @@ def _get_tenant_id(request: Request) -> int:
 
 
 class CreateTicketRequest(BaseModel):
-    """用户提交工单请求（closure-plan P1-4，PRD 3.8）。"""
+    """用户提交工单请求（PRD §3.8）。"""
     title: str
     description: str | None = None
     priority: str = "medium"
     category: str = "general"
+    # 可靠幂等键（可选）。同租户同键重复提交返回首次创建的工单，
+    # 供 E2E/客户端对工单 POST 做防重放（与退款幂等模式一致）。
+    client_request_id: str | None = None
 
 
 @router.post("", status_code=201)
@@ -47,6 +50,7 @@ def create_ticket(body: CreateTicketRequest, request: Request, db: Session = Dep
     return do_create(
         db, tenant_id=_get_tenant_id(request), title=body.title,
         description=body.description, priority=body.priority, category=body.category,
+        created_by="staff", client_request_id=body.client_request_id,
     )
 
 
@@ -60,7 +64,7 @@ def list_tickets(
     tenant_id = _get_tenant_id(request)
     items, total = ticket_crud.list_tickets(db, tenant_id, status=status_filter, page=page, page_size=page_size)
     return {
-        "items": [{"id": t.id, "ticket_no": t.ticket_no, "title": t.title, "status": t.status, "priority": t.priority, "created_at": t.created_at} for t in items],
+        "items": [{"id": t.id, "ticket_no": t.ticket_no, "title": t.title, "status": t.status, "priority": t.priority, "created_by": t.created_by, "created_at": t.created_at} for t in items],
         "total": total, "page": page, "page_size": page_size,
     }
 
@@ -72,4 +76,4 @@ def get_ticket_detail(ticket_id: int, request: Request, db: Session = Depends(ge
     ticket = ticket_crud.get_by_id(db, ticket_id, tenant_id)
     if ticket is None:
         raise HTTPException(status_code=404, detail="工单不存在")
-    return {"id": ticket.id, "ticket_no": ticket.ticket_no, "title": ticket.title, "description": ticket.description, "status": ticket.status, "priority": ticket.priority, "created_at": ticket.created_at}
+    return {"id": ticket.id, "ticket_no": ticket.ticket_no, "title": ticket.title, "description": ticket.description, "status": ticket.status, "priority": ticket.priority, "created_by": ticket.created_by, "created_at": ticket.created_at}

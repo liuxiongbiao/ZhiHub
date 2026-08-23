@@ -6,13 +6,13 @@ backend/app/agents/nodes/ticket_agent.py
 
 核心设计:
   典型的槽位收集循环：先从 slots 和消息正则提取 ticket_no 和 phone，缺哪个反问哪个，
-  双齐后才调 MCP 工具（FR-004：缺槽位不调工具，避免无效调用）。phone 是 006 加的双因子槽位--
+  双齐后才调 MCP 工具（FR-004：缺槽位不调工具，避免无效调用）。phone 是 规格 006 加的双因子槽位--
   查工单需手机号+工单号双因子，缺 phone 反问，不调工具。工具调用走 JSON-RPC 信封（build_request
-  构造，mcp_service.call_tool 执行），复用 006 的权限/熔断/双因子安全加固。
+  构造，mcp_service.call_tool 执行），复用 规格 006 的权限/熔断/双因子安全加固。
 
 关键技术点:
   - 槽位收集循环: 缺槽位反问，不调工具（FR-004），多轮逐步补全
-  - 双因子槽位: ticket_no + phone，缺 phone 反问（006 安全加固）
+  - 双因子槽位: ticket_no + phone，缺 phone 反问（规格 006 安全加固）
   - MCP 信封调用: build_request 构造请求，call_tool 执行，解析响应信封
   - 错误处理: 熔断(-32001) -> 兜底+转人工；身份校验失败(-32602) -> 统一友好提示防枚举
   - 结果转自然语言: status_map 把英文状态映射中文，拼友好回复
@@ -88,7 +88,7 @@ def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     messages: list[dict] = state.get("messages", [])
     slots: dict = state.get("slots", {})
-    tenant_id: int | None = state.get("tenant_id")  # M9: 不默认租户 1，缺失则 None 让 call_tool fail-closed
+    tenant_id: int | None = state.get("tenant_id")  # : 不默认租户 1，缺失则 None 让 call_tool fail-closed
 
     # 1. 提取工单号（slots 优先，否则扫消息正则）
     ticket_no = slots.get("ticket_no", "").strip()
@@ -103,7 +103,7 @@ def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
             ticket_no = match.group(0)
             slots["ticket_no"] = ticket_no
 
-    # 缺工单号 -> 反问（不调工具）
+    # 缺工单号 → 反问（不调工具）
     if not ticket_no:
         return {
             "final_response": "请提供您的工单编号（格式：TK-XXXXXXXX），以便我为您查询工单进度。",
@@ -116,7 +116,7 @@ def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     if phone:
         slots["phone"] = phone
 
-    # 3. 缺/格式错手机号 -> 反问（FR-004：不调用查询工具）
+    # 3. 缺/格式错手机号 → 反问（FR-004：不调用查询工具）
     if not _is_valid_phone(phone):
         return {
             "final_response": "为保护您的账户安全，查询工单需验证身份。请提供您在工单中绑定的手机号（11位）。",
@@ -124,7 +124,7 @@ def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
             "current_agent": "ticket_agent",
         }
 
-    # 4. 双槽齐全 -> 调用 MCP（JSON-RPC 信封）
+    # 4. 双槽齐全 → 调用 MCP（JSON-RPC 信封）
     try:
         from app.services.mcp_service import call_tool
 
@@ -137,14 +137,14 @@ def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
 
         if "error" in resp:
             err = resp["error"]
-            # 熔断兜底（US4）：工具熔断中 -> 兜底话术 + 转人工
+            # 熔断兜底（US4）：工具熔断中 → 兜底话术 + 转人工
             if err.get("code") == ERR_CIRCUIT_BROKEN:
                 return {
                     "final_response": err.get("message", "工单查询服务暂时不可用，已转接人工客服。"),
                     "current_agent": "ticket_agent",
                     "should_interrupt": True,
                 }
-            # -32602 身份校验失败/不存在 -> 统一友好提示（不泄露工单是否存在，防枚举）
+            # -32602 身份校验失败/不存在 → 统一友好提示（不泄露工单是否存在，防枚举）
             return {
                 "final_response": "未查询到匹配信息，请确认工单号和手机号是否正确。",
                 "current_agent": "ticket_agent",
@@ -168,4 +168,5 @@ def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
         return {
             "final_response": "查询工单时遇到问题，请稍后重试。",
             "current_agent": "ticket_agent",
+            "generation_failed": True,
         }

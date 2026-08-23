@@ -51,10 +51,14 @@ export interface RebuildResponse {
 
 /**
  * 上传文档
+ * @param expiresDays 文档有效期天数：缺省=系统默认90天，0=永久（PRD §3.2 生命周期治理）
  */
-export function uploadDocument(file: File) {
+export function uploadDocument(file: File, expiresDays?: number) {
   const formData = new FormData()
   formData.append('file', file)
+  if (expiresDays !== undefined) {
+    formData.append('expires_days', String(expiresDays))
+  }
   return request.post<DocumentItem>('/knowledge/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
@@ -76,6 +80,11 @@ export function getDocumentList(params: {
  */
 export function rebuildDocument(docId: number) {
   return request.post<RebuildResponse>(`/knowledge/${docId}/rebuild`)
+}
+
+/** 删除文档（失败/过期文档清理，释放套餐配额） */
+export function deleteDocument(docId: number) {
+  return request.delete<{ doc_id: number; deleted: boolean }>(`/knowledge/${docId}`)
 }
 
 /**

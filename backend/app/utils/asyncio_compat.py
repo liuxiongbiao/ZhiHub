@@ -1,11 +1,11 @@
 """app/utils/asyncio_compat.py
 
 职责: 在事件循环线程中安全执行"内部使用 asyncio.run 的同步函数"
-      （典型场景：PydanticAI Agent.run_sync 在 async 端点 /session/message/stream
+      （典型场景：LangChain 结构化输出链等同步 LLM 调用在 async 端点 /session/message/stream
       经 LangGraph graph.invoke 同步调用时，asyncio.run 抛
       "This event loop is already running" → 功能静默降级）。
 
-修复背景（013 UI 联调实证）:
+修复背景（规格 013 UI 联调实证）:
   - Router 意图识别在流式对话中持续降级（confidence=0.3 → 倾向转人工）
   - 长期记忆抽取持续降级（extract_facts degraded）
   均因 run_sync 在已有事件循环线程内调用 asyncio.run。

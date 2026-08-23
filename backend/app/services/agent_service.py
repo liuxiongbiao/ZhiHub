@@ -43,8 +43,35 @@ MAX_TOKEN_BUDGET = 4000  # 上下文 token 上限，超则截断历史
 MAX_ROUNDS = settings.max_rounds_per_session  # 单会话最大轮次（PRD 3.4: 15，可配置）
 
 
+def _quota_status(db: DbSession, tenant_id: int) -> str:
+    """请求入口配额状态标记（PRD 3.4：仅标记「配额内/超额」，不扣减）。"""
+    try:
+        from app.services.billing_service import check_quota, get_tenant_quota
+
+        quota = get_tenant_quota(db, tenant_id)
+        info = check_quota(tenant_id, quota=quota)
+        return "overage" if info["count"] >= quota else "within"
+    except Exception:
+        return "unknown"
+
+
 class AgentError(Exception):
     """Agent 处理异常基类."""
+
+
+def _llm_disabled_fallback(base_state: dict | None = None) -> dict:
+    """LLM 开关关闭时的显式降级结果，避免实例化任何模型客户端。"""
+    return {
+        **(base_state or {}),
+        "final_response": "智能问答暂不可用，已为您转接人工客服，请稍候。",
+        "intent": "knowledge_consult",
+        "confidence": 0.0,
+        "sentiment": "normal",
+        "retrieval_result": [],
+        "generation_failed": True,
+        "degraded": True,
+        "should_interrupt": True,
+    }
 
 
 def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
@@ -53,18 +80,37 @@ def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
     事件契约与前端 AgentConsole（ws-client onMessage）对齐:
       {"type": "new_session", "session_id": N, "status": "waiting_human", "tenant_id": T}
     fire-and-forget（broadcast_to_tenant_sync），无在线坐席或失败不阻塞业务。
+
+    : 同时向终端用户会话通道广播 waiting_human 事件，让 widget.js 实时展示
+    "正在为您转接人工客服"（统一 type/payload envelope，与 agent_message 同通道）。
     """
     try:
         manager.broadcast_to_tenant_sync(
             tenant_id,
             {
                 "type": "new_session",
+                "payload": {
+                    "session_id": session_id,
+                    "status": "waiting_human",
+                    "tenant_id": tenant_id,
+                },
+                # 灰度兼容旧工作台；新客户端仅消费 payload。
                 "session_id": session_id,
                 "status": "waiting_human",
                 "tenant_id": tenant_id,
             },
         )
-        # closure-plan P1-5: 转人工写站内信（管理员可查）
+        manager.broadcast_to_session_sync(
+            session_id,
+            {
+                "type": "waiting_human",
+                "payload": {
+                    "session_id": session_id,
+                    "status": "waiting_human",
+                },
+            },
+        )
+        # 转人工写站内信（管理员可查）
         from app.core.database import SessionLocal
         from app.services.notification_service import create_notification
         ndb = SessionLocal()
@@ -75,6 +121,14 @@ def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
                 content=f"会话 #{session_id} 已转人工，请在坐席工作台处理。",
                 type="handoff",
             )
+            # PRD §3.7：无在线坐席时向管理员告警
+            if not session_service.has_online_agent(tenant_id):
+                create_notification(
+                    ndb, tenant_id=tenant_id,
+                    title="无坐席在线",
+                    content=f"会话 #{session_id} 已转人工，但当前无在线坐席，用户可留言自动建单。",
+                    type="no_agent",
+                )
         finally:
             ndb.close()
     except Exception as e:  # noqa: BLE001 广播失败不影响主对话链路
@@ -82,7 +136,7 @@ def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
 
 
 def _check_rounds_handoff(session_id: int, final_state: dict) -> None:
-    """轮次触发转人工（007 US1）。
+    """轮次触发转人工（规格 007 US1）。
 
     流程:
       1. 按 intent 递增轮次计数（incr_rounds）
@@ -103,7 +157,7 @@ def _check_rounds_handoff(session_id: int, final_state: dict) -> None:
     intent = final_state.get("intent", "knowledge_consult")
     rounds = incr_rounds(session_id, intent)
     if should_handoff_by_rounds(rounds) and not final_state.get("should_interrupt", False):
-        # 达阈值且 graph 未转人工 -> 触发轮次转人工
+        # 达阈值且 graph 未转人工 → 触发轮次转人工
         final_state["should_interrupt"] = True
         final_state["final_response"] = "您的问题已连续多轮未解决，已为您转接人工客服，请稍候。"
         final_state["intent"] = "round_handoff"
@@ -200,14 +254,28 @@ def handle_message(
     s = session_crud.get_by_id(db, session_id, tenant_id)
     if s is None:
         raise session_service.SessionNotFound(f"会话不存在: {session_id}")
+    session_service.ensure_agent_execution_allowed(s)
     # 终端用户标识（用于长期记忆按用户隔离；旧会话可能为 None，此时跳过记忆注入/抽取）
+    # 已注销租户禁止继续会话（readonly 允许进行中会话走完）
+    from app.services.tenant_service import require_message_allowed_tenant
+    require_message_allowed_tenant(db, tenant_id)
+
+    # 已注销租户禁止继续会话（readonly 允许进行中会话走完）
+    from app.services.tenant_service import require_message_allowed_tenant
+    require_message_allowed_tenant(db, tenant_id)
+
     end_user_id = getattr(s, "end_user_id", None)
 
-    # 降级检查（T19）: 租户逾期未付账单被降级 -> 拒绝对话（PRD 3.9 限制功能），
+    # 降级检查: 租户逾期未付账单被降级 → 拒绝对话（PRD §3.9 限制功能），
     # 不调 LLM 不落库。此前 is_degraded 无业务调用方，降级链从未生效。
     # 降级只拦新消息，进行中会话允许走完（PRD 语义）。
     from app.services.billing_service import is_degraded
-    if is_degraded(tenant_id):
+    try:
+        degraded = is_degraded(tenant_id)
+    except Exception as e:
+        logger.warning(f"is_degraded check failed, assuming not degraded: {e}")
+        degraded = False
+    if degraded:
         # 返回结构与正常回复一致（content 为前端渲染键），metadata 带降级标记供前端提示
         return {
             "message_id": None,
@@ -223,32 +291,33 @@ def handle_message(
     # 3. 追加本次用户消息到上下文
     context.append({"role": "user", "content": user_message})
 
-    # 009 US2: 长期记忆注入（跨会话用户偏好）
-    try:
-        from app.services.memory_service import search_memory
-        memories = search_memory(tenant_id, end_user_id, user_message) if end_user_id else []
-        if memories:
-            memory_text = "；".join(memories)
-            # 记忆作为 system 消息插入上下文头部，LLM 据此个性化回答
-            context.insert(0, {"role": "system", "content": f"用户历史记忆: {memory_text}"})
-            logger.info(f"Session {session_id}: injected {len(memories)} memories")
-    except Exception as e:
-        # 记忆注入失败不阻断主流程
-        logger.warning(f"Memory search failed (non-blocking): {e}")
+    # 规格 009 US2: 长期记忆注入（跨会话用户偏好）
+    if settings.llm_enabled:
+        try:
+            from app.services.memory_service import search_memory
+            memories = search_memory(tenant_id, end_user_id, user_message) if end_user_id else []
+            if memories:
+                memory_text = "；".join(memories)
+                # 记忆作为 system 消息插入上下文头部，LLM 据此个性化回答
+                context.insert(0, {"role": "system", "content": f"用户历史记忆: {memory_text}"})
+                logger.info(f"Session {session_id}: injected {len(memories)} memories")
+        except Exception as e:
+            # 记忆注入失败不阻断主流程
+            logger.warning(f"Memory search failed (non-blocking): {e}")
 
     # 4. 保存用户消息到 MySQL
     session_crud.create_message(
         db, session_id=session_id, role="user", content=user_message
     )
 
-    # 5. 🔴 Prompt 注入检测（US3）：用户输入进 Agent 决策前检测
-    #    high -> 记录 SecurityIncident + 转人工，不进入 graph（FR-007/FR-008）
+    # 5.  Prompt 注入检测（US3）：用户输入进 Agent 决策前检测
+    # high → 记录 SecurityIncident + 转人工，不进入 graph（FR-007/FR-008）
     final_state = _detect_injection(
         db, session_id=session_id, tenant_id=tenant_id, user_message=user_message,
     )
 
     if final_state is None:
-        # 无注入 -> 正常 LangGraph 流程
+        # 无注入 → 正常 LangGraph 流程
         # 6. 更新会话状态为 routing
         session_crud.update_status(db, s, "routing")
         db.commit()
@@ -278,26 +347,33 @@ def handle_message(
             "final_response": "",
         }
 
-        # 9. 🔴 驱动 LangGraph 图执行（同步 invoke）
-        try:
-            from app.agents.graph import get_graph
+        # 9.  驱动 LangGraph 图执行（同步 invoke）。关闭开关时直接显式降级，
+        # 不实例化模型客户端，也不靠“空 key 请求失败”来触发兜底。
+        if not settings.llm_enabled:
+            final_state = _llm_disabled_fallback(initial_state)
+        else:
+            try:
+                from app.agents.graph import get_graph
 
-            graph = get_graph()
-            final_state = graph.invoke(initial_state)
-        except Exception as e:
-            logger.exception(f"LangGraph execution failed: {e}")
-            # 异常兜底：返回友好提示，会话可重试（不让 LLM 异常导致整条链路 500）
-            final_state = {
-                **initial_state,
-                "final_response": "抱歉，系统处理您的请求时遇到了问题，请稍后重试。",
-                "intent": "knowledge_consult",
-                "confidence": 0.0,
-            }
+                graph = get_graph()
+                final_state = graph.invoke(initial_state)
+            except Exception as e:
+                logger.exception(f"LangGraph execution failed: {e}")
+                # 异常兜底（PRD §3.4）：转人工 + 不计费，不让 LLM 异常导致整条链路 500
+                final_state = {
+                    **initial_state,
+                    "final_response": "当前系统繁忙，已为您转接人工客服，请稍候。",
+                    "intent": "knowledge_consult",
+                    "confidence": 0.0,
+                    "generation_failed": True,
+                    "degraded": True,
+                    "should_interrupt": True,
+                }
 
-        # 🔴 轮次触发转人工（007 US1）：每轮 AI 回复后 incr 轮次，达阈值转人工
+        # 轮次触发转人工（规格 007 US1）：每轮 AI 回复后 incr 轮次，达阈值转人工
         _check_rounds_handoff(session_id, final_state)
     else:
-        # 注入命中 -> 已记录安全事件，跳过 graph（final_state 含 should_interrupt=True，
+        # 注入命中 → 已记录安全事件，跳过 graph（final_state 含 should_interrupt=True，
         # 由后续统一流程置会话 waiting_human，不计费）
         logger.info(f"Session {session_id}: injection -> human handoff (graph skipped)")
 
@@ -308,16 +384,8 @@ def handle_message(
     sentiment = final_state.get("sentiment", "normal")
     retrieval_result = final_state.get("retrieval_result", [])
 
-    # 013 fresh-eyes P1-3：计费按"会话"而非"回复条数"（PRD 3.9：RESOLVED 时计数）。
-    # 以"该会话尚无 assistant 回复"作为首轮判定，多轮会话只计一次配额。
-    from sqlalchemy import func, select
-    from app.models.message import Message
-    existing_assistant = db.execute(
-        select(func.count()).select_from(Message).where(
-            Message.session_id == session_id, Message.role == "assistant"
-        )
-    ).scalar() or 0
-    first_round = existing_assistant == 0
+    # 计费口径（PRD §3.4/3.9）：配额在会话进入 RESOLVED 时由收尾任务统一计数，
+    # 此处不再按"首条回复"即时计费；仅标记该会话是否产生有效回复（失败兜底不计入）。
 
     # 10. 保存 Agent 回复到 MySQL
     elapsed = int((time.perf_counter() - start) * 1000)
@@ -346,9 +414,11 @@ def handle_message(
             "sentiment": sentiment,
             "elapsed_ms": elapsed,
             "tokens": tokens_used,
+            "quota_status": _quota_status(db, tenant_id),
+            "degraded": bool(final_state.get("degraded") or final_state.get("generation_failed")),
         },
     )
-    # 013 fresh-eyes P2：监控指标接线（Agent 回复计数）
+    # 审计复核：监控指标接线（Agent 回复计数）
     from app.core.metrics import AGENT_MESSAGES
     AGENT_MESSAGES.labels(role="assistant").inc()
     # commit 前保存 id：expire_on_commit 会使 commit 后 msg.id 过期，访问触发懒加载，
@@ -370,20 +440,14 @@ def handle_message(
     session_crud.update_intent(
         db, s, intent=intent, confidence=confidence, sentiment=sentiment
     )
+    # 有效回复标记：转人工中断、LLM/编排失败兜底回复均不计为有效回复
+    if not should_interrupt and not final_state.get("generation_failed", False):
+        s.effective_reply = True
     db.commit()
 
-    # 013: 转人工时向同租户在线坐席广播 new_session（前端 AgentConsole 据此实时刷新队列）
+    # 规格 013: 转人工时向同租户在线坐席广播 new_session（前端 AgentConsole 据此实时刷新队列）
     if should_interrupt:
         _notify_new_session(tenant_id=tenant_id, session_id=s.id)
-
-    # 计费闸门：Agent 有效回复递增配额计数（转人工中断不计入），触发 80%/100% 预警
-    if not should_interrupt and first_round:
-        try:
-            from app.services.billing_service import incr_usage_for_tenant
-            incr_usage_for_tenant(db, tenant_id)
-        except Exception as e:
-            # 计费失败不阻断响应（宁可漏计费也不能让对话失败）
-            logger.warning(f"Billing incr_usage failed (non-blocking): {e}")
 
     # 13. 保存 Trace 到 MongoDB（异步 daemon 线程，失败不影响主流程）
     # 用 daemon 线程而非 await：①主流程是同步架构无 event loop 可 await；
@@ -408,14 +472,15 @@ def handle_message(
         f"confidence={confidence:.2f}, elapsed={elapsed}ms, tokens={tokens_used}"
     )
 
-    # 009 US2: 长期记忆抽取+保存（跨会话用户偏好，降级不阻断）
-    try:
-        from app.services.memory_service import extract_facts, save_memory
-        facts = extract_facts(user_message)
-        if facts and end_user_id:
-            save_memory(tenant_id, end_user_id, facts)
-    except Exception as e:
-        logger.warning(f"Memory save failed (non-blocking): {e}")
+    # 规格 009 US2: 长期记忆抽取+保存（跨会话用户偏好，降级不阻断）
+    if settings.llm_enabled:
+        try:
+            from app.services.memory_service import extract_facts, save_memory
+            facts = extract_facts(user_message)
+            if facts and end_user_id:
+                save_memory(tenant_id, end_user_id, facts)
+        except Exception as e:
+            logger.warning(f"Memory save failed (non-blocking): {e}")
 
     return {
         "message_id": msg_id,
@@ -428,6 +493,8 @@ def handle_message(
             "sentiment": sentiment,
             "elapsed_ms": elapsed,
             "tokens": tokens_used,
+            "quota_status": _quota_status(db, tenant_id),
+            "degraded": bool(final_state.get("degraded") or final_state.get("generation_failed")),
         },
     }
 
@@ -449,26 +516,34 @@ def prepare_message_stream(
     s = session_crud.get_by_id(db, session_id, tenant_id)
     if s is None:
         raise session_service.SessionNotFound(f"会话不存在: {session_id}")
+    session_service.ensure_agent_execution_allowed(s)
     end_user_id = getattr(s, "end_user_id", None)
 
     from app.services.billing_service import is_degraded
-    if is_degraded(tenant_id):
+    try:
+        degraded = is_degraded(tenant_id)
+    except Exception as e:
+        logger.warning(f"is_degraded check failed, assuming not degraded: {e}")
+        degraded = False
+    if degraded:
         return {"need_stream": False, "content": "您的账户因账单逾期已进入降级模式，请完成支付后恢复服务",
                 "retrieval_result": [], "intent": "degraded", "confidence": 1.0,
                 "sentiment": "normal", "should_interrupt": False, "context": [],
-                "session": s, "end_user_id": end_user_id, "final_state": {},
+                "session": s, "end_user_id": end_user_id,
+                "final_state": {"generation_failed": True},
                 "elapsed_ms": int((time.perf_counter() - start) * 1000)}
 
     context = session_service.get_context(session_id)
     context.append({"role": "user", "content": user_message})
-    try:
-        from app.services.memory_service import search_memory
-        memories = search_memory(tenant_id, end_user_id, user_message) if end_user_id else []
-        if memories:
-            memory_text = "；".join(memories)
-            context.insert(0, {"role": "system", "content": f"用户历史记忆: {memory_text}"})
-    except Exception as e:
-        logger.warning(f"Memory search failed (non-blocking): {e}")
+    if settings.llm_enabled:
+        try:
+            from app.services.memory_service import search_memory
+            memories = search_memory(tenant_id, end_user_id, user_message) if end_user_id else []
+            if memories:
+                memory_text = "；".join(memories)
+                context.insert(0, {"role": "system", "content": f"用户历史记忆: {memory_text}"})
+        except Exception as e:
+            logger.warning(f"Memory search failed (non-blocking): {e}")
 
     session_crud.create_message(db, session_id=session_id, role="user", content=user_message)
 
@@ -485,17 +560,22 @@ def prepare_message_stream(
         initial_state = {"session_id": session_id, "tenant_id": tenant_id,
             "messages": context, "intent": "", "confidence": 0.0,
             "sentiment": "normal", "slots": {}, "retrieval_result": [],
-            "current_agent": "router", "should_interrupt": False, "final_response": ""}
+            "current_agent": "router", "should_interrupt": False,
+            "skip_generation": True, "final_response": ""}
 
-        try:
-            from app.agents.graph import get_graph
-            graph = get_graph()
-            final_state = graph.invoke(initial_state)
-        except Exception as e:
-            logger.exception(f"LangGraph execution failed: {e}")
-            final_state = {**initial_state,
-                "final_response": "抱歉，系统处理您的请求时遇到了问题，请稍后重试。",
-                "intent": "knowledge_consult", "confidence": 0.0}
+        if not settings.llm_enabled:
+            final_state = _llm_disabled_fallback(initial_state)
+        else:
+            try:
+                from app.agents.graph import get_graph
+                graph = get_graph()
+                final_state = graph.invoke(initial_state)
+            except Exception as e:
+                logger.exception(f"LangGraph execution failed: {e}")
+                final_state = {**initial_state,
+                    "final_response": "当前系统繁忙，已为您转接人工客服，请稍候。",
+                    "intent": "knowledge_consult", "confidence": 0.0,
+                    "generation_failed": True, "degraded": True, "should_interrupt": True}
         _check_rounds_handoff(session_id, final_state)
     else:
         logger.info(f"Session {session_id}: injection -> human handoff (graph skipped)")
@@ -506,7 +586,7 @@ def prepare_message_stream(
     sentiment = final_state.get("sentiment", "normal")
     retrieval_result = final_state.get("retrieval_result", [])
     should_interrupt = final_state.get("should_interrupt", False)
-    need_stream = not should_interrupt and bool(retrieval_result) and bool(final_response)
+    need_stream = not should_interrupt and bool(retrieval_result)
 
     return {"need_stream": need_stream, "content": final_response if not need_stream else "",
             "retrieval_result": retrieval_result, "intent": intent, "confidence": confidence,
@@ -528,15 +608,6 @@ def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
     end_user_id = prep["end_user_id"]
     elapsed = prep["elapsed_ms"]
 
-    from sqlalchemy import func, select
-    from app.models.message import Message
-    existing_assistant = db.execute(
-        select(func.count()).select_from(Message).where(
-            Message.session_id == session_id, Message.role == "assistant"
-        )
-    ).scalar() or 0
-    first_round = existing_assistant == 0
-
     sources = []
     for r in retrieval_result[:5]:
         sources.append({"doc": r.get("doc_filename", "未知文档"),
@@ -547,7 +618,10 @@ def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
     msg = session_crud.create_message(db, session_id=session_id, role="assistant",
         content=content, sources=sources if sources else None,
         metadata={"intent": intent, "confidence": round(confidence, 4),
-                   "sentiment": sentiment, "elapsed_ms": elapsed, "tokens": tokens_used})
+                   "sentiment": sentiment, "elapsed_ms": elapsed, "tokens": tokens_used,
+                   "quota_status": _quota_status(db, tenant_id),
+                   "degraded": bool(prep.get("final_state", {}).get("degraded")
+                                    or prep.get("final_state", {}).get("generation_failed"))})
     from app.core.metrics import AGENT_MESSAGES
     AGENT_MESSAGES.labels(role="assistant").inc()
     msg_id = msg.id
@@ -556,17 +630,14 @@ def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
     session_service.save_context(session_id, context)
     session_crud.update_status(db, s, "waiting_human" if should_interrupt else "agent_handling")
     session_crud.update_intent(db, s, intent=intent, confidence=confidence, sentiment=sentiment)
+    # ：有效回复标记（RESOLVED 收尾时据此计费）；失败兜底/降级/空回复不计入
+    if content.strip() and not should_interrupt \
+            and not prep.get("final_state", {}).get("generation_failed", False):
+        s.effective_reply = True
     db.commit()
 
     if should_interrupt:
         _notify_new_session(tenant_id=tenant_id, session_id=s.id)
-
-    if not should_interrupt and first_round:
-        try:
-            from app.services.billing_service import incr_usage_for_tenant
-            incr_usage_for_tenant(db, tenant_id)
-        except Exception as e:
-            logger.warning(f"Billing incr_usage failed (non-blocking): {e}")
 
     try:
         import threading, asyncio as _aio
@@ -582,19 +653,22 @@ def finalize_message_stream(db: DbSession, *, session_id: int, tenant_id: int,
     except Exception:
         logger.warning("Trace save skipped")
 
-    try:
-        from app.services.memory_service import extract_facts, save_memory
-        user_msg = context[-2]["content"] if len(context) >= 2 else ""
-        facts = extract_facts(user_msg)
-        if facts and end_user_id:
-            save_memory(tenant_id, end_user_id, facts)
-    except Exception as e:
-        logger.warning(f"Memory save failed (non-blocking): {e}")
+    if settings.llm_enabled:
+        try:
+            from app.services.memory_service import extract_facts, save_memory
+            user_msg = context[-2]["content"] if len(context) >= 2 else ""
+            facts = extract_facts(user_msg)
+            if facts and end_user_id:
+                save_memory(tenant_id, end_user_id, facts)
+        except Exception as e:
+            logger.warning(f"Memory save failed (non-blocking): {e}")
 
     logger.info(f"Agent stream: session={session_id}, intent={intent}, elapsed={elapsed}ms")
     return {"message_id": msg_id, "role": "assistant", "content": content,
             "sources": sources, "metadata": {"intent": intent, "confidence": round(confidence, 4),
-            "sentiment": sentiment, "elapsed_ms": elapsed, "tokens": tokens_used}}
+            "sentiment": sentiment, "elapsed_ms": elapsed, "tokens": tokens_used,
+            "degraded": bool(prep.get("final_state", {}).get("degraded")
+                             or prep.get("final_state", {}).get("generation_failed"))}}
 
 
 def build_stream_messages(user_message: str, retrieval_result: list, context: list) -> list:

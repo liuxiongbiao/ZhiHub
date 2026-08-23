@@ -28,14 +28,14 @@ const props = defineProps<{
   createdAt?: string
 }>()
 
-/** 消息时间戳（PRD 3.8：每条消息带时间） */
+/** 消息时间戳（PRD §3.8：每条消息带时间） */
 function formatTime(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-/** 角色 -> 中文标签 */
+/** 角色 → 中文标签 */
 const roleLabel = computed(() => {
   switch (props.role) {
     case 'user': return '用户'

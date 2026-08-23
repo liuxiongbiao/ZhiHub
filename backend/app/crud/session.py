@@ -40,25 +40,30 @@ def list_sessions(
     tenant_id: int,
     *,
     status: str | None = None,
+    sentiment: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
-    """分页查询会话列表（含消息数量），可选按 status 筛选。返回 (items, total)。
+    """分页查询会话列表（含消息数量），可选按 status/sentiment 筛选。返回 (items, total)。
 
-    023 排序规则: 愤怒情绪（sentiment='angry'）优先置顶，同情绪内按创建时间倒序。
+     排序规则: 愤怒情绪（sentiment='angry'）优先置顶，同情绪内按创建时间倒序。
     设计动机: 愤怒用户流失风险高，坐席工作台应优先展示待介入。
     """
     query = select(Session).where(Session.tenant_id == tenant_id)
     if status:
         query = query.where(Session.status == status)
+    if sentiment:
+        query = query.where(Session.sentiment == sentiment)
 
     # 总数
     count_query = select(func.count()).select_from(Session).where(Session.tenant_id == tenant_id)
     if status:
         count_query = count_query.where(Session.status == status)
+    if sentiment:
+        count_query = count_query.where(Session.sentiment == sentiment)
     total = db.execute(count_query).scalar() or 0
 
-    # 023: angry 优先排序 -- case 表达式把 angry 映射为 0（排前），其余 1（排后）
+    # angry 优先排序 —— case 表达式把 angry 映射为 0（排前），其余 1（排后）
     angry_priority = case((Session.sentiment == "angry", 0), else_=1)
     # 分页
     sessions = db.execute(

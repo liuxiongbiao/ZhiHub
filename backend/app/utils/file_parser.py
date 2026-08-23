@@ -21,7 +21,7 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".xlsx"}
 def _max_file_size() -> int:
     from app.config import settings
     return settings.upload_max_file_size_mb * 1024 * 1024
-# 解压后文本上限（T32 压缩炸弹防护）: 10MB 原始文件限制不覆盖解压后膨胀
+# 解压后文本上限（ 压缩炸弹防护）: 10MB 原始文件限制不覆盖解压后膨胀
 # （docx zip/PDF 解压后可放大数倍），提取后统一校验
 MAX_TEXT_LENGTH = 5 * 1024 * 1024
 # 切片参数
@@ -46,7 +46,7 @@ class FileParseError(ValueError):
     """文件解析失败."""
 
 
-# ---------- 文件校验 ----------
+# ────────── 文件校验 ──────────
 def validate_file(filename: str, content: bytes) -> None:
     """校验文件格式和大小，不通过抛 FileValidationError."""
     ext = _get_extension(filename)
@@ -66,7 +66,7 @@ def _get_extension(filename: str) -> str:
     return "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
-# ---------- 文本提取 ----------
+# ────────── 文本提取 ──────────
 def extract_text(filename: str, content: bytes) -> str:
     """根据文件类型提取纯文本（提取后统一校验文本长度，防解压膨胀）。"""
     ext = _get_extension(filename)
@@ -84,7 +84,7 @@ def extract_text(filename: str, content: bytes) -> str:
     else:
         raise FileParseError(f"不支持的文件格式: {ext}")
 
-    # T32: 解压后文本长度校验（压缩炸弹防护，原始 10MB 限制不覆盖解压膨胀）
+    # 解压后文本长度校验（压缩炸弹防护，原始 10MB 限制不覆盖解压膨胀）
     if len(text) > MAX_TEXT_LENGTH:
         raise FileValidationError(f"文档解压后文本超过上限（{MAX_TEXT_LENGTH // (1024 * 1024)}MB）")
     return text
@@ -132,7 +132,7 @@ def _extract_pdf_text(content: bytes) -> str:
     """从 PDF 文件提取文本.
 
     使用 pypdf 提取文本（轻量，不依赖重型 OCR）。
-    提取失败（扫描件/图片型 PDF 无文本层）时走 OCR 兜底（019）。
+    提取失败（扫描件/图片型 PDF 无文本层）时走 OCR 兜底。
     """
     try:
         try:
@@ -148,14 +148,14 @@ def _extract_pdf_text(content: bytes) -> str:
                 pages.append(text)
         result = "\n\n".join(pages)
         if not result.strip():
-            # 无文本层 -> OCR 兜底（019）: 扫描件/图片型 PDF 需 OCR 才能拿到文字
+            # 无文本层 → OCR 兜底: 扫描件/图片型 PDF 需 OCR 才能拿到文字
             ocr_text = _ocr_fallback(content)
             if ocr_text:
                 return ocr_text
             raise FileParseError("PDF 文件中未提取到文本内容（可能是扫描件或图片型 PDF）")
         return result
     except ImportError:
-        # PyPDF2 未安装 -> 尝试 OCR 兜底，仍无结果则报错
+        # PyPDF2 未安装 → 尝试 OCR 兜底，仍无结果则报错
         ocr_text = _ocr_fallback(content)
         if ocr_text:
             return ocr_text
@@ -163,7 +163,7 @@ def _extract_pdf_text(content: bytes) -> str:
     except FileParseError:
         raise
     except Exception as e:
-        # PyPDF2 解析异常（损坏文件等）-> 尝试 OCR 兜底，仍失败则报错
+        # PyPDF2 解析异常（损坏文件等）→ 尝试 OCR 兜底，仍失败则报错
         ocr_text = _ocr_fallback(content)
         if ocr_text:
             return ocr_text
@@ -171,7 +171,7 @@ def _extract_pdf_text(content: bytes) -> str:
 
 
 def _ocr_fallback(content: bytes) -> str:
-    """OCR 兜底: 调 ocr_client 对内容做文字识别（019）。
+    """OCR 兜底: 调 ocr_client 对内容做文字识别。
 
     百度 OCR 接受图片，PDF 需先转图片。本 demo 简化: 直接把二进制交给 ocr_client，
     mock 模式返回占位文本；真实模式需在此处加 PDF->image 渲染（pdf2image）。
@@ -189,7 +189,7 @@ def _ocr_fallback(content: bytes) -> str:
         # 再调 client.recognize_pdf_page，本 demo 简化为整体识别
         if client.is_mock:
             return client.recognize(content)
-        # 真实模式: PDF -> 图片逐页 OCR（依赖 pdf2image，未安装则降级返回空）
+        # 真实模式: PDF → 图片逐页 OCR（依赖 pdf2image，未安装则降级返回空）
         try:
             from pdf2image import convert_from_bytes
 
@@ -226,7 +226,7 @@ def _extract_docx_text(content: bytes) -> str:
         raise FileParseError("Word 解析库未安装 (python-docx)") from None
 
 
-# ---------- 文本切片 ----------
+# ────────── 文本切片 ──────────
 def chunk_text(text: str, filename: str) -> list[Chunk]:
     """将文本按段落+标题规则切片.
 

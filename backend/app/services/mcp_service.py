@@ -45,7 +45,7 @@ from app.mcp_servers.base_server import (
 
 logger = logging.getLogger(__name__)
 
-# 角色 -> 允许调用的 MCP 工具白名单。权限矩阵是 RBAC 的核心：admin 全权，agent 可查可建不可退款，
+# 角色 → 允许调用的 MCP 工具白名单。权限矩阵是 RBAC 的核心：admin 全权，agent 可查可建不可退款，
 # 终端用户 user 无权直接调工具（工具调用由 Agent 代发，role 用 agent）。
 # 注: 退款审批（approve_refund）不在 MCP 工具集——审批是坐席后台操作（HTTP 层 + approver_id 审计），
 # MCP 调用链无审批人身份（call_tool 只有 role/tenant_id），暴露给 LLM 会绕过"谁审批"的审计。
@@ -55,12 +55,12 @@ ROLE_TOOL_MATRIX: dict[str, set[str]] = {
     "user": set(),
 }
 
-# 工具方法 -> 所属 server 分发映射
+# 工具方法 → 所属 server 分发映射
 _TICKET_METHODS = {"get_ticket_status", "create_ticket", "update_ticket"}
 _ORDER_METHODS = {"query_order", "request_refund"}
 _ALL_METHODS = _TICKET_METHODS | _ORDER_METHODS
 
-# 关键字段监控（熔断用）：method -> 关键字段列表
+# 关键字段监控（熔断用）：method → 关键字段列表
 # 工具返回结果中任一关键字段为空/缺失即视为"结构性故障"，计入 fail_count（US4）
 _CRITICAL_FIELDS: dict[str, list[str]] = {
     "get_ticket_status": ["ticket_no", "status"],
@@ -143,18 +143,18 @@ def validate_params(tool_name: str, params: dict) -> None:
             if not ono or not ono.startswith("ORD-"):
                 raise InvalidParams(f"订单号格式错误: {ono}，应为 ORD-XXXXXXXX")
     if tool_name == "request_refund":
-        # 016: 退款申请必须携带手机号做双因子校验（PRD 3.1.3）
+        # 规格 016: 退款申请必须携带手机号做双因子校验（PRD §3.1.3）
         if not params.get("phone"):
             raise InvalidParams("参数缺失: phone")
         amount = params.get("amount", 0)
-        # 类型防御（T14）: 金额必须是有限数值——str/NaN/Inf/bool 全部拒绝。
+        # 类型防御: 金额必须是有限数值——str/NaN/Inf/bool 全部拒绝。
         # 原 `amount <= 0` 对 "abc" 抛 TypeError 误映射 -32603（应 -32602）；
         # NaN/Inf 与任何数比较恒 False 会穿透金额校验进业务；bool 是 int 子类会当 1 穿透。
         if not isinstance(amount, (int, float)) or isinstance(amount, bool) or not math.isfinite(amount):
             raise InvalidParams(f"退款金额必须是有限数值: {amount!r}")
         if amount <= 0:
             raise InvalidParams(f"退款金额必须大于 0: {amount}")
-        # P1-16: 金额小数位不得超过 2 位（PRD 3.5 入参校验）
+        # 金额小数位不得超过 2 位（PRD §3.5 入参校验）
         try:
             decimal_amount = Decimal(str(amount))
             if decimal_amount.as_tuple().exponent < -2:
@@ -162,7 +162,7 @@ def validate_params(tool_name: str, params: dict) -> None:
         except InvalidOperation:
             raise InvalidParams(f"退款金额格式错误: {amount!r}")
 
-    # P1-16: 字符串参数长度上限（对齐 DB 字段长度，防超长冲击数据库）
+    # 字符串参数长度上限（对齐 DB 字段长度，防超长冲击数据库）
     for field, max_len in (("order_no", 30), ("ticket_no", 30), ("client_request_id", 100), ("reason", 500)):
         value = params.get(field)
         if value is not None and len(str(value)) > max_len:
@@ -214,30 +214,30 @@ def call_tool(
         return build_error(ERR_INVALID_REQUEST, req_id)
 
     # 2. 注入 tenant_id（覆盖客户端传入值，宪法原则 II / FR-012 / SC-006）
-    # ⚠️ 关键：tenant_id 来自服务端可信来源（JWT/session），绝不信客户端，防越权访问他租户数据
-    # fail-closed（T11）: tenant_id 缺失 = 调用上下文不可信，直接拒绝；
+    # 关键：tenant_id 来自服务端可信来源（JWT/session），绝不信客户端，防越权访问他租户数据
+    # fail-closed: tenant_id 缺失 = 调用上下文不可信，直接拒绝；
     # 原条件注入在 None 时会把 params 里客户端自报值原样透传（配合 server 层默认租户 1 可越权写他租户）
     if tenant_id is None:
         return build_error(ERR_PERMISSION_DENIED, req_id, "调用上下文缺少租户信息")
     params["tenant_id"] = tenant_id
 
-    # 3. 方法存在性校验（未知方法 -> -32601，优先于权限，符合 JSON-RPC 语义）
+    # 3. 方法存在性校验（未知方法 → -32601，优先于权限，符合 JSON-RPC 语义）
     # 先校验方法存在性再校验权限：未知方法返回 -32601（标准 JSON-RPC 语义），
     # 而非 -32000 权限拒绝（避免泄露"方法存在但无权"的信息）
     if method not in _ALL_METHODS:
         return build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}")
 
-    # 4. 权限校验 -> -32000（角色无权调用该工具）
+    # 4. 权限校验 → -32000（角色无权调用该工具）
     if not check_permission(role, method):
         return build_error(
             ERR_PERMISSION_DENIED, req_id, f"角色 {role} 无权调用工具 {method}"
         )
 
-    # 5. 熔断检查（US4）：工具处于熔断中 -> -32001 + 兜底话术（不调 handler，直接降级）
+    # 5. 熔断检查（US4）：工具处于熔断中 → -32001 + 兜底话术（不调 handler，直接降级）
     if is_broken(method):
         return build_error(ERR_CIRCUIT_BROKEN, req_id, _fallback_message(method))
 
-    # 6. 入参校验 -> -32602
+    # 6. 入参校验 → -32602
     try:
         validate_params(method, params)
     except InvalidParams as e:
@@ -254,22 +254,22 @@ def call_tool(
         else:
             return build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}")
     except IdentityVerificationError:
-        # 双因子失败/记录不存在 -> 统一 -32602 "未查询到匹配信息"（防枚举，SC-002）
+        # 双因子失败/记录不存在 → 统一 -32602 "未查询到匹配信息"（防枚举，SC-002）
         return build_error(ERR_INVALID_PARAMS, req_id, "未查询到匹配信息")
     except InvalidParams as e:
         return build_error(ERR_INVALID_PARAMS, req_id, str(e))
     except _BusinessValidationErrors as e:
-        # 业务校验失败（退款超额/非法状态跃迁/记录不存在等）-> -32602
+        # 业务校验失败（退款超额/非法状态跃迁/记录不存在等）→ -32602
         return build_error(ERR_INVALID_PARAMS, req_id, str(e))
     except _ConcurrencyConflict as e:
-        # 乐观锁冲突 -> -32603（可重试）
+        # 乐观锁冲突 → -32603（可重试）
         return build_error(ERR_INTERNAL_ERROR, req_id, str(e))
     except Exception as e:
-        # 兜底：未预期的异常 -> -32603，记全栈日志便于排查
+        # 兜底：未预期的异常 → -32603，记全栈日志便于排查
         logger.exception(f"MCP tool {method} internal error")
         return build_error(ERR_INTERNAL_ERROR, req_id, "Internal error")
 
-    # 8. 关键字段空值监控（US4）：空/异常 -> record_failure（达阈值熔断）；正常 -> record_success（half_open 解除）
+    # 8. 关键字段空值监控（US4）：空/异常 → record_failure（达阈值熔断）；正常 → record_success（half_open 解除）
     if _is_empty_result(method, data):
         record_failure(method)
     else:
@@ -296,10 +296,10 @@ def _import_business_errors():
         VersionConflict,
     )
     from app.services.ticket_service import TicketError, TicketNotFound
-    # 业务校验类（-> -32602）
+    # 业务校验类（→ -32602）
     validation = (RefundExceedsPaid, InvalidTransition, DuplicateRefund,
                   TicketNotFound, TicketError, OrderError)
-    # 并发冲突类（-> -32603）
+    # 并发冲突类（→ -32603）
     concurrency = (VersionConflict,)
     return validation, concurrency
 

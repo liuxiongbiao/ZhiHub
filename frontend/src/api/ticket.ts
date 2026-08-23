@@ -27,7 +27,7 @@ export function getTicketDetail(ticketId: number) {
   return request.get<Ticket>(`/ticket/${ticketId}`)
 }
 
-/** 用户主动提交工单（closure-plan P1-4，PRD 3.8） */
+/** 用户主动提交工单（PRD §§3.8） */
 export interface CreateTicketBody {
   title: string
   description?: string

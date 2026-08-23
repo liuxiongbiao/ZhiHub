@@ -32,6 +32,7 @@ import time
 import logging
 from dataclasses import dataclass, field
 
+from app.config import settings
 from app.core.embedding_client import (
     embed_texts,
     get_es_client,
@@ -48,9 +49,15 @@ BM25_TOP_K = 20       # BM25 召回数量
 RRF_K = 60            # RRF 融合常数，经验值（缓解高排名项过度主导）
 RERANK_TOP_K = 5      # 精排后保留数量
 # bge-reranker relevance_score 阈值：低于此值触发 HyDE 兜底
-CONFIDENCE_THRESHOLD = 0.6
+# 标定依据（2026-08-23 真实栈实验，bge-reranker-v2-m3 经硅基流动 API）：
+#   最佳匹配片段 ≈ 0.359，弱相关/无关片段 ≤ 0.013。
+# 原值 0.6 高于该模型实际分数上限，导致 100% 判低置信度、全部转人工（自动解决率 0%）。
+# 0.3 vs 0.25 对比实验（18 题端到端）：结果完全一致（自动解决率 38.9%），
+#   说明剩余漏答题的 rerank 分数已在噪声区（≤0.013），属检索召回问题而非阈值问题。
+# 定稿 0.3：与噪声地板保持安全距离，后续可基于扩充评测集进一步标定。
+CONFIDENCE_THRESHOLD = 0.3
 
-# 008 降级模式告警: 检索召回失败时 Redis 标记 degradation:{tenant_id}，TTL 1h（PRD 3.4/3.8）
+# 规格 008 降级模式告警: 检索召回失败时 Redis 标记 degradation:{tenant_id}，TTL 1h（PRD §3.4/3.8）
 DEGRADATION_KEY_PREFIX = "degradation:"
 DEGRADATION_TTL = 3600  # 1 小时，平衡敏感度与抖动
 
@@ -98,6 +105,7 @@ class RetrievalResult:
     vector_results: list[ChunkResult] = field(default_factory=list)
     hybrid_results: list[ChunkResult] = field(default_factory=list)
     hyde_fallback: bool = False
+    low_confidence: bool = False
     empty_knowledge: bool = False
     elapsed_ms: int = 0
 
@@ -119,7 +127,7 @@ def rewrite_query(history: list[dict], current_query: str) -> str:
 
     如果历史为空或不需要改写，直接返回原查询。
     """
-    if not history or len(history) == 0:
+    if not settings.llm_enabled or not history or len(history) == 0:
         return current_query
 
     # 构建改写 prompt，只取最近 3 轮避免上下文过长
@@ -173,6 +181,10 @@ def vector_recall(query: str, tenant_id: int, top_k: int = VECTOR_TOP_K) -> list
     Returns:
         [{"doc_id": int, "chunk_index": int, "chunk_text": str, "score": float, ...}, ...]
     """
+    if not settings.embedding_enabled:
+        logger.info("Embedding disabled: skip vector recall for tenant %s", tenant_id)
+        return []
+
     collection = get_milvus_collection()
 
     # 1. 查询向量化
@@ -194,7 +206,7 @@ def vector_recall(query: str, tenant_id: int, top_k: int = VECTOR_TOP_K) -> list
     except Exception as e:
         # 单路失败不中断：返回空，让 BM25 路兜底
         logger.error(f"Milvus search failed: {e}")
-        _mark_degradation(tenant_id)  # 008: 降级标记（PRD 3.4/3.8）
+        _mark_degradation(tenant_id)  # 规格 008: 降级标记（PRD 3.4/3.8）
         return []
 
     # 3. 转换结果
@@ -251,7 +263,7 @@ def bm25_recall(query: str, tenant_id: int, top_k: int = BM25_TOP_K) -> list[dic
         )
     except Exception as e:
         logger.error(f"ES search failed: {e}")
-        _mark_degradation(tenant_id)  # 008: 降级标记（PRD 3.4/3.8）
+        _mark_degradation(tenant_id)  # 规格 008: 降级标记（PRD 3.4/3.8）
         return []
 
     output = []
@@ -291,7 +303,7 @@ def rrf_fuse(
 
     按工 RRF 分数降序返回去重后的结果列表。
     """
-    # 构建 chunk key -> RRF 分数
+    # 构建 chunk key → RRF 分数
     rrf_scores: dict[tuple, float] = {}
     # 保存完整信息（首次出现的切片信息保留）
     chunk_info: dict[tuple, dict] = {}
@@ -333,6 +345,9 @@ def _hyde_retrieval(query: str, tenant_id: int) -> list[dict]:
       假设的回答（更接近文档表述），再用它去匹配文档，召回率显著提升。这是低置信度时的兜底手段，
       代价是多一次 LLM 调用，所以只在 Top1 < 阈值时触发。
     """
+    if not settings.llm_enabled or not settings.embedding_enabled:
+        return []
+
     hyde_prompt = (
         "请生成一段可能相关的中文文档内容来回答以下问题。"
         "生成的内容应该是假设性的、信息丰富的，长度约 100-200 字。\n\n"
@@ -463,7 +478,20 @@ def hybrid_search(
     # 5. Reranker 精排
     hybrid_top = []
     hyde_fallback = False
-    if fused:
+    low_confidence = False
+    if fused and not settings.embedding_enabled:
+        # embedding/rerank 同属向量能力开关；关闭时保留 BM25+RRF 结果，
+        # 不调用外部 reranker，也不触发依赖 LLM+向量的 HyDE。
+        for item in fused[:RERANK_TOP_K]:
+            hybrid_top.append(ChunkResult(
+                doc_id=item.get("doc_id", 0),
+                doc_filename=item.get("doc_filename", ""),
+                chunk_index=item.get("chunk_index", 0),
+                chunk_text=item.get("chunk_text", ""),
+                score=item.get("rrf_score", item.get("score", 0.0)),
+                source=item.get("source", "bm25"),
+            ))
+    if fused and settings.embedding_enabled:
         # 提取去重的候选文本，送 reranker 交叉编码精排
         candidates = [c["chunk_text"] for c in fused]
         reranked = rerank_api(query=rewritten, documents=candidates, top_n=RERANK_TOP_K)
@@ -481,7 +509,7 @@ def hybrid_search(
                     source="hybrid",
                 ))
 
-        # 6. 置信度判断：Top1 < 阈值 -> HyDE 兜底
+        # 6. 置信度判断：Top1 < 阈值 → HyDE 兜底
         if hybrid_top and hybrid_top[0].score < CONFIDENCE_THRESHOLD:
             logger.info(
                 f"Low confidence (top1={hybrid_top[0].score:.3f}), triggering HyDE fallback"
@@ -510,6 +538,10 @@ def hybrid_search(
                             source="hyde",
                         ))
 
+        # PRD §3.3：HyDE 重试后置信度仍低于阈值 → 标记低置信度，供上层 Agent 决策转人工
+        if hybrid_top and hybrid_top[0].score < CONFIDENCE_THRESHOLD:
+            low_confidence = True
+
     # 纯向量对比基线：取向量召回 Top5（不经 RRF/rerank），用于 A/B 对比混合检索的收益
     vector_top = []
     for item in vector_raw[:RERANK_TOP_K]:
@@ -530,5 +562,6 @@ def hybrid_search(
         vector_results=vector_top,
         hybrid_results=hybrid_top,
         hyde_fallback=hyde_fallback,
+        low_confidence=low_confidence,
         elapsed_ms=elapsed,
     )

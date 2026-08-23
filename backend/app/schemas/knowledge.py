@@ -9,7 +9,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-# ---------- 文档上传 ----------
+# ────────── 文档上传 ──────────
 class DocumentUploadResponse(BaseModel):
     """文档上传响应：元数据 + 处理状态 + 版本号。"""
     doc_id: int
@@ -20,9 +20,10 @@ class DocumentUploadResponse(BaseModel):
     version: int
     is_latest: bool
     uploaded_at: datetime
+    expires_at: datetime | None = None
 
 
-# ---------- 文档列表 ----------
+# ────────── 文档列表 ──────────
 class DocumentItem(BaseModel):
     """文档列表项：元数据 + 切片数 + 版本/最新标记。"""
     doc_id: int
@@ -34,7 +35,7 @@ class DocumentItem(BaseModel):
     is_latest: bool
     chunk_count: int
     uploaded_at: datetime
-    # 013 审查 P2：生命周期与质量状态（UI 临期/复核提示依赖）
+    # 审计复核：生命周期与质量状态（UI 临期/复核提示依赖）
     expires_at: datetime | None = None
     quality_status: str = "ready"
 
@@ -50,7 +51,7 @@ class DocumentListResponse(BaseModel):
     page_size: int
 
 
-# ---------- 检索测试 ----------
+# ────────── 检索测试 ──────────
 class SearchTestRequest(BaseModel):
     """检索测试请求：查询语句 + 历史对话上下文。"""
     query: str = Field(..., min_length=1, max_length=500)
@@ -78,7 +79,7 @@ class SearchTestResponse(BaseModel):
     elapsed_ms: int
 
 
-# ---------- 重建索引 ----------
+# ────────── 重建索引 ──────────
 class RebuildResponse(BaseModel):
     """重建索引响应：文档 ID、状态、提示消息。"""
     doc_id: int

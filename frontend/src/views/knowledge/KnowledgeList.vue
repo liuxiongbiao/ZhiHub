@@ -1,5 +1,5 @@
 <!-- frontend/src/views/knowledge/KnowledgeList.vue -->
-<!-- 职责: 知识库文档列表 - 状态筛选/上传入口(012 前端打磨:PageHeader + el-card) -->
+<!-- 职责: 知识库文档列表 - 状态筛选/上传入口(规格 012 前端打磨:PageHeader + el-card) -->
 <template>
   <div>
     <PageHeader title="知识库文档" subtitle="管理知识库文档,支持 PDF / Word / Markdown">
@@ -14,6 +14,16 @@
             <el-icon><Upload /></el-icon>&nbsp;上传文档
           </el-button>
         </el-upload>
+        <el-select
+          v-model="expiresDays"
+          placeholder="有效期"
+          style="width: 130px; margin-left: 8px"
+        >
+          <el-option label="默认（90天）" :value="''" />
+          <el-option label="3个月" :value="90" />
+          <el-option label="6个月" :value="180" />
+          <el-option label="永久" :value="0" />
+        </el-select>
       </template>
     </PageHeader>
 
@@ -79,7 +89,7 @@
               {{ formatDate(row?.uploaded_at) }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="120">
+          <el-table-column label="操作" width="180">
             <template #default="{ row }">
               <el-button
                 v-if="row?.status === 'failed' || row?.quality_status === 'pending_review' || row?.quality_status === 'expired'"
@@ -89,6 +99,15 @@
                 :loading="rebuildingId === row?.doc_id"
               >
                 重建索引
+              </el-button>
+              <el-button
+                type="danger"
+                size="small"
+                plain
+                @click="handleDelete(row?.doc_id)"
+                :loading="deletingId === row?.doc_id"
+              >
+                删除
               </el-button>
             </template>
           </el-table-column>
@@ -110,16 +129,16 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload } from '@element-plus/icons-vue'
-import { getDocumentList, uploadDocument, rebuildDocument, type DocumentItem } from '@/api/knowledge'
+import { getDocumentList, uploadDocument, rebuildDocument, deleteDocument, type DocumentItem } from '@/api/knowledge'
 import PageHeader from '@/components/common/PageHeader.vue'
 
-/** 文档状态 -> 中文标签 */
+/** 文档状态 → 中文标签 */
 const DOC_STATUS_MAP: Record<string, string> = {
   pending: '待处理', processing: '处理中', ready: '已就绪', failed: '处理失败',
 }
-/** 文档状态 -> el-tag 配色 */
+/** 文档状态 → el-tag 配色 */
 function docStatusType(status?: string): string {
   return { pending: 'warning', processing: 'primary', ready: 'success', failed: 'danger' }[status ?? ''] || 'info'
 }
@@ -144,8 +163,11 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const rebuildingId = ref<number | null>(null)
+const deletingId = ref<number | null>(null)
+/** 文档有效期（PRD §3.2 生命周期治理）：''=系统默认90天，90/180/0=显式有效期 */
+const expiresDays = ref<string | number>('')
 
-/** 字节数 -> 人类可读大小（B/KB/MB） */
+/** 字节数 → 人类可读大小（B/KB/MB） */
 function formatFileSize(bytes?: number): string {
   if (bytes === undefined || bytes === null) return '-'
   if (bytes < 1024) return bytes + ' B'
@@ -153,7 +175,7 @@ function formatFileSize(bytes?: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-/** ISO 时间串 -> 中文本地化时间 */
+/** ISO 时间串 → 中文本地化时间 */
 function formatDate(iso: string): string {
   if (!iso) return '-'
   return new Date(iso).toLocaleString('zh-CN')
@@ -195,7 +217,8 @@ function handleBeforeUpload(file: File): boolean {
 /** 自定义上传请求: 调 uploadDocument 后刷新列表 */
 async function handleUpload({ file }: { file: File }) {
   try {
-    await uploadDocument(file)
+    const days = expiresDays.value === '' ? undefined : Number(expiresDays.value)
+    await uploadDocument(file, days)
     ElMessage.success('上传成功，正在处理中...')
     fetchList()
   } catch (e: any) {
@@ -214,6 +237,29 @@ async function handleRebuild(docId: number) {
     ElMessage.error(e?.message || '重建失败')
   } finally {
     rebuildingId.value = null
+  }
+}
+
+/** 删除文档（失败/过期文档清理，释放套餐配额） */
+async function handleDelete(docId: number) {
+  try {
+    await ElMessageBox.confirm('删除后文档将从知识库移除且不可恢复，确认删除？', '删除确认', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return // 用户取消
+  }
+  deletingId.value = docId
+  try {
+    await deleteDocument(docId)
+    ElMessage.success('文档已删除')
+    fetchList()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '删除失败')
+  } finally {
+    deletingId.value = null
   }
 }
 

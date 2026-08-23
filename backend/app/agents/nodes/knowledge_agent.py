@@ -68,7 +68,7 @@ def _build_sources_text(retrieval_result: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def _generate_answer(query: str, sources_text: str, history: list[dict]) -> str:
+def _generate_answer(query: str, sources_text: str, history: list[dict]) -> tuple[str, bool]:
     """调用 LLM 生成带引用的回答。
 
     流程:
@@ -87,7 +87,8 @@ def _generate_answer(query: str, sources_text: str, history: list[dict]) -> str:
         sources_text: 格式化的来源文本
         history: 对话历史（最近几轮）
     Returns:
-        LLM 生成的回答文本
+        (回答文本, 是否生成成功)。生成失败时返回兜底文案 + False，
+        供上层标记"非有效回复"（：失败兜底不计入配额）。
     """
     prompt_template = _load_prompt()
     full_prompt = prompt_template.format(query=query, sources=sources_text)
@@ -111,11 +112,11 @@ def _generate_answer(query: str, sources_text: str, history: list[dict]) -> str:
         )
         answer = resp.choices[0].message.content.strip()
         logger.info(f"Knowledge Agent generated answer ({len(answer)} chars)")
-        return answer
+        return answer, True
     except Exception as e:
         # LLM 失败兜底，不让生成故障导致空回复
         logger.error(f"Knowledge Agent LLM call failed: {e}")
-        return "抱歉，系统处理您的请求时遇到了问题，请稍后重试。"
+        return "抱歉，系统处理您的请求时遇到了问题，请稍后重试。", False
 
 
 @observe(name="knowledge_agent")
@@ -139,9 +140,9 @@ def knowledge_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     start = time.perf_counter()
     messages: list[dict] = state.get("messages", [])
-    tenant_id: int | None = state.get("tenant_id")  # M9: 不默认租户 1，缺失则 None
+    tenant_id: int | None = state.get("tenant_id")  # : 不默认租户 1，缺失则 None
 
-    # M9: tenant_id 缺失（state 异常）-> 不调检索（防 None 拼进 Milvus expr / 跨租户），
+    # tenant_id 缺失（state 异常）→ 不调检索（防 None 拼进 Milvus expr / 跨租户），
     # 返回降级提示。正常流程 handle_message 恒注入 tenant_id，不会走到这里。
     if tenant_id is None:
         return {"final_response": "系统暂时无法处理您的请求，请稍后重试。", "retrieval_result": []}
@@ -167,6 +168,15 @@ def knowledge_agent_node(state: dict[str, Any]) -> dict[str, Any]:
             history=messages,
         )
 
+        # PRD §3.3：HyDE 兜底后仍低置信度 → 强制转人工（防止硬编答案）
+        if result.low_confidence:
+            return {
+                "final_response": "当前问题未在知识库中找到足够可信的答案，已为您转接人工客服，请稍候。",
+                "retrieval_result": [],
+                "current_agent": "knowledge_agent",
+                "should_interrupt": True,
+            }
+
         # 把 ChunkResult 转为 dict 列表供 trace 和 sources 展示
         retrieval_result = [
             {
@@ -183,19 +193,31 @@ def knowledge_agent_node(state: dict[str, Any]) -> dict[str, Any]:
         retrieval_result = []
 
     # 2. 生成回答
-    if retrieval_result:
+    if state.get("skip_generation"):
+        # 流式路径跳过生成（由流式端点统一生成），只返回检索结果
+        answer = "" if retrieval_result else "暂未找到相关信息，建议联系人工客服获取帮助。"
+        gen_ok = True
+    elif retrieval_result:
         sources_text = _build_sources_text(retrieval_result)
         # history 传入时去掉最后一条（当前 user 消息），避免重复
-        answer = _generate_answer(last_user, sources_text, messages[:-1])
+        answer, gen_ok = _generate_answer(last_user, sources_text, messages[:-1])
     else:
-        # 无检索结果 -> 兜底，建议转人工
+        # 无检索结果 → 兜底，建议转人工
         answer = "暂未找到相关信息，建议联系人工客服获取帮助。"
+        gen_ok = True
 
     elapsed = int((time.perf_counter() - start) * 1000)
     logger.info(f"Knowledge Agent finished in {elapsed}ms")
+
+    # PRD §3.4：LLM 生成失败 → 转人工（不计费由 generation_failed 标记保证）
+    interrupted = not gen_ok
+    if interrupted:
+        answer = "当前系统繁忙，已为您转接人工客服，请稍候。"
 
     return {
         "final_response": answer,
         "retrieval_result": retrieval_result,
         "current_agent": "knowledge_agent",
+        "generation_failed": interrupted,
+        "should_interrupt": interrupted,
     }

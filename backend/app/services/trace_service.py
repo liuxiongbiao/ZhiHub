@@ -27,7 +27,7 @@ from app.utils.desensitize import mask_pii
 
 logger = logging.getLogger(__name__)
 
-# MongoDB TTL：trace 90 天自动过期（008 US3），expireAfterSeconds 由 _ensure_ttl_index 建索引时使用
+# MongoDB TTL：trace 90 天自动过期（规格 008 US3），expireAfterSeconds 由 _ensure_ttl_index 建索引时使用
 TRACE_TTL_SECONDS = 90 * 24 * 3600
 
 

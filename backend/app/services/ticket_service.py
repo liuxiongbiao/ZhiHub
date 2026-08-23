@@ -27,8 +27,8 @@ class TicketError(Exception): pass
 class TicketNotFound(TicketError): pass
 
 
-# 状态机: open ↔ in_progress -> resolved -> closed
-# -- open 可推进到 in_progress，也可回退（reopen）；closed 是终态不可逆
+# 状态机: open ↔ in_progress → resolved → closed
+# —— open 可推进到 in_progress，也可回退（reopen）；closed 是终态不可逆
 VALID_TICKET_TRANSITIONS = {
     "open": {"in_progress"},
     "in_progress": {"resolved", "open"},
@@ -62,17 +62,20 @@ def get_ticket_status(db: Session, *, tenant_id: int, ticket_no: str) -> dict:
 
 def create_ticket(
     db: Session, *, tenant_id: int, title: str, description: str | None = None, priority: str = "medium",
-    category: str = "general",
+    category: str = "general", client_request_id: str | None = None, created_by: str = "agent",
 ) -> dict:
     """创建工单。
 
     流程:
+      0. 幂等检查（PRD 3.5）: 命中 client_request_id 直接返回首次结果，拦截网络重试
       1. 生成工单号 TK-{12 位 hex 大写}
       2. 调用 CRUD 创建记录（初始状态 open）
       3. 提交事务
 
     设计决策:
-      - 工单号用 uuid hex 前 12 位（48bit，T30）: 8 位（32bit）在 ~6.5 万单时冲突率已达 50%，
+      - 幂等键粒度 = (tenant_id, client_request_id)：同租户同请求 id 只建一单，
+        跨租户同 id 互不干扰（与退款幂等模式一致）
+      - 工单号用 uuid hex 前 12 位（48bit，）: 8 位（32bit）在 ~6.5 万单时冲突率已达 50%，
         12 位把 50% 冲突点推迟到 ~2800 万单
       - 默认优先级 medium: 大多数工单不需要紧急处理
 
@@ -87,24 +90,43 @@ def create_ticket(
         dict: id / ticket_no / title / status / priority
     """
     import uuid
-    # T30: 12 位 hex（48bit）——8 位（32bit）在 ~6.5 万单时冲突率已达 50%，
+    from app.core.idempotency import check_idempotency, record_idempotency
+
+    # 0. 幂等检查（client_request_id 为空时不启用，兼容内部调用）
+    if client_request_id:
+        cached = check_idempotency(tenant_id, client_request_id)
+        if cached:
+            ticket = ticket_crud.get_by_id(db, cached.get("resource_id"), tenant_id)
+            if ticket is not None:
+                return {
+                    "id": ticket.id, "ticket_no": ticket.ticket_no, "title": ticket.title,
+                    "status": ticket.status, "priority": ticket.priority, "cached": True,
+                }
+
+    # 12 位 hex（48bit）——8 位（32bit）在 ~6.5 万单时冲突率已达 50%，
     # 12 位把 50% 冲突点推迟到 ~2800 万单；撞唯一约束抛 IntegrityError 的概率可忽略
     ticket_no = f"TK-{uuid.uuid4().hex[:12].upper()}"
     ticket = ticket_crud.create_ticket(
         db, tenant_id=tenant_id, ticket_no=ticket_no, title=title,
-        description=description, priority=priority, category=category,
+        description=description, priority=priority, category=category, created_by=created_by,
     )
     db.commit()
+    if client_request_id:
+        record_idempotency(tenant_id, client_request_id, "ticket", ticket.id)
     return {
         "id": ticket.id, "ticket_no": ticket.ticket_no, "title": ticket.title,
         "status": ticket.status, "priority": ticket.priority,
     }
 
 
-def update_ticket_status(db: Session, *, ticket_no: str, tenant_id: int, new_status: str) -> dict:
+def update_ticket_status(
+    db: Session, *, ticket_no: str, tenant_id: int, new_status: str,
+    client_request_id: str | None = None,
+) -> dict:
     """更新工单状态（含状态机校验）。
 
     流程:
+      0. 幂等检查（PRD 3.5）: 命中 client_request_id 返回首次结果
       1. 加载工单（按 tenant_id 隔离）
       2. 查状态机合法目标集合，new_status 不在集合内 -> 拒绝
       3. 更新状态并提交
@@ -126,15 +148,24 @@ def update_ticket_status(db: Session, *, ticket_no: str, tenant_id: int, new_sta
         TicketNotFound: 工单不存在
         TicketError: 非法状态跃迁
     """
+    from app.core.idempotency import check_idempotency, record_idempotency
+
     ticket = ticket_crud.get_by_ticket_no(db, tenant_id, ticket_no)
     if ticket is None:
         raise TicketNotFound(f"工单不存在: {ticket_no}")
 
-    # 查合法目标集合 -- 未知状态默认空集，拒绝所有跃迁（fail-closed）
+    if client_request_id:
+        cached = check_idempotency(ticket_no, client_request_id)
+        if cached:
+            return {"ticket_no": ticket_no, "status": new_status, "cached": True}
+
+    # 查合法目标集合 —— 未知状态默认空集，拒绝所有跃迁（fail-closed）
     valid = VALID_TICKET_TRANSITIONS.get(ticket.status, set())
     if new_status not in valid:
         raise TicketError(f"非法状态跃迁: {ticket.status} -> {new_status}")
 
     ticket_crud.update_status(db, ticket, new_status)
     db.commit()
+    if client_request_id:
+        record_idempotency(ticket_no, client_request_id, "ticket_update", ticket.id)
     return {"ticket_no": ticket_no, "status": new_status}

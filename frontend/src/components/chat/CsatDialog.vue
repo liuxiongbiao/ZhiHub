@@ -1,3 +1,11 @@
+/**
+ * src/components/chat/CsatDialog.vue
+ *
+ * 职责: CSAT 满意度评价弹窗 —— 会话关闭后向用户收集 1-5 星评分与可选文字建议，
+ *      提交 POST /session/{id}/csat，同一会话仅可评价一次（重复提交服务端返回 409）。
+ *
+ * 交互: ChatWindow 在会话 closed 后通过 v-model 唤起本弹窗；「跳过」仅关闭不提交。
+ */
 <template>
   <el-dialog v-model="visible" title="满意度评价" width="400px" :close-on-click-modal="false">
     <div class="csat-body">

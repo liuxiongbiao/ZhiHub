@@ -24,7 +24,7 @@ backend/app/mcp_servers/base_server.py
 import uuid
 from typing import Any
 
-from app.utils.validators import verify_phone_suffix  # noqa: F401  # 016: 逻辑收敛到 validators，此处再导出保持兼容
+from app.utils.validators import verify_phone_suffix  # noqa: F401  # 规格 016: 逻辑收敛到 validators，此处再导出保持兼容
 
 JSONRPC_VERSION = "2.0"
 
@@ -39,7 +39,7 @@ ERR_INTERNAL_ERROR = -32603       # 内部错误：服务端执行异常
 ERR_PERMISSION_DENIED = -32000    # 业务扩展：权限矩阵拦截（租户无权调用该工具）
 ERR_CIRCUIT_BROKEN = -32001       # 业务扩展：工具熔断中（连续失败触发熔断，详见 circuit_breaker.py）
 
-# 错误码 -> 默认消息映射。build_error 未传 message 时回退到此处，保证每个码都有标准文案。
+# 错误码 → 默认消息映射。build_error 未传 message 时回退到此处，保证每个码都有标准文案。
 ERROR_MESSAGES = {
     ERR_PARSE_ERROR: "Parse error",
     ERR_INVALID_REQUEST: "Invalid Request",

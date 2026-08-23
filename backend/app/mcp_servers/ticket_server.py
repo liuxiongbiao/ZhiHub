@@ -8,7 +8,7 @@ backend/app/mcp_servers/ticket_server.py
   本文件是"工具实现层"--定义工具有哪些（TICKET_TOOLS 的 inputSchema 即 tools/list 返回内容）、
   以及每个工具怎么执行（handle_ticket_tool 分发到具体业务函数）。它不处理 JSON-RPC 信封
   （那是 mcp_service 的职责），只接收已解析的 (tool_name, params) 返回业务 dict 或抛异常。
-  006 安全加固后，get_ticket_status 强制双因子：phone 后 4 位必须匹配工单绑定手机号，
+  规格 006 安全加固后，get_ticket_status 强制双因子：phone 后 4 位必须匹配工单绑定手机号，
   不存在/不匹配统一抛 IdentityVerificationError 防枚举。
 
 关键技术点:
@@ -58,8 +58,9 @@ TICKET_TOOLS = [
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
+                "client_request_id": {"type": "string", "description": "幂等键，防网络重试重复建单（PRD 3.5）"},
             },
-            "required": ["title"],  # T29: tenant_id 服务端注入，不要求客户端传
+            "required": ["title", "client_request_id"],  # : tenant_id 服务端注入
         },
     },
     {
@@ -71,8 +72,9 @@ TICKET_TOOLS = [
                 "ticket_no": {"type": "string"},
                 "tenant_id": {"type": "integer"},
                 "new_status": {"type": "string", "enum": ["open", "in_progress", "resolved", "closed"]},
+                "client_request_id": {"type": "string", "description": "幂等键，防网络重试重复更新（PRD 3.5）"},
             },
-            "required": ["ticket_no", "new_status"],  # T29: tenant_id 服务端注入
+            "required": ["ticket_no", "new_status", "client_request_id"],  # : tenant_id 服务端注入
         },
     },
 ]
@@ -83,7 +85,7 @@ def handle_ticket_tool(tool_name: str, params: dict, *, db: Session | None = Non
 
     流程:
       1. 决定 Session：外部注入则复用，不传则内部新建（own_session 标记负责关闭）
-      2. 取 tenant_id（由 mcp_service 注入，缺失拒绝——T11 fail-closed）
+      2. 取 tenant_id（由 mcp_service 注入，缺失拒绝—— fail-closed）
       3. 按 tool_name 分发到具体业务函数 / ticket_service
       4. 写操作（create/update）成功后 commit
       5. own_session 在 finally 关闭，保证异常时也释放连接
@@ -108,7 +110,7 @@ def handle_ticket_tool(tool_name: str, params: dict, *, db: Session | None = Non
         from app.core.database import SessionLocal
         db = SessionLocal()
     try:
-        # fail-closed（T11）: tenant_id 由 mcp_service.call_tool 注入，
+        # fail-closed: tenant_id 由 mcp_service.call_tool 注入，
         # 缺失说明绕过 call_tool 直调 handler，拒绝（正常链路不可能触发）
         tenant_id = params.get("tenant_id")
         if tenant_id is None:
@@ -124,6 +126,7 @@ def handle_ticket_tool(tool_name: str, params: dict, *, db: Session | None = Non
                 db, tenant_id=tenant_id, title=params["title"],
                 description=params.get("description"),
                 priority=params.get("priority", "medium"),
+                client_request_id=params["client_request_id"],
             )
             db.commit()
             return result
@@ -133,6 +136,7 @@ def handle_ticket_tool(tool_name: str, params: dict, *, db: Session | None = Non
             result = update_ticket_status(
                 db, ticket_no=params["ticket_no"],
                 tenant_id=tenant_id, new_status=params["new_status"],
+                client_request_id=params["client_request_id"],
             )
             db.commit()
             return result

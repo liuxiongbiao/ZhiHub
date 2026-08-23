@@ -5,13 +5,13 @@ backend/app/services/session_service.py
 
 核心设计:
   四块功能：①Redis 上下文读写（最近 N 轮消息，TTL 30min 空闲超时）；②轮次计数（consecutive/total/last_intent），
-  连续 3 轮可解决类意图未解决或累计 15 轮转人工；③在线坐席 presence（SADD/SREM 集合，判断有无坐席决定留言建单）；
-  ④会话创建与详情。轮次计数知识咨询豁免 consecutive（允许探索性多轮），但计入 total（总上限保护）。
+  连续 3 轮可解决类意图未解决或累计 15 轮转人工；③在线坐席 presence（客服独立 TTL key，判断有无坐席决定留言建单）；
+  ④会话创建与详情。PRD V1.6 起知识咨询也计入连续相同意图轮次，防止重复追问陷入循环。
 
 关键技术点:
   - Redis 上下文: 最近 10 轮消息，TTL 30min，滚动续期
   - 轮次计数三态: consecutive（连续同意图）/ total（累计）/ last_intent（判 streak）
-  - presence 集合: SADD/SREM/SCARD 实现坐席在线判断，O(1) 复杂度
+  - presence TTL key: WebSocket 建连/心跳续期，断开删除；进程异常时由 Redis 自动过期
   - 转人工阈值: consecutive>=3 或 total>=15
 
 依赖关系:
@@ -20,6 +20,7 @@ backend/app/services/session_service.py
 """
 
 import json
+import logging
 import time
 
 from sqlalchemy.orm import Session as DbSession
@@ -30,6 +31,8 @@ from app.crud import csat as csat_crud
 from app.crud import quick_reply as quick_reply_crud
 from app.crud import session as session_crud
 from app.models.session import Session
+
+logger = logging.getLogger(__name__)
 
 # Redis 上下文键前缀 + TTL
 CONTEXT_KEY_PREFIX = "session:context:"
@@ -77,10 +80,11 @@ def clear_context(session_id: int) -> None:
     r.delete(_context_key(session_id))
 
 
-# ─── 会话轮次计数（007-session-lifecycle US1 轮次触发转人工）───
+# ─── 会话轮次计数（规格 007 US1 轮次触发转人工）───
 
-# 可解决类意图：连续未解决达阈值即转人工；知识咨询豁免（允许探索性多轮）
-RESOLVABLE_INTENTS = {"ticket_query", "order_query", "sensitive_action"}
+# 可解决类意图：连续相同意图未解决达阈值即转人工（PRD §3.4 判定口径：
+# 以“连续相同意图”近似“用户重复追问同一问题”，不再豁免知识咨询）
+RESOLVABLE_INTENTS = {"knowledge_consult", "ticket_query", "order_query", "sensitive_action"}
 ROUND_CONSECUTIVE_THRESHOLD = 3   # 连续未解决轮次阈值
 ROUND_TOTAL_THRESHOLD = 15        # 累计总轮次阈值
 ROUNDS_KEY_PREFIX = "session:rounds:"
@@ -114,15 +118,14 @@ def incr_rounds(session_id: int, intent: str) -> dict:
     流程:
       1. 可解决类意图 + 与上轮相同 -> consecutive++（streak 累加）
       2. 可解决类意图 + 与上轮不同 -> consecutive=1（新 streak）
-      3. 知识咨询 -> consecutive=0（豁免探索性多轮）
+      3. 非可解决意图 -> consecutive=0
       4. total 始终 +1，记录 last_intent
 
     设计决策:
-      "连续3轮相同"= consecutive 达 3（第3轮触发，无需第4轮）。知识咨询豁免 consecutive
-      是因为知识探索天然多轮（用户追问细节），不应因多轮转人工；但计入 total 防无限对话。
+      "连续3轮相同"= consecutive 达 3（第3轮触发，无需第4轮），包含知识咨询。
 
     可解决类意图：与上一轮相同 -> consecutive++（streak 累加）；不同 -> 新 streak 从 1 起。
-    知识咨询 -> consecutive=0（豁免探索性多轮）。
+    非可解决意图 -> consecutive=0。
     total 始终 +1。返回更新后的计数 dict。
     "连续3轮相同"= consecutive 达 3（第3轮触发，无需第4轮）。
     """
@@ -133,7 +136,7 @@ def incr_rounds(session_id: int, intent: str) -> dict:
         else:
             rounds["consecutive"] = 1  # 新可解决意图 streak 从 1 起
     else:
-        rounds["consecutive"] = 0  # 知识咨询豁免
+        rounds["consecutive"] = 0  # 非可解决意图不累计连续轮次
     rounds["total"] = rounds.get("total", 0) + 1
     rounds["last_intent"] = intent
     _save_rounds(session_id, rounds)
@@ -160,34 +163,57 @@ def should_handoff_by_rounds(rounds: dict) -> bool:
     )
 
 
-# ─── 在线坐席 presence（007-session-lifecycle US3 留言建单触发判定）───
+# ─── 在线坐席 presence（规格 007 US3 留言建单触发判定）───
 
 ONLINE_AGENTS_PREFIX = "agents:online:"
+AGENT_PRESENCE_TTL_SECONDS = 90
 
 
-def _online_key(tenant_id: int) -> str:
-    return f"{ONLINE_AGENTS_PREFIX}{tenant_id}"
+def _online_key(tenant_id: int, user_id: int) -> str:
+    return f"{ONLINE_AGENTS_PREFIX}{tenant_id}:{user_id}"
 
 
 def mark_agent_online(tenant_id: int, user_id: int) -> None:
-    """坐席登录 -> SADD 加入租户在线集合。"""
-    get_redis().sadd(_online_key(tenant_id), str(user_id))
+    """坐席登录、WS 建连或心跳 -> 刷新独立 presence key 的 TTL。"""
+    get_redis().set(
+        _online_key(tenant_id, user_id),
+        "1",
+        ex=AGENT_PRESENCE_TTL_SECONDS,
+    )
 
 
 def mark_agent_offline(tenant_id: int, user_id: int) -> None:
-    """坐席登出 -> SREM 移出在线集合。"""
-    get_redis().srem(_online_key(tenant_id), str(user_id))
+    """坐席登出或 WS 断开 -> 主动删除 presence key。"""
+    get_redis().delete(_online_key(tenant_id, user_id))
 
 
 def has_online_agent(tenant_id: int) -> bool:
-    """租户是否有在线坐席（SCARD > 0）。决定留言是否建单--无坐席时留言自动建单。"""
-    return get_redis().scard(_online_key(tenant_id)) > 0
+    """租户是否存在仍未过期的客服 presence key。"""
+    prefix = f"{ONLINE_AGENTS_PREFIX}{tenant_id}:*"
+    redis_client = get_redis()
+    return any(redis_client.ttl(key) > 0 for key in redis_client.scan_iter(prefix, count=10))
+
+
+def cleanup_expired_agent_presence() -> int:
+    """兜底清除异常的无 TTL presence 及旧版 Set key；正常过期 key 由 Redis 自动删除。"""
+    redis_client = get_redis()
+    removed = 0
+    for key in redis_client.scan_iter(f"{ONLINE_AGENTS_PREFIX}*"):
+        text_key = key.decode() if isinstance(key, bytes) else str(key)
+        is_legacy_set = len(text_key.split(":")) == 3
+        if is_legacy_set or redis_client.ttl(key) == -1:
+            removed += int(redis_client.delete(key) or 0)
+    return removed
 
 
 # ─── 会话生命周期 ───
 
 def create_session(db: DbSession, *, tenant_id: int, end_user_id: str | None = None) -> dict:
     """创建新会话并初始化 Redis 上下文。"""
+    # readonly/closed/pending_review 租户拒绝新会话
+    from app.services.tenant_service import require_active_tenant
+    require_active_tenant(db, tenant_id)
+
     session = session_crud.create_session(db, tenant_id=tenant_id, end_user_id=end_user_id)
     db.commit()
     # 初始化空的 Redis 上下文
@@ -211,7 +237,7 @@ def get_session_detail(
         "sentiment": session.sentiment,
         "message_count": len(messages),
         "created_at": session.created_at,
-        # T28: 前端详情页渲染时间用（此前只改 schema 未填值 -> 前端 formatDate(null) 显示 1970）
+        # 前端详情页渲染时间用（此前只改 schema 未填值 → 前端 formatDate(null) 显示 1970）
         "updated_at": session.updated_at,
         "messages": [
             {
@@ -239,12 +265,22 @@ def is_session_expired(session: Session) -> bool:
 
 # ─── 会话生命周期 ───
 
-# 024: CLOSED 会话续聊窗口（PRD 3.7）: 关闭后 24h 内追问可重开，超期则需新建会话
+# CLOSED 会话续聊窗口（PRD §3.7）: 关闭后 24h 内追问可重开，超期则需新建会话
 CLOSED_REOPEN_HOURS = 24
 
 
 class SessionNotFound(Exception):
     """会话不存在 -> 404."""
+
+
+class SessionHumanControlled(Exception):
+    """会话正在由人工客服处理，用户消息不得进入智能体链路 -> 409。"""
+
+
+def ensure_agent_execution_allowed(session: Session) -> None:
+    """在任何 Agent 执行或用户消息落库前阻断人工接管态。"""
+    if session.status == "human_handling":
+        raise SessionHumanControlled("会话正在由人工客服处理，请等待客服回复")
 
 
 class SessionReopenExpired(Exception):
@@ -272,7 +308,7 @@ class FeedbackAlreadyExists(Exception):
 
 
 def handle_closed_reply(db: DbSession, *, session_id: int, tenant_id: int) -> dict:
-    """处理 CLOSED 会话的追问续聊（024 PRD 3.7）。
+    """处理 CLOSED 会话的追问续聊（PRD §3.7）。
 
     业务规则:
       - 会话非 closed -> 无需重开，直接返回（调用方正常处理消息）
@@ -304,7 +340,7 @@ def handle_closed_reply(db: DbSession, *, session_id: int, tenant_id: int) -> di
         return {"reopened": False, "session_id": session_id, "status": session.status,
                 "reason": "not_closed"}
 
-    # 检查 24h 续聊窗口 -- updated_at 即关闭时间（status 变更触发 onupdate）
+    # 检查 24h 续聊窗口 —— updated_at 即关闭时间（status 变更触发 onupdate）
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     delta = now - session.updated_at
     if delta.total_seconds() > CLOSED_REOPEN_HOURS * 3600:
@@ -312,20 +348,20 @@ def handle_closed_reply(db: DbSession, *, session_id: int, tenant_id: int) -> di
             f"会话已关闭超过 {CLOSED_REOPEN_HOURS}h，无法续聊，请新建会话"
         )
 
-    # 24h 内 -> 重开为 agent_handling，保留原上下文供 AI 接管
+    # 24h 内 → 重开为 agent_handling，保留原上下文供 AI 接管
     session.status = "agent_handling"
     db.flush()
     return {"reopened": True, "session_id": session_id, "status": "agent_handling"}
 
 
-# ─── 快捷回复（022）/ CSAT（007）/ 回答反馈（021）───
+# ─── 快捷回复/ CSAT（规格 007）/ 回答反馈───
 # 分层收口（M11）: API 层不再直接 crud+commit，统一由 service 封装
 # crud 操作 + commit + 业务校验，业务异常抛 service 自定义异常由 API 层映射 HTTP。
 
 def create_quick_reply(
     db: DbSession, *, tenant_id: int, content: str, shortcut: str | None = None
 ) -> dict:
-    """创建快捷回复模板（022 PRD 3.7）: crud 创建 + commit。返回 {id, content, shortcut}。"""
+    """创建快捷回复模板（PRD §3.7）: crud 创建 + commit。返回 {id, content, shortcut}。"""
     q = quick_reply_crud.create(db, tenant_id=tenant_id, content=content, shortcut=shortcut)
     db.commit()
     return {"id": q.id, "content": q.content, "shortcut": q.shortcut}
@@ -335,7 +371,7 @@ def submit_csat(
     db: DbSession, *,
     session_id: int, tenant_id: int, score: int, comment: str | None = None,
 ) -> dict:
-    """提交 CSAT 满意度评价（007 US3）: 仅 closed 会话可评价，同一会话仅一次。
+    """提交 CSAT 满意度评价（规格 007 US3）: 仅 closed 会话可评价，同一会话仅一次。
 
     Raises:
         SessionNotFound: 会话不存在 -> 404
@@ -359,7 +395,7 @@ def submit_feedback(
     db: DbSession, *,
     message_id: int, tenant_id: int, score: int, comment: str | None = None,
 ) -> dict:
-    """提交单条消息回答反馈（021 PRD 3.8）: score 仅 ±1，同一消息仅一次。
+    """提交单条消息回答反馈（PRD §3.8）: score 仅 ±1，同一消息仅一次。
 
     校验顺序与原 API 层一致: 先判 score=0，再查消息存在性，最后查去重。
 

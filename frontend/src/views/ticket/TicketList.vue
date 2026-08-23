@@ -1,12 +1,12 @@
 <!-- frontend/src/views/ticket/TicketList.vue -->
-<!-- 职责: 工单看板 - 列表 + 详情抽屉(012 前端打磨) -->
+<!-- 职责: 工单看板 - 列表 + 详情抽屉(规格 012 前端打磨) -->
 <template>
   <div>
     <PageHeader title="工单看板" subtitle="查看与跟进所有工单" />
 
     <div class="page-container">
       <el-card shadow="never">
-        <!-- 013 审查 P1-6：按状态分栏看板（PRD 3.8） -->
+        <!-- 规格 013 审查 ：按状态分栏看板（PRD §3.8） -->
         <el-tabs v-model="activeStatus" @tab-change="loadTickets">
           <el-tab-pane v-for="g in statusGroups" :key="g.value" :name="g.value">
             <template #label>{{ g.label }}（{{ countBy(g.value) }}）</template>
@@ -24,6 +24,9 @@
             <template #default="{ row }">
               <el-tag :type="priorityType(row.priority)" size="small">{{ PRIORITY_MAP[row.priority] || row.priority }}</el-tag>
             </template>
+          </el-table-column>
+          <el-table-column label="创建方" width="90">
+            <template #default="{ row }">{{ creatorLabel(row.created_by) }}</template>
           </el-table-column>
           <el-table-column prop="created_at" label="创建时间" width="180">
             <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
@@ -83,14 +86,14 @@ import { ElMessage } from 'element-plus'
 import { getTicketList, getTicketDetail, type Ticket } from '@/api/ticket'
 import PageHeader from '@/components/common/PageHeader.vue'
 
-/** 工单状态 -> 中文标签 */
+/** 工单状态 → 中文标签 */
 const STATUS_MAP: Record<string, string> = {
   open: '待处理',
   in_progress: '处理中',
   resolved: '已解决',
   closed: '已关闭',
 }
-/** 优先级 -> 中文标签 */
+/** 优先级 → 中文标签 */
 const PRIORITY_MAP: Record<string, string> = {
   low: '低', medium: '中', high: '高', urgent: '紧急',
 }
@@ -121,19 +124,25 @@ function countBy(status: string): number {
   return status ? tickets.value.filter((t) => t.status === status).length : tickets.value.length
 }
 
-/** 工单状态 -> el-tag 配色 */
+/** 工单状态 → el-tag 配色 */
 function statusType(status: string): string {
   return { open: 'warning', in_progress: 'primary', resolved: 'success', closed: 'info' }[status] || 'info'
 }
 
-/** 优先级 -> el-tag 配色 */
+/** 优先级 → el-tag 配色 */
 function priorityType(priority: string): string {
   return { high: 'danger', urgent: 'danger', medium: 'warning', low: 'info' }[priority] || 'info'
 }
 
-/** ISO 时间串 -> 中文本地化时间 */
+/** ISO 时间串 → 中文本地化时间 */
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN')
+}
+
+/** 创建方标签（PRD §3.5：agent=Agent / staff=坐席 / message=留言） */
+function creatorLabel(v: string | undefined): string {
+  const map: Record<string, string> = { agent: 'Agent', staff: '坐席', message: '留言' }
+  return map[v || ''] || v || '-'
 }
 
 /** 拉取工单列表（带状态筛选 + 分页），失败提示 */

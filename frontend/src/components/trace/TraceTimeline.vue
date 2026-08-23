@@ -45,7 +45,7 @@ import type { AgentTrace } from '@/types/trace'
 
 defineProps<{ trace: AgentTrace | null }>()
 
-/** 小数 -> 百分比字符串（如 0.85 -> "85%"） */
+/** 小数 → 百分比字符串（如 0.85 → "85%"） */
 function formatPercent(v?: number): string {
   if (v === undefined || v === null) return '-'
   return (v * 100).toFixed(0) + '%'

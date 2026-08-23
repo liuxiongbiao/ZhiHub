@@ -1,5 +1,5 @@
 <!-- frontend/src/views/session/SessionMonitor.vue -->
-<!-- 013 审查补齐：会话监控列表（PRD 3.8：状态/等待时长，点击进详情查看完整 trace） -->
+<!-- 规格 013 审查补齐：会话监控列表（PRD §3.8：状态/等待时长，点击进详情查看完整 trace） -->
 <template>
   <div>
     <PageHeader title="会话监控" subtitle="实时查看本租户全部会话与等待人工时长" />
@@ -12,6 +12,16 @@
             <el-radio-button label="waiting_human">等待人工</el-radio-button>
             <el-radio-button label="human_handling">人工处理</el-radio-button>
             <el-radio-button label="closed">已关闭</el-radio-button>
+          </el-radio-group>
+          <el-radio-group
+            v-model="sentimentFilter"
+            class="sentiment-group"
+            @change="loadSessions"
+          >
+            <el-radio-button label="">全部情绪</el-radio-button>
+            <el-radio-button label="normal">正常</el-radio-button>
+            <el-radio-button label="unhappy">不满</el-radio-button>
+            <el-radio-button label="angry">愤怒</el-radio-button>
           </el-radio-group>
         </div>
 
@@ -64,6 +74,7 @@ const router = useRouter()
 const sessions = ref<Session[]>([])
 const loading = ref(false)
 const statusFilter = ref('')
+const sentimentFilter = ref('')
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
@@ -88,7 +99,11 @@ function durationLabel(row: Session): string {
 async function loadSessions() {
   loading.value = true
   try {
-    const res = await getSessionList({ page: page.value, page_size: pageSize, status: statusFilter.value || undefined })
+    const res = await getSessionList({
+      page: page.value, page_size: pageSize,
+      status: statusFilter.value || undefined,
+      sentiment: sentimentFilter.value || undefined,
+    })
     sessions.value = res.data.items
     total.value = res.data.total
   } catch (e: any) {
@@ -105,5 +120,6 @@ onMounted(loadSessions)
 
 <style scoped lang="scss">
 .toolbar { margin-bottom: 16px; }
+.sentiment-group { margin-left: 16px; }
 .pagination-wrap { margin-top: 16px; display: flex; justify-content: flex-end; }
 </style>

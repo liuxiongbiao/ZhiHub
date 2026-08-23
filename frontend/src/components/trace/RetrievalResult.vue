@@ -33,7 +33,7 @@ defineProps<{
   results: ChunkResult[]
 }>()
 
-/** 检索来源 -> el-tag 配色 */
+/** 检索来源 → el-tag 配色 */
 function sourceTagType(source: string): 'success' | 'warning' | 'info' | 'danger' | '' {
   switch (source) {
     case 'hybrid':

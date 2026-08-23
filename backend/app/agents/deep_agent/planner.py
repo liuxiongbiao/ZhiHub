@@ -62,11 +62,45 @@ def _parse_react_response(text: str) -> tuple[str, str, str]:
     if m:
         action = m.group(1).strip()
 
-    m = re.search(r"Action Input:\s*(\{.*?\})", text, re.DOTALL)
+    m = re.search(r"Action Input:\s*(.*?)(?=\nThought:|$)", text, re.DOTALL)
     if m:
-        action_input = m.group(1).strip()
+        raw = m.group(1).strip()
+        parsed = _extract_json_object(raw)
+        action_input = json.dumps(parsed, ensure_ascii=False) if parsed else raw[:500]
 
     return thought, action, action_input
+
+
+def _extract_json_object(text: str) -> dict:
+    """从文本中提取第一个括号平衡的 JSON 对象（兼容报告内容含 } 的场景）。失败返回空 dict。"""
+    start = text.find("{")
+    if start == -1:
+        return {}
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start : i + 1])
+                except json.JSONDecodeError:
+                    return {}
+    return {}
 
 
 def _execute_tool(action: str, action_input: str, goal: str, tenant_id: int) -> str:
@@ -87,11 +121,14 @@ def _execute_tool(action: str, action_input: str, goal: str, tenant_id: int) -> 
         return f"未知工具: {action}"
 
 
-def execute(task_id: str, goal: str, tenant_id: int) -> DeepAgentResult:
+def execute(
+    task_id: str, goal: str, tenant_id: int, timeout_seconds: int | None = None,
+) -> DeepAgentResult:
     """ReAct 自主规划循环: LLM 决策 -> 工具执行 -> 观察 -> 重复直到 finish 或熔断。"""
     start = time.perf_counter()
     result = DeepAgentResult(task_id=task_id, goal=goal, status="running")
     tool_calls = 0
+    deadline = (start + timeout_seconds) if timeout_seconds else None
 
     # 占位 key 检测: LLM 未配置时快速降级，避免测试/开发环境挂起
     from app.config import settings
@@ -131,6 +168,12 @@ def execute(task_id: str, goal: str, tenant_id: int) -> DeepAgentResult:
         from app.core.llm_client import llm_complete
 
         while tool_calls < MAX_TOOL_CALLS:
+            # PRD §3.11：任务执行超时（默认 10 分钟）→ 标记失败
+            if deadline and time.perf_counter() > deadline:
+                result.status = "failed"
+                result.error = f"任务执行超时（{timeout_seconds} 秒）"
+                result.report = _generate_report(goal, _query_stats(tenant_id), _search_sop(goal, tenant_id))
+                break
             step_start = time.perf_counter()
             resp = llm_complete(messages=messages, max_tokens=500, temperature=0.0)
             llm_output = resp.choices[0].message.content.strip()

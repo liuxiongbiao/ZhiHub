@@ -9,7 +9,7 @@ backend/app/core/langfuse_client.py
   不直接用官方 @observe 挂在业务函数上，而是自封装一层 observe()，原因是官方装饰器在模块加载时
   就会尝试初始化 client，失败可能抛异常；自封装把初始化推迟到运行时并 try/except 兜底，确保零侵入。
   另外 capture_input/output=False，不把原始用户消息（含手机号 PII）传给 Langfuse，PII 明细只存
-  脱敏后的 MongoDB trace（见 trace_service.py），这是 008 US3 脱敏要求的落实。
+  脱敏后的 MongoDB trace（见 trace_service.py），这是 规格 008 US3 脱敏要求的落实。
 
 关键技术点:
   - 单例懒加载: _langfuse_instance 首次调用 get_langfuse 时初始化，后续复用

@@ -1,3 +1,11 @@
+/**
+ * src/components/chat/LeaveMessageDialog.vue
+ *
+ * 职责: 转人工留言弹窗 —— 当前无在线坐席时收集用户诉求，
+ *      提交 POST /session/{id}/leave-message 由服务端自动创建留言工单。
+ *
+ * 交互: ChatWindow 在会话进入 waiting_human 且无坐席在线时通过 v-model 唤起。
+ */
 <template>
   <el-dialog v-model="visible" title="留言" width="440px" :close-on-click-modal="false">
     <p class="leave-tip">当前无在线坐席，请留下您的诉求，我们将尽快处理。</p>

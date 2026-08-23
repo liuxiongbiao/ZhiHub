@@ -35,7 +35,7 @@ ALL_MCP_TOOLS = TICKET_TOOLS + ORDER_TOOLS
 
 
 class ToolCallRequest(BaseModel):
-    """MCP tools/call 请求体 Schema（P-010: 替换裸 dict，强制类型校验）。"""
+    """MCP tools/call 请求体 Schema（替换裸 dict，强制类型校验）。"""
     name: str = Field(..., min_length=1, max_length=100, description="工具名称")
     arguments: dict = Field(default_factory=dict, description="工具参数")
 

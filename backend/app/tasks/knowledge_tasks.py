@@ -29,8 +29,10 @@ backend/app/tasks/knowledge_tasks.py
 
 import logging
 import os
+import tempfile
 
-
+from celery import shared_task
+from app.config import settings
 from app.core.database import SessionLocal
 from app.core.embedding_client import (
     embed_batches,
@@ -48,6 +50,7 @@ logger = logging.getLogger(__name__)
 MAX_DUAL_WRITE_RETRIES = 3
 
 
+@shared_task(name="app.tasks.knowledge_tasks.process_document")
 def process_document(doc_id: int, tenant_id: int) -> None:
     """文档处理全流程：解析 -> 切片 -> embedding -> 双写 Milvus+ES -> 更新状态。
 
@@ -76,34 +79,59 @@ def process_document(doc_id: int, tenant_id: int) -> None:
         if doc is None:
             logger.error(f"Document not found: doc_id={doc_id}, tenant_id={tenant_id}")
             return
+        # 仅处理 pending/processing 文档。demo reset 会把旧租户文档置 failed，
+        # 已在队列中的旧任务据此跳过，防止 reset 后向旧租户重写向量。
+        if doc.status not in ("pending", "processing"):
+            logger.info(f"Document {doc_id} status={doc.status}, skip processing")
+            return
 
         # 更新状态为 processing（标记开始处理，前端可显示进度）
         knowledge_crud.update_status(db, doc, "processing")
         db.commit()
 
-        # 确保 Milvus collection + ES index 存在（首次上传时初始化）
-        try:
-            init_milvus_collection()
-            init_es_index()
-        except Exception as e:
-            logger.warning(f"Init vector store failed (non-blocking): {e}")
-
-        # 从本地磁盘读取文件内容（upload 时写入的临时文件）
-        import tempfile
-        tmp_path = os.path.join(tempfile.gettempdir(), "zhihub_uploads", f"{doc_id}_{os.path.basename(doc.filename)}")
-        if not os.path.exists(tmp_path):
-            # 临时文件不存在（可能被清理或重启丢失），降级为 ready + 0 chunks 避免阻塞队列
-            logger.warning(f"Temp file not found: {tmp_path}, falling back to mock mode")
-            knowledge_crud.update_status(db, doc, "ready")
+        upload_path = os.path.join(
+            settings.upload_storage_dir,
+            f"{doc_id}_{os.path.basename(doc.filename)}",
+        )
+        legacy_upload_path = os.path.join(
+            tempfile.gettempdir(),
+            "zhihub_uploads",
+            f"{doc_id}_{os.path.basename(doc.filename)}",
+        )
+        # 滚动升级兼容：处理部署前已经入队、仍落在旧临时目录中的真实文件。
+        if not os.path.isfile(upload_path) and os.path.isfile(legacy_upload_path):
+            upload_path = legacy_upload_path
+        if not os.path.isfile(upload_path):
+            reason = f"上传源文件不存在或 worker 无法访问共享目录: {upload_path}"
+            logger.error(reason)
+            knowledge_crud.update_status(db, doc, "failed", error_message=reason[:1000])
             knowledge_crud.set_chunk_count(db, doc, 0)
             db.commit()
             return
 
-        with open(tmp_path, "rb") as f:
+        # 确保检索索引存在。关闭 embedding 时只初始化 ES，避免误触向量链路。
+        try:
+            if settings.embedding_enabled:
+                init_milvus_collection()
+            init_es_index()
+        except Exception as e:
+            logger.warning(f"Init vector store failed (non-blocking): {e}")
+
+        with open(upload_path, "rb") as f:
             content = f.read()
 
-        # 1. 解析 + 切片
-        chunks = parse_and_chunk(doc.filename, content)
+        # 1. 解析 + 切片（PRD §3.2：配置 RagFlow 走语义切片，否则/失败降级本地规则解析）
+        chunks = None
+        from app.core.ragflow_client import get_ragflow_client
+
+        ragflow = get_ragflow_client()
+        if not ragflow.is_mock:
+            try:
+                chunks = ragflow.parse(doc.filename, content)
+            except Exception as e:
+                logger.warning(f"RagFlow parse failed (doc={doc_id}), fallback local: {e}")
+        if chunks is None:
+            chunks = parse_and_chunk(doc.filename, content)
         if not chunks:
             knowledge_crud.update_status(db, doc, "failed", error_message="文档解析后无有效文本内容")
             db.commit()
@@ -112,35 +140,65 @@ def process_document(doc_id: int, tenant_id: int) -> None:
         # 2. 批量 Embedding
         chunk_texts = [c.text for c in chunks]
 
-        # 乱码率检测（010 US3）：超阈值标记 pending_review 不进检索库
-        quality_rate = check_quality(chunk_texts)
-        if quality_rate > 0.3:
+        # 乱码率/空切片检测（PRD §3.2）：超阈值标记 pending_review 不进检索库
+        quality_rate, empty_ratio = check_quality(chunk_texts)
+        if quality_rate > 0.3 or empty_ratio > 0.2:
             doc.quality_status = "pending_review"
             doc.status = "ready"
-            doc.error_message = f"乱码率过高({quality_rate:.2f})，待人工复核"
+            doc.error_message = (
+                f"质量检测未通过（乱码率 {quality_rate:.2f}，空切片占比 {empty_ratio:.2f}），待人工复核"
+            )
             db.commit()
-            logger.warning(f"Document {doc_id} pending_review: garbage rate {quality_rate:.2f}")
+            logger.warning(
+                f"Document {doc_id} pending_review: garbage {quality_rate:.2f}, empty {empty_ratio:.2f}"
+            )
             return
 
-        vectors = embed_batches(chunk_texts)
-        if len(vectors) != len(chunks):
-            knowledge_crud.update_status(db, doc, "failed", error_message="Embedding向量数与切片数不匹配")
-            db.commit()
-            return
+        vectors: list[list[float]] | None = None
+        if settings.embedding_enabled:
+            vectors = embed_batches(chunk_texts)
+            if len(vectors) != len(chunks):
+                knowledge_crud.update_status(db, doc, "failed", error_message="Embedding向量数与切片数不匹配")
+                db.commit()
+                return
+        else:
+            logger.info("Embedding disabled: document %s will be indexed in ES only", doc_id)
 
         # 3. 双写 Milvus + ES（重试 3 次）
+        # 并发窗口防护：写入前重查文档与租户仍可处理。worker 从通过第一次
+        # 状态检查到真正写向量之间存在窗口，期间 demo reset 可能已提交归档事务
+        # （租户 closed / 文档 failed 或已删除）。先 commit 刷新事务快照再查。
+        db.commit()
+        if not _doc_and_tenant_processable(db, doc_id, tenant_id):
+            logger.info(
+                f"Document {doc_id} or tenant {tenant_id} no longer processable "
+                f"(reset/archived during processing), skip vector write"
+            )
+            return
         _dual_write_with_retry(doc.tenant_id, doc.id, doc.filename, chunks, vectors)
+
+        # 双写期间可能被 reset/归档（向量已落入 Milvus/ES）→ 重查；
+        # 异常时补偿清理该文档已写入的切片，不留旧租户向量。
+        db.commit()
+        if not _doc_and_tenant_processable(db, doc_id, tenant_id):
+            logger.warning(
+                f"Document {doc_id} tenant {tenant_id} archived during vector write, "
+                f"compensating cleanup"
+            )
+            _compensate_vector_cleanup(doc_id)
+            doc_after = knowledge_crud.get_by_id(db, doc_id, tenant_id)
+            if doc_after is not None:
+                knowledge_crud.update_status(
+                    db, doc_after, "failed",
+                    error_message="写入期间租户被 reset/归档，已补偿清理向量",
+                )
+                db.commit()
+            return
 
         # 4. 更新文档状态
         knowledge_crud.update_status(db, doc, "ready")
         knowledge_crud.set_chunk_count(db, doc, len(chunks))
         db.commit()
-
-        # 5. 清理临时文件
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
 
         logger.info(f"Document {doc_id} processed: {len(chunks)} chunks")
 
@@ -155,6 +213,47 @@ def process_document(doc_id: int, tenant_id: int) -> None:
             db.rollback()
     finally:
         db.close()
+
+
+def _doc_and_tenant_processable(db, doc_id: int, tenant_id: int) -> bool:
+    """ 并发窗口防护：重查文档与租户是否仍可处理。
+
+    demo reset 归档事务提交后：文档被置 failed 或删除、租户 status=closed。
+    租户行不存在时不阻断（兼容未建租户行的存量环境；reset 从不删除租户行）。
+
+    Args:
+        db: 数据库会话（调用方需先 commit 刷新快照）
+        doc_id: 文档 ID
+        tenant_id: 租户 ID
+
+    Returns:
+        bool: True 表示可以继续写入向量
+    """
+    from app.models.tenant import Tenant
+
+    doc = knowledge_crud.get_by_id(db, doc_id, tenant_id)
+    if doc is None or doc.status not in ("pending", "processing"):
+        return False
+    tenant = db.query(Tenant).filter_by(id=tenant_id).first()
+    if tenant is not None and tenant.status != "active":
+        return False
+    return True
+
+
+def _compensate_vector_cleanup(doc_id: int) -> None:
+    """补偿清理：删除该文档已写入的 Milvus/ES 切片（尽力而为，失败仅记日志）。"""
+    try:
+        get_milvus_collection().delete(expr=f"doc_id == {doc_id}")
+    except Exception as e:
+        logger.warning(f"Compensate milvus cleanup failed for doc {doc_id}: {e}")
+    try:
+        get_es_client().delete_by_query(
+            index="knowledge_chunks",
+            body={"query": {"term": {"doc_id": doc_id}}},
+            refresh=True,
+        )
+    except Exception as e:
+        logger.warning(f"Compensate es cleanup failed for doc {doc_id}: {e}")
 
 
 def _index_to_milvus(
@@ -254,9 +353,9 @@ def _dual_write_with_retry(
     doc_id: int,
     doc_filename: str,
     chunks: list,
-    vectors: list[list[float]],
+    vectors: list[list[float]] | None,
 ) -> None:
-    """双写 Milvus + ES，任一侧失败则重试（最多 3 次），全部失败抛异常。
+    """写 Milvus + ES，任一启用侧失败则重试（最多 3 次），全部失败抛异常。
 
     重试策略:
       每轮尝试未成功的一侧（已成功的不重复写）。
@@ -272,17 +371,18 @@ def _dual_write_with_retry(
         doc_id: 文档 ID
         doc_filename: 文档文件名
         chunks: 切片列表
-        vectors: 向量列表
+        vectors: 向量列表；None 表示 embedding 已关闭，只写 ES
 
     Raises:
         RuntimeError: 双写全部失败
     """
-    milvus_ok = False
+    milvus_ok = vectors is None
     es_ok = False
 
     for attempt in range(MAX_DUAL_WRITE_RETRIES):
         if not milvus_ok:
             try:
+                assert vectors is not None
                 _index_to_milvus(tenant_id, doc_id, doc_filename, chunks, vectors)
                 milvus_ok = True
             except Exception as e:
@@ -307,26 +407,28 @@ def _dual_write_with_retry(
         raise RuntimeError(f"双写失败（{', '.join(failed)}），已重试 {MAX_DUAL_WRITE_RETRIES} 次")
 
 
-# 010 US3: 知识库质量检测
-def check_quality(chunks: list[str]) -> float:
-    """计算切片乱码率（非可读字符占比，010 US3）。
+# 规格 010 US3: 知识库质量检测
+def check_quality(chunks: list[str]) -> tuple[float, float]:
+    """计算切片乱码率与空内容切片占比（PRD 3.2 解析质量检测）。
 
     乱码检测原理: 统计控制字符（ASCII < 32 且非 \\n\\r\\t）占全文的比例。
-    返回 0.0-1.0，超 0.3 应标记 pending_review 不进检索库。
+    返回 (乱码率, 空切片占比)；乱码率超 0.3 或空切片占比超 0.2 应标记
+    pending_review 不进检索库。
 
 
     Args:
         chunks: 切片文本列表
 
     Returns:
-        乱码率（0.0-1.0），0.0 表示无乱码
+        (乱码率 0.0-1.0, 空内容切片占比 0.0-1.0)
     """
     if not chunks:
-        return 0.0
+        return 0.0, 0.0
     text = "".join(chunks)
     total = len(text)
     if total == 0:
-        return 1.0
+        return 1.0, 1.0
     # 非可读字符：控制字符（除 \n\r\t 外）
     garbage = sum(1 for c in text if ord(c) < 32 and c not in "\n\r\t")
-    return garbage / total
+    empty_ratio = sum(1 for c in chunks if not c.strip()) / len(chunks)
+    return garbage / total, empty_ratio

@@ -1,7 +1,7 @@
-﻿"""
+"""
 backend/app/core/deep_agent_store.py
 
-职责: DeepAgent 任务的 MongoDB 持久化存储（P-015: 替代进程内存 dict，重启不丢失）
+职责: DeepAgent 任务的 MongoDB 持久化存储（审计修复：替代进程内存 dict，重启不丢失）
 设计: 使用 pymongo 同步客户端，与 agent.py 同步端点一致；TTL 24h 自动过期。
 """
 

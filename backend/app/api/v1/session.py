@@ -27,8 +27,9 @@ from sqlalchemy.orm import Session as DbSession
 import asyncio
 import json
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_role
 from app.schemas.session import (
+    AgentMessageRequest,
     CSATRequest,
     CreateSessionRequest,
     CreateSessionResponse,
@@ -43,6 +44,7 @@ from app.schemas.session import (
     SessionListResponse,
 )
 from app.services import session_service
+from app.services import tenant_service
 
 router = APIRouter()
 
@@ -64,7 +66,12 @@ def create_session(
 ):
     """创建新会话: 调 session_service.create_session。"""
     tenant_id = _get_tenant_id(request)
-    result = session_service.create_session(db, tenant_id=tenant_id, end_user_id=body.end_user_id)
+    try:
+        result = session_service.create_session(db, tenant_id=tenant_id, end_user_id=body.end_user_id)
+    except tenant_service.TenantInactive as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except tenant_service.TenantNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return result
 
 
@@ -73,21 +80,23 @@ def create_session(
 def list_sessions(
     request: Request,
     status_filter: str | None = Query(None, alias="status"),
+    sentiment_filter: str | None = Query(None, alias="sentiment"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: DbSession = Depends(get_db),
 ):
-    """会话列表（分页 + 状态筛选）: 调 session_crud.list_sessions。"""
+    """会话列表（分页 + 状态/情绪筛选）: 调 session_crud.list_sessions。"""
     tenant_id = _get_tenant_id(request)
     from app.crud import session as session_crud
 
     items, total = session_crud.list_sessions(
-        db, tenant_id, status=status_filter, page=page, page_size=page_size
+        db, tenant_id, status=status_filter, sentiment=sentiment_filter,
+        page=page, page_size=page_size,
     )
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-# ─── 022: 快捷回复（PRD 3.7）──
+# ─── 快捷回复（PRD §3.7）──
 # 注意: /quick-replies 是单段路径，必须注册在 /{session_id} 之前，
 # 否则会被 /{session_id}(int) 路由拦截返回 422（"quick-replies" 无法转 int）。
 @router.get("/quick-replies", response_model=list[QuickReplyItem])
@@ -95,7 +104,7 @@ def list_quick_replies(
     request: Request,
     db: DbSession = Depends(get_db),
 ):
-    """快捷回复模板列表（022）: 按租户隔离，供坐席工作台一键选用。"""
+    """快捷回复模板列表: 按租户隔离，供坐席工作台一键选用。"""
     from app.crud.quick_reply import list_by_tenant
 
     tenant_id = _get_tenant_id(request)
@@ -111,7 +120,7 @@ def create_quick_reply(
     request: Request,
     db: DbSession = Depends(get_db),
 ):
-    """创建快捷回复模板（022）: admin/agent 可建，按租户隔离。调 session_service.create_quick_reply。"""
+    """创建快捷回复模板: admin/agent 可建，按租户隔离。调 session_service.create_quick_reply。"""
     tenant_id = _get_tenant_id(request)
     return session_service.create_quick_reply(
         db, tenant_id=tenant_id, content=body.content, shortcut=body.shortcut
@@ -143,7 +152,16 @@ def send_message(
     """发送用户消息驱动 Agent: 先限流（10 次/分钟），再调 agent_service.handle_message。"""
     tenant_id = _get_tenant_id(request)
 
-    # 007 US4: 终端用户对话消息限流（10 次/分钟，超限 429 不落库不计轮次）
+    from app.crud import session as session_crud
+    session = session_crud.get_by_id(db, body.session_id, tenant_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {body.session_id}")
+    try:
+        session_service.ensure_agent_execution_allowed(session)
+    except session_service.SessionHumanControlled as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+    # 规格 007 US4: 终端用户对话消息限流（10 次/分钟，超限 429 不落库不计轮次）
     user_id = getattr(request.state, "user_id", None)
     if user_id is not None:
         from app.services.rate_limit_service import check_message_rate_limit
@@ -163,15 +181,19 @@ def send_message(
         return result
     except session_service.SessionNotFound as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except session_service.SessionHumanControlled as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
-        # P1-9: 不向客户端泄露内部异常原文（服务端日志保留）
+        if isinstance(e, tenant_service.TenantInactive):
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        # 不向客户端泄露内部异常原文（服务端日志保留）
         import logging
         logging.getLogger(__name__).exception("Agent handle_message failed: session=%s", body.session_id)
         raise HTTPException(status_code=500, detail="Agent 处理失败，请稍后重试") from e
 
 @router.post("/message/stream")
 async def send_message_stream(body: SendMessageRequest, request: Request, db: DbSession = Depends(get_db)):
-    """SSE 流式输出端点 -- 真 token 级流式（010 US2 / 架构完善）。
+    """SSE 流式输出端点 -- 真 token 级流式（规格 010 US2 / 架构完善）。
 
     流式端点复用 Agent 主链路能力（注入检测/RAG/安全/计费/trace）:
       prepare_message_stream: 加载上下文 + 注入检测 + graph.invoke 获取路由/检索结果
@@ -182,8 +204,20 @@ async def send_message_stream(body: SendMessageRequest, request: Request, db: Db
     from app.services.agent_service import prepare_message_stream, finalize_message_stream
 
     tenant_id = _get_tenant_id(request)
-    if session_crud.get_by_id(db, body.session_id, tenant_id) is None:
+    # PRD §3.4/4.1：stream 端点同样受终端用户级限流（10 次/分钟）
+    user_id = getattr(request.state, "user_id", None)
+    if user_id is not None:
+        from app.services.rate_limit_service import check_message_rate_limit
+
+        if not check_message_rate_limit(user_id)["allowed"]:
+            raise HTTPException(status_code=429, detail="您提问过于频繁，请稍后再试")
+    session = session_crud.get_by_id(db, body.session_id, tenant_id)
+    if session is None:
         raise HTTPException(status_code=404, detail=f"会话不存在: {body.session_id}")
+    try:
+        session_service.ensure_agent_execution_allowed(session)
+    except session_service.SessionHumanControlled as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
     async def generate():
         try:
@@ -194,7 +228,7 @@ async def send_message_stream(body: SendMessageRequest, request: Request, db: Db
             )
 
             if not prep["need_stream"]:
-                # 转人工/降级/无检索 -> 直接返回完整内容
+                # 转人工/降级/无检索 → 直接返回完整内容
                 content = prep["content"]
                 result = await asyncio.to_thread(
                     finalize_message_stream,
@@ -207,7 +241,7 @@ async def send_message_stream(body: SendMessageRequest, request: Request, db: Db
                 yield "data: [DONE]\n\n"
                 return
 
-            # 2. 真流式: llm_complete_stream 逐 token yield（队列桥接 sync->async）
+            # 2. 真流式: llm_complete_stream 逐 token yield（队列桥接 sync→async）
             import queue as _queue
             import threading as _threading
             from app.core.llm_client import llm_complete_stream
@@ -261,6 +295,43 @@ async def send_message_stream(body: SendMessageRequest, request: Request, db: Db
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+@router.post(
+    "/{session_id}/agent-message",
+    response_model=SendMessageResponse,
+    dependencies=[Depends(require_role("agent", "admin"))],
+)
+def send_agent_message(
+    session_id: int,
+    body: AgentMessageRequest,
+    request: Request,
+    db: DbSession = Depends(get_db),
+):
+    """当前认领客服回复人工接管会话；不会进入 Agent 执行链路。"""
+    from app.services.human_service import (
+        AgentMessageForbidden,
+        AgentMessageStateInvalid,
+        HumanHandoffError,
+        send_agent_message as do_send,
+    )
+
+    tenant_id = _get_tenant_id(request)
+    agent_id = getattr(request.state, "user_id", 0)
+    try:
+        return do_send(
+            db,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            content=body.content,
+        )
+    except AgentMessageForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except AgentMessageStateInvalid as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except HumanHandoffError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
 @router.post("/{session_id}/claim")
 def claim_session(session_id: int, request: Request, db: DbSession = Depends(get_db)):
     """坐席认领会话: 调 human_service.claim_session（Redis SETNX 分布式锁，双坐席同时认领仅一人成功）。"""
@@ -298,7 +369,7 @@ async def get_session_trace(session_id: int, request: Request, db: DbSession = D
     return {"session_id": session_id, "traces": traces, "total": len(traces)}
 
 
-# ─── 007 US3: 留言建单 + CSAT 满意度评价 ───
+# ─── 规格 007 US3: 留言建单 + CSAT 满意度评价 ───
 @router.post("/{session_id}/leave-message", status_code=201)
 def leave_message(
     session_id: int,
@@ -357,7 +428,7 @@ def submit_csat(
         raise HTTPException(status_code=409, detail=str(e))
 
 
-# ─── 021: 回答反馈（PRD 3.8）──
+# ─── 回答反馈（PRD §3.8）──
 @router.post("/message/{message_id}/feedback", response_model=FeedbackResponse, status_code=201)
 def submit_feedback(
     message_id: int,
@@ -365,7 +436,7 @@ def submit_feedback(
     request: Request,
     db: DbSession = Depends(get_db),
 ):
-    """对单条 Agent 回复提交 👍/👎 反馈（021）。
+    """对单条 Agent 回复提交 👍/👎 反馈。
 
     流程（在 session_service.submit_feedback 内）:
       1. score=0 -> 422（schema 允许 0 但业务判非法）

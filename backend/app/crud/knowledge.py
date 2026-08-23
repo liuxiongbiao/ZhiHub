@@ -75,7 +75,8 @@ def _count(db: Session, tenant_id: int, status: str | None = None) -> int:
 
 
 def create(
-    db: Session, *, tenant_id: int, filename: str, file_type: str, file_size: int, version: int
+    db: Session, *, tenant_id: int, filename: str, file_type: str, file_size: int, version: int,
+    expires_at=None,
 ) -> KnowledgeDocument:
     """创建文档记录."""
     doc = KnowledgeDocument(
@@ -86,6 +87,7 @@ def create(
         status="pending",
         version=version,
         is_latest=True,
+        expires_at=expires_at,
     )
     db.add(doc)
     db.flush()

@@ -2,6 +2,18 @@
 <!-- 职责: 会话详情 - 聊天记录 + Agent trace时间线 -->
 <template>
   <div class="session-detail" v-loading="loading">
+    <el-result
+      v-if="errorMessage"
+      icon="warning"
+      :title="errorMessage"
+      sub-title="请检查链接，或返回会话监控重新选择会话。"
+    >
+      <template #extra>
+        <router-link to="/session/monitor">
+          <el-button type="primary">返回会话监控</el-button>
+        </router-link>
+      </template>
+    </el-result>
     <template v-if="session">
       <!-- 会话信息 -->
       <div class="session-header">
@@ -64,21 +76,22 @@ const session = ref<SessionDetail | null>(null)
 const traces = ref<AgentTrace[]>([])
 const loading = ref(false)
 const activeTab = ref('messages')
+const errorMessage = ref('')
 
-/** 消息角色 -> 中文标签 */
+/** 消息角色 → 中文标签 */
 function roleLabel(role: string): string {
   const map: Record<string, string> = { user: '用户', assistant: 'AI', agent: '坐席', system: '系统' }
   return map[role] || role
 }
 
-/** ISO 时间串 -> 中文本地化时间 */
+/** ISO 时间串 → 中文本地化时间 */
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN')
 }
 
-/** 用户反馈回调（T28: 对接 POST /session/message/{id}/feedback，此前为空壳 console.log） */
+/** 用户反馈回调（: 对接 POST /session/message/{id}/feedback，此前为空壳 console.log） */
 async function handleFeedback(data: { messageId: number; type: string }) {
-  // M4: FeedbackButtons emit 'like'/'dislike'（非 'up'/'down'），原判断 'up' 恒 False -> 反馈恒 -1
+  // : FeedbackButtons emit 'like'/'dislike'（非 'up'/'down'），原判断 'up' 恒 False → 反馈恒 -1
   const positive = data.type === 'like'
   try {
     await request.post(`/session/message/${data.messageId}/feedback`, {
@@ -93,8 +106,12 @@ async function handleFeedback(data: { messageId: number; type: string }) {
 /** 并发拉取会话详情 + Agent 执行轨迹 */
 async function fetchData() {
   const id = Number(route.params.id)
-  if (!id) return
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    errorMessage.value = '无效的会话编号'
+    return
+  }
   loading.value = true
+  errorMessage.value = ''
   try {
     const [detailRes, traceRes] = await Promise.all([
       getSessionDetail(id),
@@ -103,6 +120,7 @@ async function fetchData() {
     session.value = detailRes.data
     traces.value = traceRes.data.traces || []
   } catch (e: any) {
+    errorMessage.value = e?.response?.status === 404 ? '会话不存在或已被删除' : '会话详情加载失败'
     ElMessage.error(e?.message || '加载会话详情失败')
   } finally {
     loading.value = false

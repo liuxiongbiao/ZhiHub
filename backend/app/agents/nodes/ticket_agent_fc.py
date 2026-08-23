@@ -1,8 +1,8 @@
 """
 backend/app/agents/nodes/ticket_agent_fc.py
 
-职责: Function Calling 版工单 Agent（009-tech-compare-agent-enhance US1）-- 与 MCP ticket_agent 等价，
-      但工具分发走 LLM 原生 tool_calls 而非 MCP 协议信封。复用 006 双因子/权限/熔断（工具执行仍调
+职责: Function Calling 版工单 Agent（规格 009 US1）-- 与 MCP ticket_agent 等价，
+      但工具分发走 LLM 原生 tool_calls 而非 MCP 协议信封。复用 规格 006 双因子/权限/熔断（工具执行仍调
       mcp_service.call_tool 信封入口）。
 
 核心设计:
@@ -14,12 +14,12 @@ backend/app/agents/nodes/ticket_agent_fc.py
 关键技术点:
   - litellm tools 参数: _build_tools 返回 OpenAI tools 格式 schema，DeepSeek 兼容
   - tool_calls 流程: LLM 返回 tool_calls -> Agent 执行（FC 核心：LLM 决定调工具）
-  - 复用 006 安全加固: 工具执行仍走 call_tool，双因子/权限/熔断完全一致
+  - 复用 规格 006 安全加固: 工具执行仍走 call_tool，双因子/权限/熔断完全一致
   - tool_choice="auto": 让 LLM 自主决定是否调工具
 
   MCP:  Agent 直接调 call_tool（信封标准化、与 LLM 解耦、可审计、跨 LLM 通用）
   FC:   LLM 返回 tool_calls -> Agent 执行（LLM 原生、简单但紧耦合、无标准信封、依赖特定 LLM 能力）
-  两者工具执行层相同（复用 006 安全加固），仅分发方式不同。
+  两者工具执行层相同（复用 规格 006 安全加固），仅分发方式不同。
 
 依赖关系:
   - 上游: app/agents/graph.py（AGENT_TOOL_MODE=fc 时注册此节点）
@@ -77,14 +77,14 @@ def ticket_agent_fc_node(state: dict[str, Any]) -> dict[str, Any]:
     流程:
       1. 提取 ticket_no + phone（与 MCP 版一致，缺 phone 反问）
       2. LLM Function Calling（传 tools 参数，LLM 决定调工具）
-      3. 解析 tool_calls -> 调 mcp_service.call_tool（**复用 006 双因子/权限/熔断**）
+      3. 解析 tool_calls -> 调 mcp_service.call_tool（**复用 规格 006 双因子/权限/熔断**）
       4. 结果格式化（与 MCP 版一致）
 
     设计决策:
       槽位收集与 MCP 版完全一致（复用 helper），保证双因子校验不因模式切换而绕过。
       FC 的核心在第 2 步：把 ticket_no/phone 喂给 LLM，让 LLM 决定调 get_ticket_status，
       而非 Agent 代码直接调。这模拟了"LLM 自主工具选择"的 FC 范式。工具执行仍走 call_tool，
-      所以 006 的安全加固（权限/熔断/双因子）完全复用，两种模式安全等价。
+      所以 规格 006 的安全加固（权限/熔断/双因子）完全复用，两种模式安全等价。
       注意：此处槽位已由 Agent 预先收集齐全才喂 LLM，LLM 实际几乎必然调工具，
       FC 的"自主性"在此场景被弱化--这是为了与 MCP 版公平对比的简化。
 
@@ -95,7 +95,7 @@ def ticket_agent_fc_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     messages: list[dict] = state.get("messages", [])
     slots: dict = state.get("slots", {})
-    tenant_id: int | None = state.get("tenant_id")  # M9: 不默认租户 1，缺失则 None 让 call_tool fail-closed
+    tenant_id: int | None = state.get("tenant_id")  # : 不默认租户 1，缺失则 None 让 call_tool fail-closed
 
     # 1. 提取工单号（与 MCP 版逻辑一致）
     ticket_no = slots.get("ticket_no", "").strip()
@@ -156,7 +156,7 @@ def ticket_agent_fc_node(state: dict[str, Any]) -> dict[str, Any]:
         msg = resp.choices[0].message
 
         if msg.tool_calls:
-            # 4. 执行工具调用（复用 006 信封入口 + 双因子/权限/熔断）
+            # 4. 执行工具调用（复用 规格 006 信封入口 + 双因子/权限/熔断）
             # 注意：FC 版工具执行仍走 call_tool，与 MCP 版安全等价
             from app.mcp_servers.base_server import ERR_CIRCUIT_BROKEN, build_request
             from app.services.mcp_service import call_tool
@@ -198,7 +198,7 @@ def ticket_agent_fc_node(state: dict[str, Any]) -> dict[str, Any]:
             )
             return {"final_response": response, "current_agent": "ticket_agent_fc"}
         else:
-            # LLM 没返回 tool_call -> 兜底（理论上预填了槽位 LLM 应该会调）
+            # LLM 没返回 tool_call → 兜底（理论上预填了槽位 LLM 应该会调）
             return {
                 "final_response": "查询工单时遇到问题，请稍后重试。",
                 "current_agent": "ticket_agent_fc",

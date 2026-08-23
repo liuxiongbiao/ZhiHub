@@ -12,7 +12,7 @@ backend/app/api/v1/agent.py
   - 租户隔离: 任务存储带 tenant_id，GET 校验归属，不匹配返回 404（防任务存在性枚举）
   - TTL 清理: MongoDB TTL 索引 24h 自动过期；无 MongoDB 时回退内存 dict
 
-P-015: 任务持久化从进程内存 dict 改为 MongoDB，服务重启后历史任务可查询。
+审计修复：任务持久化从进程内存 dict 改为 MongoDB，服务重启后历史任务可查询。
       MongoDB 不可用时回退内存 dict（demo/开发零配置兼容）。
 
 异步执行: POST /deep-task 优先通过 Celery 提交后台任务，立即返回 pending 状态；
@@ -31,11 +31,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.api.deps import require_role
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# P-015: 内存回退存储（MongoDB 不可用时使用，demo/开发零配置兼容）
+# 内存回退存储（MongoDB 不可用时使用，demo/开发零配置兼容）
 _task_store_fallback: dict[str, dict] = {}
 _TASK_TTL_SECONDS = 24 * 60 * 60
 
@@ -124,9 +125,12 @@ def create_deep_task(body: DeepTaskRequest, request: Request):
             "created_at": now,
         }
     except Exception as e:
-        # Celery/RabbitMQ 不可用 -> 同步 fallback（开发/测试零配置兼容）
+        # Celery/RabbitMQ 不可用 → 同步 fallback（开发/测试零配置兼容）
         logger.warning(f"Celery unavailable ({e}), running DeepAgent synchronously")
-        result = _run_and_save(task_id=task_id, goal=body.goal, tenant_id=tenant_id, created_at=now)
+        result = _run_and_save(
+            task_id=task_id, goal=body.goal, tenant_id=tenant_id, created_at=now,
+            timeout_seconds=settings.deep_agent_timeout_seconds,
+        )
         return result
 
 

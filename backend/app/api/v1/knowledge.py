@@ -16,7 +16,7 @@ backend/app/api/v1/knowledge.py
   - 下游: app.services.knowledge_service、app.services.retrieval_service
 """
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_role
@@ -32,7 +32,7 @@ from app.services import knowledge_service
 router = APIRouter()
 
 
-# ---------- 异常 -> HTTP 状态码映射 ----------
+# ────────── 异常 → HTTP 状态码映射 ──────────
 def _handle_knowledge_error(e: Exception) -> HTTPException:
     """将 KnowledgeError 子类映射到对应 HTTP 状态码，未知异常 -> 500。"""
     mapping: dict[type, tuple[int, str]] = {
@@ -57,24 +57,29 @@ def _get_tenant_id(request: Request) -> int:
     return tid
 
 
-# ---------- POST /upload ----------
+# ────────── POST /upload ──────────
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=201)
 def upload_document(
     request: Request,
     file: UploadFile = File(...),
+    expires_days: int | None = Form(default=None, description="文档有效期天数：缺省=系统默认90天，0=永久"),
     db: Session = Depends(get_db),
     _: None = Depends(require_role("admin")),
 ):
     """上传知识库文档: 调 knowledge_service.upload。"""
     tenant_id = _get_tenant_id(request)
+    if expires_days is not None and (expires_days < 0 or expires_days > 3650):
+        raise HTTPException(status_code=422, detail="expires_days 需在 0-3650 之间")
     try:
-        result = knowledge_service.upload(db, file=file, tenant_id=tenant_id)
+        result = knowledge_service.upload(
+            db, file=file, tenant_id=tenant_id, expires_days=expires_days
+        )
     except knowledge_service.KnowledgeError as e:
         raise _handle_knowledge_error(e)
     return result
 
 
-# ---------- GET /list ----------
+# ────────── GET /list ──────────
 @router.get("/list", response_model=DocumentListResponse)
 def list_documents(
     request: Request,
@@ -82,6 +87,7 @@ def list_documents(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
+    _: None = Depends(require_role("admin")),
 ):
     """文档列表（分页 + 状态筛选）: 调 knowledge_service.list_documents。"""
     tenant_id = _get_tenant_id(request)
@@ -90,7 +96,7 @@ def list_documents(
     )
 
 
-# ---------- POST /{doc_id}/rebuild ----------
+# ────────── POST /{doc_id}/rebuild ──────────
 @router.post("/{doc_id}/rebuild", response_model=RebuildResponse, status_code=202)
 def rebuild_document(
     doc_id: int,
@@ -106,11 +112,27 @@ def rebuild_document(
         raise _handle_knowledge_error(e)
 
 
-# ---------- POST /test ----------
+# ────────── POST /test ──────────
+@router.delete("/{doc_id}", status_code=200)
+def delete_document(
+    doc_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_role("admin")),
+):
+    """删除文档（含检索库切片）：失败/过期文档可清理，释放套餐配额。"""
+    tenant_id = _get_tenant_id(request)
+    try:
+        return knowledge_service.delete_document(db, doc_id=doc_id, tenant_id=tenant_id)
+    except knowledge_service.KnowledgeError as e:
+        raise _handle_knowledge_error(e)
+
+
 @router.post("/test", response_model=SearchTestResponse)
 def search_test(
     body: SearchTestRequest,
     request: Request,
+    _: None = Depends(require_role("admin")),
 ):
     """检索测试台: 纯向量 vs 混合检索对比，调 retrieval_service.hybrid_search。"""
     tenant_id = _get_tenant_id(request)

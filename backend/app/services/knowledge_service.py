@@ -21,15 +21,21 @@ backend/app/services/knowledge_service.py
           app.core.rabbitmq（异步任务投递）、app.models.knowledge_document（ORM）
 """
 
+import logging
+import os
+
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.rabbitmq import publish_knowledge_task
+from app.config import settings
 from app.crud import knowledge as knowledge_crud
 from app.utils.file_parser import FileValidationError, validate_file
 
+logger = logging.getLogger(__name__)
+
 # 允许上传的 Content-Type 白名单
-# -- application/octet-stream 兜底: 部分浏览器对 .md 文件发送此通用类型
+# —— application/octet-stream 兜底: 部分浏览器对 .md 文件发送此通用类型
 ALLOWED_CONTENT_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -67,7 +73,7 @@ class KnowledgeLimitExceeded(KnowledgeError):
     """知识库数量超套餐上限 -> 403."""
 
 
-# 018 套餐知识库数量上限（PRD 3.2）: trial 1 / basic 3 / pro 及以上无限
+# 套餐知识库数量上限（PRD §3.2）: trial 1 / basic 3 / pro 及以上无限
 PLAN_KB_LIMITS: dict[str, int | None] = {
     "trial": 1,
     "basic": 3,
@@ -77,7 +83,7 @@ PLAN_KB_LIMITS: dict[str, int | None] = {
 
 
 def check_kb_count(db: Session, tenant_id: int) -> dict:
-    """检查租户知识库（文档）数量是否超套餐上限（018）。
+    """检查租户知识库（文档）数量是否超套餐上限。
 
     按租户 plan_type 查上限表：trial 1 / basic 3 / pro 及以上无限。
     只统计 is_latest=True 的文档（旧版本归档不占配额，与 check_storage_limit 口径一致）。
@@ -108,7 +114,7 @@ def check_kb_count(db: Session, tenant_id: int) -> dict:
     return {"plan_type": plan_type, "limit": limit, "current": current, "allowed": allowed}
 
 
-def upload(db: Session, *, file: UploadFile, tenant_id: int) -> dict:
+def upload(db: Session, *, file: UploadFile, tenant_id: int, expires_days: int | None = None) -> dict:
     """上传文档：校验 -> 创建记录 -> 投递异步任务。
 
     流程:
@@ -132,22 +138,22 @@ def upload(db: Session, *, file: UploadFile, tenant_id: int) -> dict:
     Returns:
         dict: doc_id / filename / file_type / file_size / status / version / is_latest / uploaded_at
     """
-    # 1. 读取文件内容 -- 全量读入内存，demo 简化
+    # 1. 读取文件内容 —— 全量读入内存，demo 简化
     content = file.file.read()
     filename = file.filename or "unknown"
 
-    # 018: 套餐知识库数量上限校验（trial 1 / basic 3 / pro 无限），超限 -> 403
+    # 套餐知识库数量上限校验（trial 1 / basic 3 / pro 无限），超限 → 403
     kb_check = check_kb_count(db, tenant_id)
     if not kb_check["allowed"]:
         raise KnowledgeLimitExceeded(
             f"知识库数量已达套餐上限: {kb_check['current']}/{kb_check['limit']}（{kb_check['plan_type']} 套餐）"
         )
 
-    # P1-14: 存储配额校验（按套餐 MB，计入本次上传大小）
+    # 存储配额校验（按套餐 MB，计入本次上传大小）
     if not check_storage_limit(db, tenant_id, incoming_bytes=len(content)):
         raise KnowledgeLimitExceeded("知识库存储空间已满，请升级套餐或删除部分旧文档")
 
-    # 2. 校验 -- 映射底层 FileValidationError 为具体业务异常，便于 API 层返回精确状态码
+    # 2. 校验 —— 映射底层 FileValidationError 为具体业务异常，便于 API 层返回精确状态码
     try:
         validate_file(filename, content)
     except FileValidationError as e:
@@ -164,15 +170,28 @@ def upload(db: Session, *, file: UploadFile, tenant_id: int) -> dict:
     file_type = filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
     file_size = len(content)
 
-    # 3. 版本管理：旧同名文件归档 -- is_latest=False，使其不再进入检索库
+    # 3. 版本管理：旧同名文件归档 —— is_latest=False，使其不再进入检索库
     existing = knowledge_crud.get_latest_by_filename(db, tenant_id, filename)
     new_version = 1
     if existing:
-        # 旧版本标记为非最新 -- 检索时只查 is_latest=True，保证命中最新内容
+        # 旧版本标记为非最新 —— 检索时只查 is_latest=True，保证命中最新内容
         knowledge_crud.mark_not_latest(db, existing)
         new_version = existing.version + 1
 
-    # 4. 创建记录 -- status=pending，等待 Worker 处理后改为 ready/failed
+    # 4. 创建记录 —— status=pending，等待 Worker 处理后改为 ready/failed
+    # PRD §3.2 文档生命周期：未指定有效期时使用系统默认（doc_validity_days=90）；
+    # expires_days=0 表示永久（expires_at=None）
+    from datetime import datetime, timedelta, timezone
+    from app.config import settings
+
+    expires_at = None
+    if expires_days is None:
+        expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+            days=settings.doc_validity_days
+        )
+    elif expires_days > 0:
+        expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=expires_days)
+
     doc = knowledge_crud.create(
         db,
         tenant_id=tenant_id,
@@ -180,19 +199,21 @@ def upload(db: Session, *, file: UploadFile, tenant_id: int) -> dict:
         file_type=file_type,
         file_size=file_size,
         version=new_version,
+        expires_at=expires_at,
     )
     db.commit()
 
     # 5. 保存文件到本地磁盘（供异步 Worker 读取）
-    # -- 临时目录落盘，生产应替换为对象存储
-    import os, tempfile
-    tmp_dir = os.path.join(tempfile.gettempdir(), "zhihub_uploads")
-    os.makedirs(tmp_dir, exist_ok=True)
-    tmp_path = os.path.join(tmp_dir, f"{doc.id}_{os.path.basename(filename)}")
-    with open(tmp_path, "wb") as f:
+    # —— 临时目录落盘，生产应替换为对象存储
+    os.makedirs(settings.upload_storage_dir, exist_ok=True)
+    upload_path = os.path.join(
+        settings.upload_storage_dir,
+        f"{doc.id}_{os.path.basename(filename)}",
+    )
+    with open(upload_path, "wb") as f:
         f.write(content)
 
-    # 6. 投递异步任务 -- 上传接口到此返回，解析由 Worker 异步完成
+    # 6. 投递异步任务 —— 上传接口到此返回，解析由 Worker 异步完成
     publish_knowledge_task(doc.id, tenant_id)
 
     return {
@@ -204,6 +225,7 @@ def upload(db: Session, *, file: UploadFile, tenant_id: int) -> dict:
         "version": doc.version,
         "is_latest": doc.is_latest,
         "uploaded_at": doc.created_at,
+        "expires_at": doc.expires_at,
     }
 
 
@@ -234,17 +256,42 @@ def rebuild(db: Session, *, doc_id: int, tenant_id: int) -> dict:
     if doc is None:
         raise DocumentNotFound(f"文档不存在: {doc_id}")
     if doc.status == "processing":
-        # processing 不可重建 -- 防止并发解析产生重复分块
+        # processing 不可重建 —— 防止并发解析产生重复分块
         raise DocumentProcessing(f"文档正在处理中: {doc_id}")
 
     knowledge_crud.update_status(db, doc, "pending")
     knowledge_crud.set_chunk_count(db, doc, 0)
     db.commit()
 
-    # 重新投递异步任务 -- Worker 会重新解析+分块+向量化
+    # 重新投递异步任务 —— Worker 会重新解析+分块+向量化
     publish_knowledge_task(doc.id, tenant_id)
 
     return {"doc_id": doc.id, "status": "pending", "message": "重建索引任务已提交"}
+
+
+def delete_document(db: Session, *, doc_id: int, tenant_id: int) -> dict:
+    """删除文档（含检索库切片清理）：仅租户内可删，幂等。"""
+    doc = knowledge_crud.get_by_id(db, doc_id, tenant_id)
+    if doc is None:
+        raise DocumentNotFound(f"文档不存在: {doc_id}")
+
+    # 先清检索库切片（Milvus + ES），失败仅告警不阻断删除主记录
+    try:
+        from app.core.embedding_client import get_es_client, get_milvus_collection
+        collection = get_milvus_collection()
+        collection.delete(expr=f"doc_id == {doc_id}")
+        es = get_es_client()
+        es.delete_by_query(
+            index="knowledge_chunks",
+            body={"query": {"term": {"doc_id": doc_id}}},
+            refresh=True,
+        )
+    except Exception as e:
+        logger.warning(f"Delete doc chunks failed (doc={doc_id}, will be cleaned by index maintenance): {e}")
+
+    db.delete(doc)
+    db.commit()
+    return {"doc_id": doc_id, "deleted": True}
 
 
 def list_documents(
@@ -292,7 +339,7 @@ def list_documents(
     }
 
 
-# PRD 3.2 存储上限校验（P1-14：按套餐 MB 配额，基于 file_size 汇总）
+# PRD §3.2 存储上限校验（：按套餐 MB 配额，基于 file_size 汇总）
 def check_storage_limit(db, tenant_id: int, incoming_bytes: int = 0) -> bool:
     """检查租户知识库存储是否超限（配额 0=无限制；只统计 is_latest 文档）。
 
