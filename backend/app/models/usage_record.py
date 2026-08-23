@@ -8,7 +8,8 @@ backend/app/models/usage_record.py
   关键字段: tenant_id(隔离键)、date(统计日期)、conversation_count(当日对话数)、is_overage(是否超量)
 """
 from datetime import date as DateType
-from sqlalchemy import BigInteger, Date, Integer, UniqueConstraint
+from decimal import Decimal
+from sqlalchemy import BigInteger, Date, Integer, Numeric, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import BaseModel
 
@@ -18,4 +19,6 @@ class UsageRecord(BaseModel):
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)  # 租户隔离键
     date: Mapped[DateType] = mapped_column(Date, nullable=False)  # 统计日期
     conversation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # 当日对话数
+    # 数据库已提交的 Redis 累计位点；快照写回失败时按此值安全重放。
+    snapshot_total: Mapped[Decimal | None] = mapped_column(Numeric(16, 6), nullable=True)
     is_overage: Mapped[bool] = mapped_column(default=False)  # 是否超出套餐配额

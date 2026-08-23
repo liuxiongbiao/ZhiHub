@@ -14,7 +14,8 @@ backend/app/core/alipay_client.py
   - python-alipay-sdk 的 AliPay(alipay_public_key, app_private_key, sign_type="RSA2")
   - api_alipay_trade_page_pay: 电脑网站支付，返回跳转 URL
   - verify_callback: SDK 的 sign_verify 验签支付宝异步通知签名
-  - refund: api_alipay_trade_refund 发起退款
+  - refund: api_alipay_trade_refund 发起退款，out_request_no 保证重试幂等
+  - query_refund: 重试前查询渠道退款结果，避免进程中断后重复放款
 
 依赖关系:
   - 上游: billing_service（create_payment/handle_payment_callback）、order_service（refund）
@@ -37,12 +38,12 @@ class AlipayClient:
     """
 
     def __init__(self) -> None:
-        # T33: 生产环境禁止 mock——忘配 key 时 mock 验签恒 True，可伪造支付回调篡改账单
-        if settings.app_env != "development" and not settings.alipay_app_id:
+        # 生产环境禁止 mock——忘配 key 时 mock 验签恒 True，可伪造支付回调篡改账单
+        if settings.app_env not in ("development", "test") and not settings.alipay_app_id:
             raise RuntimeError(
                 "非 development 环境必须配置 ALIPAY_APP_ID（禁止 mock 模式：mock 验签恒 True 可伪造支付回调）"
             )
-        # 模式判定: app_id 为空 -> mock 模式（开发/测试/未配 key 时降级）
+        # 模式判定: app_id 为空 → mock 模式（开发/测试/未配 key 时降级）
         # is_mock 仅由 app_id 是否为空决定，真实 key 解析失败不改变模式判定
         # （真实模式但 _alipay=None 时方法降级返回 mock 结果，详见各方法）
         self.is_mock: bool = not settings.alipay_app_id
@@ -60,6 +61,8 @@ class AlipayClient:
             from alipay import AliPay
         except ImportError as e:  # SDK 未安装 -> 降级 mock 并告警
             logger.warning(f"python-alipay-sdk 未安装，降级 mock 模式: {e}")
+            if settings.app_env not in ("development", "test"):
+                raise RuntimeError("生产环境缺少 python-alipay-sdk，禁止降级 mock 模式") from e
             return
 
         try:
@@ -73,8 +76,10 @@ class AlipayClient:
             )
             logger.info(f"AlipayClient initialized (sandbox={settings.alipay_sandbox}, appid={settings.alipay_app_id})")
         except Exception as e:
-            # key 格式不合法（PEM 解析失败等）-> _alipay 保持 None，方法降级
+            # key 格式不合法（PEM 解析失败等）→ _alipay 保持 None，方法降级
             logger.warning(f"AlipayClient key 解析失败，方法将降级 mock: {e}")
+            if settings.app_env not in ("development", "test"):
+                raise RuntimeError("生产环境支付宝密钥解析失败，禁止降级 mock 模式") from e
 
     # ── 下单生成支付链接 ──
     def create_payment(self, trade_no: str, amount: float, subject: str) -> str:
@@ -95,7 +100,7 @@ class AlipayClient:
                 f"&trade_no={trade_no}&amount={amount}&subject={subject}"
             )
 
-        # 真实模式但 key 解析失败 -> 降级 mock 结果（不阻断业务）
+        # 真实模式但 key 解析失败 → 降级 mock 结果（不阻断业务）
         if self._alipay is None:
             return (
                 f"{settings.alipay_gateway}?degraded=1"
@@ -130,7 +135,7 @@ class AlipayClient:
             # mock 模式默认验签通过（仅开发/测试，生产必须配真实 key）
             return True
 
-        # 真实模式但 key 解析失败 -> 拒绝验签（密钥异常时绝不放行，防伪造回调）
+        # 真实模式但 key 解析失败 → 拒绝验签（密钥异常时绝不放行，防伪造回调）
         if self._alipay is None:
             logger.error("Alipay 真实模式密钥未加载，拒绝回调验签")
             return False
@@ -147,12 +152,13 @@ class AlipayClient:
             return False
 
     # ── 退款 ──
-    def refund(self, trade_no: str, amount: float) -> bool:
+    def refund(self, trade_no: str, amount: float, request_no: str | None = None) -> bool:
         """发起支付宝退款。
 
         Args:
             trade_no: 原支付商户订单号
             amount: 退款金额
+            request_no: 商户退款请求号；同一审批的所有重试必须复用
 
         Returns:
             bool: True 退款受理成功
@@ -160,23 +166,64 @@ class AlipayClient:
         if self.is_mock:
             return True
 
-        # 真实模式但 key 解析失败 -> 拒绝退款（密钥异常时绝不放款）
+        # 真实模式但 key 解析失败 → 拒绝退款（密钥异常时绝不放款）
         if self._alipay is None:
             logger.error("Alipay 真实模式密钥未加载，拒绝退款")
             return False
 
         try:
-            resp = self._alipay.api_alipay_trade_refund(
-                biz_content={
-                    "out_trade_no": trade_no,
-                    "refund_amount": str(amount),
-                }
-            )
+            biz_content = {
+                "out_trade_no": trade_no,
+                "refund_amount": str(amount),
+            }
+            if request_no:
+                biz_content["out_request_no"] = request_no
+            resp = self._alipay.api_alipay_trade_refund(biz_content=biz_content)
             # code=10000 表示成功
             return resp.get("code") == "10000"
         except Exception as e:
             logger.error(f"Alipay refund failed (trade_no={trade_no}): {e}")
             return False
+
+    def query_refund(self, trade_no: str, request_no: str) -> bool | None:
+        """查询退款结果：True=渠道已退款，False=明确未退款，None=状态不明。"""
+        if self.is_mock:
+            return False
+        if self._alipay is None:
+            return None
+        try:
+            resp = self._alipay.api_alipay_trade_fastpay_refund_query(
+                biz_content={
+                    "out_trade_no": trade_no,
+                    "out_request_no": request_no,
+                }
+            )
+            if resp.get("code") == "10000":
+                return bool(
+                    resp.get("refund_status") == "REFUND_SUCCESS"
+                    or resp.get("refund_amount")
+                    or resp.get("gmt_refund_pay")
+                )
+            if resp.get("sub_code") in {
+                "ACQ.TRADE_NOT_EXIST",
+                "ACQ.REFUND_NOT_EXIST",
+            }:
+                return False
+            logger.warning(
+                "Alipay refund query ambiguous (trade_no=%s, request_no=%s, response=%s)",
+                trade_no,
+                request_no,
+                resp,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                "Alipay refund query failed (trade_no=%s, request_no=%s): %s",
+                trade_no,
+                request_no,
+                e,
+            )
+            return None
 
 
 # 模块级单例缓存，避免每次请求重读 key 解析证书

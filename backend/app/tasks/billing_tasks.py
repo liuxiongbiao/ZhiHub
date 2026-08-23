@@ -45,7 +45,7 @@ def aggregate_daily_usage() -> dict:
       1. scan_iter 扫描所有 billing:quota:* 键
       2. 解析 tenant_id，读取累计计数（INCRBYFLOAT 写入，需 float 解析取整）
       3. 与上次聚合快照对比得出当日增量；查询当日是否已有记录（去重）
-      4. 无记录则 INSERT usage_records（当日增量 + is_overage 标记），并更新快照
+      4. 无记录则 INSERT usage_records（含已提交累计位点）；DB commit 成功后再更新快照
 
     Celery Beat schedule: 每天 02:00 UTC
 
@@ -59,6 +59,7 @@ def aggregate_daily_usage() -> dict:
         r = get_redis()
         today = datetime.now(timezone.utc).date()
         count = 0
+        committed_snapshots: list[tuple[str, float]] = []
 
         month = today.strftime("%Y-%m")
 
@@ -89,29 +90,32 @@ def aggregate_daily_usage() -> dict:
             ).scalar_one_or_none()
 
             if not existing:
-                # P0-2: is_overage 必须按租户套餐配额判定（不能写死 TRIAL_QUOTA）
+                # is_overage 必须按租户套餐配额判定（不能写死 TRIAL_QUOTA）
                 from app.services.billing_service import get_tenant_quota
                 db.add(UsageRecord(
                     tenant_id=tenant_id, date=today,
                     conversation_count=day_count,
+                    snapshot_total=cur_total,
                     is_overage=cur_total >= get_tenant_quota(db, tenant_id),
                 ))
-                # 仅插入成功路径更新快照；existing 命中（重复执行）不动快照，防止覆盖增量。
-                # DB 与 Redis 双写无事务：commit 失败会丢该日增量、set 失败会致下日重复计入，
-                # 均为罕见路径，可接受（与"预警失败不阻断计费"同级取舍）。
-                try:
-                    r.set(snapshot_key, cur_total, ex=60 * 60 * 24 * 60)
-                except Exception:
-                    logger.warning(f"Usage snapshot update failed for tenant {tenant_id} (non-blocking)")
+                committed_snapshots.append((snapshot_key, cur_total))
                 count += 1
+            else:
+                # DB 已有幂等记录但 Redis 位点可能在上次 commit 后写回失败；
+                # 必须重放记录中冻结的位点，不能用当前累计值覆盖并吞掉后续增量。
+                if existing.snapshot_total is not None:
+                    committed_snapshots.append((snapshot_key, float(existing.snapshot_total)))
 
         db.commit()
+        # 所有唯一日记录提交成功后，才允许推进 Redis 位点。
+        for snapshot_key, snapshot_total in committed_snapshots:
+            r.set(snapshot_key, snapshot_total, ex=60 * 60 * 24 * 60)
         logger.info(f"Daily usage aggregated: {count} tenants")
         return {"status": "ok", "tenants": count, "date": str(today)}
     except Exception as e:
         db.rollback()
         logger.exception(f"Daily aggregation failed: {e}")
-        return {"status": "error", "error": str(e)}
+        raise
     finally:
         db.close()
 
@@ -150,7 +154,7 @@ def generate_monthly_invoices() -> dict:
         tenants = db.execute(select(Tenant)).scalars().all()
         count = 0
         for tenant in tenants:
-            # P0-3: 试用租户默认不生成账单（业务决策项，配置可切换）
+            # 试用租户默认不生成账单（业务决策项，配置可切换）
             if tenant.plan_type == "trial" and not settings.billing_charge_trial:
                 continue
             generate_invoice(db, tenant_id=tenant.id, period=period)
@@ -162,6 +166,6 @@ def generate_monthly_invoices() -> dict:
     except Exception as e:
         db.rollback()
         logger.exception(f"Monthly invoice generation failed: {e}")
-        return {"status": "error", "error": str(e)}
+        raise
     finally:
         db.close()

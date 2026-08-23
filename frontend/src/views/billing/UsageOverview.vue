@@ -1,5 +1,5 @@
 <!-- frontend/src/views/billing/UsageOverview.vue -->
-<!-- 职责: 用量概览 - 进度条/80%/100%预警展示(012 前端打磨:PageHeader + el-card) -->
+<!-- 职责: 用量概览 - 进度条/80%/100%预警展示(规格 012 前端打磨:PageHeader + el-card) -->
 <template>
   <div>
     <PageHeader title="用量概览" subtitle="本月对话用量与配额使用情况" />
@@ -50,7 +50,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getQuota, exportUsage, type Quota } from '@/api/billing'
+import { getQuota, exportUsageDetail, type Quota } from '@/api/billing'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 const quota = ref<Quota | null>(null)
@@ -62,7 +62,7 @@ const percent = computed(() => {
   return Math.round((quota.value.count / quota.value.quota) * 100)
 })
 
-/** 进度条百分比格式化 -> "N%" */
+/** 进度条百分比格式化 → "N%" */
 function formatPercent(p: number): string {
   return `${p}%`
 }
@@ -76,15 +76,15 @@ onMounted(async () => {
   }
 })
 
-/** 导出用量明细 CSV（审查 P1-5，PRD 3.9） */
+/** 导出用量与 Token 消耗明细 CSV（PRD §3.9：会话ID/时间/意图/模型/Token/是否超额） */
 async function handleExport() {
   exporting.value = true
   try {
-    const res = await exportUsage()
+    const res = await exportUsageDetail()
     const url = URL.createObjectURL(res.data)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'zhihub-usage.csv'
+    a.download = 'zhihub-usage-detail.csv'
     a.click()
     URL.revokeObjectURL(url)
     ElMessage.success('已导出用量明细')

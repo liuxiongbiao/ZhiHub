@@ -60,13 +60,26 @@ def usage_overview(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/usage/export", dependencies=[Depends(require_role("admin"))])
 def export_usage(request: Request, db: Session = Depends(get_db)):
-    """用量明细 CSV 导出（PRD 3.9，审查 P1-5）。仅 admin。"""
+    """用量明细 CSV 导出（PRD 3.9，审查 ）。仅 admin。"""
     from app.services.billing_service import export_usage as _export
     csv_text = _export(db, tenant_id=_get_tenant_id(request))
     return Response(
         content=csv_text,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="zhihub-usage.csv"'},
+    )
+
+
+@router.get("/usage/export-detail", dependencies=[Depends(require_role("admin"))])
+def export_usage_detail(request: Request, db: Session = Depends(get_db)):
+    """用量与 Token 消耗明细 CSV 导出（PRD 3.9）：会话ID/时间/意图/模型/Token/是否超额。仅 admin。"""
+    from app.services.billing_service import export_usage_detail as _export_detail
+
+    csv_text = _export_detail(db, tenant_id=_get_tenant_id(request))
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="zhihub-usage-detail.csv"'},
     )
 
 
@@ -100,5 +113,5 @@ async def alipay_notify(request: Request, db: Session = Depends(get_db)):
         handle_payment_callback(db, form_data=form_data)
         return "success"
     except PaymentError as e:
-        # 验签失败 -> 400，支付宝会重试；但签名不合法的重试也不会通过
+        # 验签失败 → 400，支付宝会重试；但签名不合法的重试也不会通过
         raise HTTPException(status_code=400, detail=str(e))

@@ -1,5 +1,5 @@
 <!-- frontend/src/views/billing/InvoiceList.vue -->
-<!-- 职责: 账单列表 - 支付状态 + 支付入口（013 US2） -->
+<!-- 职责: 账单列表 - 支付状态 + 支付入口（规格 013 US2） -->
 <template>
   <div>
     <PageHeader title="账单列表" subtitle="查看历史账单与支付状态" />
@@ -46,7 +46,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { getInvoices, payInvoice, type Invoice } from '@/api/billing'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -67,6 +67,15 @@ async function loadInvoices() {
 onMounted(loadInvoices)
 
 async function handlePay(row: Invoice) {
+  try {
+    await ElMessageBox.confirm(`确认支付账单 #${row.id}（¥${(row.base_fee + row.overage_fee).toFixed(2)}）？将跳转支付宝沙箱。`, '支付确认', {
+      type: 'warning',
+      confirmButtonText: '去支付',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
   payingId.value = row.id
   try {
     const res = await payInvoice(row.id)

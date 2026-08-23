@@ -25,6 +25,8 @@ backend/app/services/billing_service.py
 import logging
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
+from redis.exceptions import WatchError
 from sqlalchemy.orm import Session
 
 from app.core.redis import get_redis
@@ -40,11 +42,11 @@ class PaymentError(Exception):
 class RefundError(Exception):
     """退款调用支付宝失败。"""
 
-# Redis 配额键前缀 -- 格式 billing:quota:{tenant_id}:{YYYY-MM}，按月分桶
+# Redis 配额键前缀 —— 格式 billing:quota:{tenant_id}:{YYYY-MM}，按月分桶
 QUOTA_KEY_PREFIX = "billing:quota:"
-# 预警去重键前缀 -- 格式 billing:warning:{tenant_id}:{YYYY-MM}:{level}，保证每级只通知一次
+# 预警去重键前缀 —— 格式 billing:warning:{tenant_id}:{YYYY-MM}:{level}，保证每级只通知一次
 WARNING_SENT_KEY = "billing:warning:"
-# 009 预警横幅键前缀 -- 格式 warning_banner:{tenant_id}:{level}，/home 读取显示红色横幅（PRD 3.9）
+# 预警横幅键前缀 —— 格式 warning_banner:{tenant_id}:{level}，/home 读取显示红色横幅（PRD §3.9）
 WARNING_BANNER_KEY = "warning_banner:"
 WARNING_BANNER_TTL = 60 * 60 * 24 * 40  # 40 天 TTL，覆盖整月（与去重键一致）
 
@@ -62,7 +64,7 @@ def _quota_key(tenant_id: int, month: str | None = None) -> str:
     Args:
         tenant_id: 租户 ID
         month: 可选月份 "YYYY-MM"，默认当前月。generate_invoice 生成上月账单时
-            必须传账期 period，否则月初会读到当前月计数（≈0），超额费恒为 0（T9）。
+            必须传账期 period，否则月初会读到当前月计数（≈0），超额费恒为 0。
     """
     if month is None:
         month = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m")
@@ -75,8 +77,63 @@ def _warning_key(tenant_id: int, level: str) -> str:
     return f"{WARNING_SENT_KEY}{tenant_id}:{month}:{level}"
 
 
-def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int | None = None) -> dict:
-    """每次 Agent 有效回复后 INCR 配额计数器（010: 按模型权重折算）。
+def usage_amount(model: str, tokens: int = 0) -> float:
+    """按规格 015 的模型权重与 Token 基数计算一次会话的等效用量。"""
+    import json as _json
+    from app.config import settings
+
+    try:
+        weights = _json.loads(settings.model_weights) if settings.model_weights else {}
+    except Exception:
+        weights = {}
+    weight = float(weights.get(model, 1.0))
+    if tokens and tokens > 0:
+        try:
+            tokens_per_conv = float(settings.billing_tokens_per_conversation) or 2500.0
+        except Exception:
+            tokens_per_conv = 2500.0
+        return (tokens / tokens_per_conv) * weight
+    return weight
+
+
+def _increment_usage(
+    redis_client,
+    *,
+    quota_key: str,
+    amount: float,
+    event_key: str | None,
+) -> tuple[float, bool]:
+    """原子写入计费增量；event_key 存在时同时完成 Redis 侧幂等判重。"""
+    if event_key is None:
+        count = redis_client.incrbyfloat(quota_key, amount)
+        redis_client.expire(quota_key, 60 * 60 * 24 * 40)
+        return float(count), False
+
+    marker_key = f"billing:event:{event_key}"
+    while True:
+        with redis_client.pipeline(transaction=True) as pipeline:
+            try:
+                pipeline.watch(marker_key)
+                if pipeline.exists(marker_key):
+                    pipeline.unwatch()
+                    return float(redis_client.get(quota_key) or 0), True
+                pipeline.multi()
+                # 计费事件在数据库中永久唯一，Redis 判重键同样不设 TTL，
+                # 避免极晚重放（例如长期故障恢复）再次增加配额。
+                pipeline.set(marker_key, "1")
+                pipeline.incrbyfloat(quota_key, amount)
+                pipeline.expire(quota_key, 60 * 60 * 24 * 40)
+                result = pipeline.execute()
+                return float(result[1]), False
+            except WatchError:
+                continue
+
+
+def incr_usage(
+    tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int | None = None,
+    tokens: int = 0, *, event_key: str | None = None, equivalent: float | None = None,
+) -> dict:
+    """每次 Agent 有效回复后 INCR 配额计数器（规格 010: 按模型权重折算）。
 
     仅在会话 RESOLVED 时调用，RESOLVED 前的中断不计入。
 
@@ -98,34 +155,26 @@ def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int
     Returns:
         dict: count / quota / is_overage / warning(80%/100%/None)
     """
-    import json as _json
     r = get_redis()
     key = _quota_key(tenant_id)
 
-    # 010: 按模型权重折算（权重表从 config 读取）-- 贵模型权重高，更早耗尽配额
-    try:
-        from app.config import settings
-        weights = _json.loads(settings.model_weights) if settings.model_weights else {}
-    except Exception:
-        # 权重表解析失败 -> 默认权重 1.0，降级但不阻断计费
-        weights = {}
-    weight = weights.get(model, 1.0)
-
-    # 原子浮点自增 -- 并发安全，多个会话同时结算不会丢计数
-    count = r.incrbyfloat(key, weight)
-    r.expire(key, 60 * 60 * 24 * 40)  # 40天TTL覆盖整月
+    # 原子浮点自增；事件消费同时在 Redis 事务中写幂等键，重放不会重复增量。
+    amount = equivalent if equivalent is not None else usage_amount(model, tokens)
+    count, duplicate_event = _increment_usage(
+        r, quota_key=key, amount=float(amount), event_key=event_key,
+    )
 
     q = quota if quota is not None else TRIAL_QUOTA
     is_overage = count >= q
     warning = None
 
-    # 80% 预警（仅触发一次）-- SETNX 原子去重（T18）:
+    # 80% 预警（仅触发一次）—— SETNX 原子去重:
     # 原 exists+set 两步非原子，并发结算可同时触发同一级预警重复通知；
     # nx=True 保证只有首个写入者进入触发分支，键带 TTL 覆盖整月
     if count >= int(q * QUOTA_WARNING_80) and r.set(
         _warning_key(tenant_id, "80"), "1", ex=60 * 60 * 24 * 40, nx=True,
     ):
-        # 009: 预警横幅标记（PRD 3.9），/home 读取显示红色横幅
+        # 规格 009: 预警横幅标记（PRD §3.9），/home 读取显示红色横幅
         r.set(f"{WARNING_BANNER_KEY}{tenant_id}:80", "1", ex=WARNING_BANNER_TTL)
         warning = "80%"
         logger.info(f"Tenant {tenant_id} quota 80% warning: {count}/{q}")
@@ -135,17 +184,23 @@ def incr_usage(tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int
     if count >= q and r.set(
         _warning_key(tenant_id, "100"), "1", ex=60 * 60 * 24 * 40, nx=True,
     ):
-        # 009: 预警横幅标记（PRD 3.9），100% 覆盖 80%（/home 读最新 level）
+        # 规格 009: 预警横幅标记（PRD §3.9），100% 覆盖 80%（/home 读最新 level）
         r.set(f"{WARNING_BANNER_KEY}{tenant_id}:100", "1", ex=WARNING_BANNER_TTL)
         warning = "100%"
         logger.info(f"Tenant {tenant_id} quota EXCEEDED: {count}/{q}")
         _notify(tenant_id, "100%", count, q)
 
-    return {"count": count, "quota": q, "is_overage": is_overage, "warning": warning}
+    return {
+        "count": count,
+        "quota": q,
+        "is_overage": is_overage,
+        "warning": warning,
+        "duplicate_event": duplicate_event,
+    }
 
 
-def incr_usage_for_tenant(db: Session, tenant_id: int) -> dict:
-    """按租户默认模型折算计费配额（026 PRD 3.9）。
+def incr_usage_for_tenant(db: Session, tenant_id: int, tokens: int = 0) -> dict:
+    """按租户默认模型折算计费配额（PRD §3.9）。
 
     读取 tenant.default_model，调 incr_usage 按该模型权重折算。
     租户不存在或 default_model 为空 -> 降级用默认模型 deepseek/deepseek-chat。
@@ -172,9 +227,84 @@ def incr_usage_for_tenant(db: Session, tenant_id: int) -> dict:
     except Exception as e:
         logger.warning(f"Read tenant.default_model failed, fallback to {model}: {e}")
 
-    # P0-2: 必须按租户套餐配额判定超额（此前漏传 quota，全部按 trial=100 计数）
+    # 必须按租户套餐配额判定超额（此前漏传 quota，全部按 trial=100 计数）
     quota = get_tenant_quota(db, tenant_id)
-    return incr_usage(tenant_id, model, quota=quota)
+    return incr_usage(tenant_id, model, quota=quota, tokens=tokens)
+
+
+def create_session_billing_event(db: Session, session) -> object:
+    """把已原子领取的会话结算为不可重复的数据库计费事件。"""
+    from app.crud import billing as billing_crud
+    from app.crud import tenant as tenant_crud
+
+    model = "deepseek/deepseek-chat"
+    tenant = tenant_crud.get_by_id(db, session.tenant_id)
+    if tenant is not None and tenant.default_model:
+        model = tenant.default_model
+    tokens = session_tokens(db, session.id)
+    amount = Decimal(str(usage_amount(model, tokens)))
+    return billing_crud.create_event(
+        db,
+        session_id=session.id,
+        tenant_id=session.tenant_id,
+        model=model,
+        tokens=tokens,
+        usage_amount=amount,
+    )
+
+
+def consume_pending_billing_events(db: Session, limit: int = 100) -> dict:
+    """消费待处理计费事件；Redis 失败保留 pending，后续扫描可安全重放。"""
+    from app.crud import billing as billing_crud
+
+    processed = 0
+    failed = 0
+    for event in billing_crud.list_pending_events(db, limit=limit):
+        event.attempts += 1
+        try:
+            quota = get_tenant_quota(db, event.tenant_id)
+            incr_usage(
+                event.tenant_id,
+                event.model,
+                quota=quota,
+                tokens=event.tokens,
+                event_key=event.event_key,
+                equivalent=float(event.usage_amount),
+            )
+        except Exception as exc:
+            event.last_error = str(exc)
+            db.commit()
+            failed += 1
+            logger.warning(
+                f"Billing event delivery failed (event={event.id}, session={event.session_id}): {exc}"
+            )
+            continue
+
+        event.status = "processed"
+        event.processed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        event.last_error = None
+        # Redis 已以 event_key 去重；若此 commit 失败，下次重放只补 DB 投影。
+        db.commit()
+        processed += 1
+    return {"processed": processed, "failed": failed}
+
+
+def session_tokens(db: Session, session_id: int) -> int:
+    """统计会话累计 Token 消耗（从 messages.metadata.tokens 聚合，供 RESOLVED 计费与导出）。"""
+    from app.models.message import Message
+    from sqlalchemy import select
+
+    messages = db.execute(
+        select(Message).where(Message.session_id == session_id)
+    ).scalars().all()
+    total = 0
+    for m in messages:
+        md = m.msg_metadata or {}
+        try:
+            total += int(float(md.get("tokens", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 def _notify(tenant_id: int, level: str, count: int, quota: int) -> None:
@@ -206,7 +336,7 @@ def check_quota(tenant_id: int, quota: int | None = None) -> dict:
 
 
 def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
-    """生成月度账单（公式见 specs/015-billing-accuracy/spec.md）。
+    """生成月度账单（公式见 docs/specs/015-billing-accuracy/spec.md）。
 
     流程:
       1. 去重: 同 (tenant_id, period) 已有账单则直接返回（cached=True）
@@ -250,11 +380,25 @@ def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
     quota = PLAN_QUOTA.get(plan_type, TRIAL_QUOTA)
 
     r = get_redis()
-    # 按账期 period 取配额 key：月初生成上月账单时读上月计数（T9 修复，
+    # 按账期 period 取配额 key：月初生成上月账单时读上月计数（ 修复，
     # 原来固定当前月导致月初账单超额费恒为 0）
-    count = float(r.get(_quota_key(tenant_id, month=period)) or 0)
+    # 账单优先从 usage_records 聚合（持久化数据），Redis 仅作缺失期兜底
+    from app.models.usage_record import UsageRecord
+    from sqlalchemy import func as sa_func
+    total = db.execute(
+        select(sa_func.coalesce(sa_func.sum(UsageRecord.conversation_count), 0)).where(
+            UsageRecord.tenant_id == tenant_id,
+            UsageRecord.date.like(f"{period}-%"),
+        )
+    ).scalar() or 0
+    count = float(total)
+    if count == 0:
+        count = float(r.get(_quota_key(tenant_id, month=period)) or 0)
+        logger.warning(
+            f"Invoice {tenant_id}/{period}: usage_records empty, fallback to Redis counter={count}"
+        )
     overage_count = max(0, count - quota)
-    # 公式: overage_fee = overage_cnt * OVERAGE_PRICE（默认 0.5 元/条，PRD 3.9）
+    # 公式: overage_fee = overage_cnt * OVERAGE_PRICE（默认 0.5 元/条，PRD §3.9）
     overage_fee = round(overage_count * settings.billing_overage_price, 2)
 
     invoice = BillingInvoice(
@@ -355,7 +499,7 @@ def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | No
     trade_no = form_data.get("trade_no", "")
     trade_status = form_data.get("trade_status", "")
 
-    # 按 trade_no 幂等去重 -- 同一支付流水重复回调不重复入账
+    # 按 trade_no 幂等去重 —— 同一支付流水重复回调不重复入账
     existing = db.execute(
         select(BillingInvoice).where(BillingInvoice.payment_trade_no == trade_no)
     ).scalar_one_or_none()
@@ -373,7 +517,7 @@ def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | No
     if invoice is None:
         return {"error": "未匹配到账单"}
 
-    # T17: 原子条件更新防并发双 trade_no -- 两个并发回调都读到 unpaid 时，只有一个
+    # 原子条件更新防并发双 trade_no —— 两个并发回调都读到 unpaid 时，只有一个
     # UPDATE WHERE status='unpaid' 成功（rowcount=1），另一个 rowcount=0 拒绝且不覆盖
     # payment_trade_no。原 read-then-write（先 if status==paid 再赋值）非原子，并发双付只记一次。
     from sqlalchemy import update as _sa_update
@@ -385,7 +529,7 @@ def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | No
     )
     if res.rowcount == 0:
         return {"error": f"账单已支付或状态已变: {invoice.id}"}
-    # PRD 2.1 审计日志: 支付回调成功落库（同事务）
+    # PRD §2.1 审计日志: 支付回调成功落库（同事务）
     log_audit(
         db, tenant_id=invoice.tenant_id, user_id=None, action="payment",
         target_type="billing_invoice", target_id=invoice.id,
@@ -393,7 +537,7 @@ def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | No
     )
     db.commit()
 
-    # 支付成功恢复降级 -- 清除租户降级标记（PRD 3.10 要求）
+    # 支付成功恢复降级 —— 清除租户降级标记（PRD §3.10 要求）
     _clear_degradation(invoice.tenant_id)
 
     logger.info(f"Payment callback success: invoice={invoice.id}, trade_no={trade_no}")
@@ -426,9 +570,9 @@ def _clear_degradation(tenant_id: int) -> None:
         logger.warning(f"Clear degradation failed (non-blocking): {e}")
 
 
-# 010 US4: 用量导出 + 逾期降级
+# 规格 010 US4: 用量导出 + 逾期降级
 def export_usage(db: Session, tenant_id: int) -> str:
-    """导出租户用量 CSV（010 US4）。
+    """导出租户用量 CSV（规格 010 US4）。
 
     流程:
       1. 查询租户最近 1000 条用量记录（按创建时间倒序）
@@ -458,8 +602,58 @@ def export_usage(db: Session, tenant_id: int) -> str:
     return output.getvalue()
 
 
+def export_usage_detail(db: Session, tenant_id: int) -> str:
+    """导出用量与 Token 消耗明细（PRD 3.9）：按会话一行，
+    字段含会话ID、发生时间、意图类型、调用模型、Token 数、是否计入超额。"""
+    import csv
+    import io
+
+    from app.models.message import Message
+    from app.models.session import Session as SessionModel
+    from app.crud import tenant as tenant_crud
+    from sqlalchemy import select
+
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    model = tenant.default_model if tenant and tenant.default_model else "deepseek/deepseek-chat"
+    quota = get_tenant_quota(db, tenant_id)
+
+    sessions = db.execute(
+        select(SessionModel).where(SessionModel.tenant_id == tenant_id)
+        .order_by(SessionModel.created_at.asc())
+    ).scalars().all()
+    session_ids = [s.id for s in sessions]
+    tokens_by_session: dict[int, int] = {}
+    if session_ids:
+        messages = db.execute(
+            select(Message).where(Message.session_id.in_(session_ids))
+        ).scalars().all()
+        for m in messages:
+            md = m.msg_metadata or {}
+            try:
+                tokens_by_session[m.session_id] = tokens_by_session.get(m.session_id, 0) + int(
+                    float(md.get("tokens", 0) or 0)
+                )
+            except (TypeError, ValueError):
+                continue
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "session_id", "occurred_at", "intent_type", "model", "tokens", "is_overage",
+    ])
+    cumulative = 0.0
+    for s in sessions:
+        tokens = tokens_by_session.get(s.id, 0)
+        cumulative += max(tokens / 2500.0, 0.0)
+        writer.writerow([
+            s.id, s.created_at, s.intent or "", model, tokens,
+            "true" if cumulative >= quota else "false",
+        ])
+    return output.getvalue()
+
+
 def check_overdue(db: Session) -> dict:
-    """检查逾期账单 -> 降级标记（010 US4）。
+    """检查逾期账单 -> 降级标记（规格 010 US4）。
 
     流程:
       1. 计算逾期时间阈值 = now - invoice_overdue_days
@@ -491,19 +685,19 @@ def check_overdue(db: Session) -> dict:
 
     r = get_redis()
     for inv in overdue:
-        # P0-3: 试用租户默认不收费，历史遗留账单也不触发降级
+        # 试用租户默认不收费，历史遗留账单也不触发降级
         from app.crud import tenant as tenant_crud
         tenant = tenant_crud.get_by_id(db, inv.tenant_id)
         if tenant is not None and tenant.plan_type == "trial" and not settings.billing_charge_trial:
             continue
-        # 降级标记 24h TTL -- 每日定时任务刷新；租户补缴后标记自然过期
+        # 降级标记 24h TTL —— 每日定时任务刷新；租户补缴后标记自然过期
         r.set(f"billing:degraded:{inv.tenant_id}", "1", ex=86400)
         logger.info(f"Tenant {inv.tenant_id} marked degraded (overdue invoice {inv.id})")
     return {"degraded": len(overdue)}
 
 
 def is_degraded(tenant_id: int) -> bool:
-    """检查租户是否被降级（010 US4）。
+    """检查租户是否被降级（规格 010 US4）。
 
     业务层在处理请求前调用本函数，降级则拒绝或限制功能。
 
@@ -516,7 +710,7 @@ def is_degraded(tenant_id: int) -> bool:
     return get_redis().exists(f"billing:degraded:{tenant_id}") == 1
 
 def get_tenant_quota(db: Session, tenant_id: int) -> int:
-    """按套餐返回租户月对话配额（PRD 3.9 套餐矩阵，fresh-eyes P1-2）。"""
+    """按套餐返回租户月对话配额（PRD 3.9 套餐矩阵，fresh-eyes ）。"""
     try:
         from app.crud import tenant as tenant_crud
         t = tenant_crud.get_by_id(db, tenant_id)
@@ -528,7 +722,7 @@ def get_tenant_quota(db: Session, tenant_id: int) -> int:
 
 
 def _plan_base_fee(plan_type: str) -> float:
-    """读取套餐月基础费（015：从配置 JSON 读取，解析失败回退 0 并告警）。"""
+    """读取套餐月基础费（规格 015：从配置 JSON 读取，解析失败回退 0 并告警）。"""
     import json as _json
     try:
         from app.config import settings

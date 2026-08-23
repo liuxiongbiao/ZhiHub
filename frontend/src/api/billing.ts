@@ -36,18 +36,23 @@ export function getUsage() {
 }
 
 
-/** 支付响应（013 US2） */
+/** 支付响应（规格 013 US2） */
 export interface PayResponse {
   trade_no?: string
   pay_url?: string
 }
 
-/** 发起支付（013 US2，生成支付宝沙箱订单 + 跳转 URL） */
+/** 发起支付（规格 013 US2，生成支付宝沙箱订单 + 跳转 URL） */
 export function payInvoice(invoiceId: number) {
   return request.post<PayResponse>(`/billing/pay/${invoiceId}`)
 }
 
-/** 用量明细 CSV 导出（PRD 3.9，审查 P1-5，仅 admin） */
+/** 用量明细 CSV 导出（PRD §3.9，审查 ，仅 admin） */
 export function exportUsage() {
   return request.get('/billing/usage/export', { responseType: 'blob' })
+}
+
+/** 用量与 Token 消耗明细 CSV 导出（PRD §3.9，会话ID/时间/意图/模型/Token/是否超额，仅 admin） */
+export function exportUsageDetail() {
+  return request.get('/billing/usage/export-detail', { responseType: 'blob' })
 }
