@@ -130,6 +130,7 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
+      - path.repo=/usr/share/elasticsearch/snapshots
       - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
     ports: ["127.0.0.1:9200:9200"]
     mem_limit: 1536m
@@ -141,6 +142,7 @@ services:
       retries: 10
     volumes:
       - es_data:/usr/share/elasticsearch/data
+      - ../backups/elasticsearch-repository:/usr/share/elasticsearch/snapshots
 
   etcd:
     image: quay.nju.edu.cn/coreos/etcd:v3.5.5

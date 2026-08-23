@@ -36,6 +36,7 @@ e2e-evidence-*/
 # 本地数据与运行状态
 data/
 **/celerybeat-*
+backups/
 
 # 通用构建与本地环境
 **/.venv/
@@ -52,5 +53,5 @@ Thumbs.db
 # 测试临时产物
 frontend/tests/e2e/e2e-cred.json
 
-# CI ����������
+# CI 临时审计输出
 backend/audit.json
