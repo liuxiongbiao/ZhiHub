@@ -558,9 +558,8 @@ cd C:\Users\Lenovo\Desktop\Three\zhihub\backend
 |---|---|
 | 前端 element-plus 分包偏大（936KB gzip 302KB） | 构建警告：可用 manualChunks 拆 vendor 或按需引入组件，优化首屏 |
 | 检索召回对口语化改写覆盖不足 | Q9/Q10 两题漏答（rerank 分数在噪声区），方向：查询改写 prompt 优化或知识库补同义表述 |
-| uvicorn 单 worker | 生产建议 `--workers 2-4`（100 并发 P99 643ms 可再降） |
-| 应用 INFO 日志无 handler | 容器日志看不到 INFO（排查"Low confidence"时发现），建议 main.py 配置 root logging |
-
+| ✅ uvicorn 多 worker | 2026-08-23 已完成：生产镜像启用 `--workers 2`，容器进程实测为 1 个父进程 + 2 个服务进程；20 并发暖机后 `/health` P95 71.9ms / P99 91.1ms / 546.6 req/s，与原基线 75.2ms / 90.7ms / 564 req/s 持平 |
+| ✅ 应用 INFO 日志 | 2026-08-23 已完成：`main.py` 配置 root stdout/stderr handler，容器日志实见 `app.main` 与 `app.core.database` INFO；高噪声第三方库降为 WARNING，健康探针业务访问日志降为 DEBUG，Uvicorn 默认日志保持不变 |
 
 
 

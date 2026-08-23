@@ -26,9 +26,15 @@ from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 
+# 健康探针与监控抓取频率高，Uvicorn 已记录访问结果，业务日志仅在调试时保留。
+LOW_NOISE_PATHS = frozenset({"/health", "/metrics"})
+
 
 class AccessLogMiddleware(BaseHTTPMiddleware):
+    """注入链路标识并记录业务请求耗时。"""
+
     async def dispatch(self, request: Request, call_next):
+        """处理请求并回写链路标识，高频探针降为 DEBUG 避免重复日志拖慢服务。"""
         # trace_id：优先透传客户端 X-Request-Id（链路追踪），无则生成
         trace_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:12]
         request.state.trace_id = trace_id
@@ -39,7 +45,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
         # 回写响应头，便于客户端关联日志
         response.headers["X-Request-Id"] = trace_id
-        logger.info(
+        log_method = logger.debug if request.url.path in LOW_NOISE_PATHS else logger.info
+        log_method(
             f"{request.method} {request.url.path} {response.status_code} "
             f"{elapsed_ms}ms trace={trace_id}"
         )

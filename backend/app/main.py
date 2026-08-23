@@ -67,6 +67,39 @@ from app.middlewares.tenant_middleware import TenantMiddleware
 logger = logging.getLogger(__name__)
 
 
+def _configure_logging() -> None:
+    """配置容器日志输出，并压低高噪声第三方依赖的日志级别。"""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    if not root_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S%z",
+            )
+        )
+        root_logger.addHandler(handler)
+
+    # 业务日志保持 INFO 可见，第三方客户端只保留告警，避免容器日志被连接细节淹没。
+    logging.getLogger("app").setLevel(logging.INFO)
+    for logger_name in (
+        "asyncio",
+        "elasticsearch",
+        "httpcore",
+        "httpx",
+        "multipart",
+        "pika",
+        "pymilvus",
+        "sqlalchemy.engine",
+        "urllib3",
+    ):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+_configure_logging()
+
+
 # 知识库异步消费: 后台线程消费 RabbitMQ knowledge_processing 队列
 def _run_knowledge_consumer() -> None:
     """后台消费知识库处理队列，崩溃后 5s 自动重连。"""
