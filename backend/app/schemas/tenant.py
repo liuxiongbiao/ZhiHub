@@ -20,13 +20,13 @@ class TenantHomeResponse(BaseModel):
     plan_type: str
     status: str
     current_user: CurrentUser
-    # 008 降级模式告警横幅（PRD 3.4/3.8）：检索基础设施故障时 True
+    # 规格 008 降级模式告警横幅（PRD §3.4/3.8）：检索基础设施故障时 True
     degradation_alert: bool = False
-    # 009 预警站内红色横幅（PRD 3.9）：配额 80%/100% 预警，None=无预警
+    # 规格 009 预警站内红色横幅（PRD §3.9）：配额 80%/100% 预警，None=无预警
     warning_banner: str | None = None
 
 
-# ---------- 配置向导（PRD 3.1）----------
+# ────────── 配置向导（PRD §3.1）──────────
 class WizardStatusResponse(BaseModel):
     """向导状态响应：当前步骤 + 完成度 + 步骤全表。"""
     current_step: str
@@ -43,14 +43,15 @@ class InviteRequest(BaseModel):
 class InviteResponse(BaseModel):
     """邀请成功响应：一次性 token + 有效期（秒）。"""
     invite_token: str
+    invite_url: str
     expires_in: int
 
 
 class AcceptInviteRequest(BaseModel):
     """接受邀请请求：token + 手机号 + 密码。"""
     token: str
-    phone: str
-    password: str
+    phone: str | None = None
+    password: str | None = None
 
 
 class AcceptInviteResponse(BaseModel):
@@ -58,9 +59,11 @@ class AcceptInviteResponse(BaseModel):
     user_id: int
     tenant_id: int
     role: str
+    access_token: str
+    refresh_token: str
 
 
-# ---------- Widget 品牌定制（PRD 3.8 / 020）----------
+# ────────── Widget 品牌定制（PRD §3.8 / ）──────────
 class WidgetConfigRequest(BaseModel):
     """Widget 品牌配置请求：主题色/Logo/欢迎语（均可选，传哪个改哪个）。"""
     theme_color: str | None = Field(default=None, max_length=20)
@@ -76,7 +79,29 @@ class WidgetConfigResponse(BaseModel):
     welcome_text: str | None = None
 
 
+class WidgetConfigQueryResponse(WidgetConfigResponse):
+    """: Widget 配置查询响应--品牌字段 + 域名白名单（不含 API Key 任何形态）。"""
+    domains: list[str] = Field(default_factory=list)
+
+
+class WidgetDomainsResponse(BaseModel):
+    """: Widget 域名白名单查询响应。"""
+    domains: list[str] = Field(default_factory=list)
+
+
 class WidgetEmbedCodeResponse(BaseModel):
     """Widget 嵌入代码响应：可粘贴到客户网站的 script 片段。"""
     tenant_id: int
     embed_code: str
+
+
+# ────────── 退款审批阈值（PRD §3.6 规则配置）──────────
+class RefundThresholdRequest(BaseModel):
+    """退款审批阈值请求：大额退款（>阈值）需管理员二次审批。"""
+    refund_approval_threshold: float = Field(..., gt=0, le=1000000, description="阈值金额（元），大于0且不超过6位整数+2位小数")
+
+
+class RefundThresholdResponse(BaseModel):
+    """退款审批阈值响应。"""
+    tenant_id: int
+    refund_approval_threshold: float
