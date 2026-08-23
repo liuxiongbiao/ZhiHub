@@ -7,7 +7,7 @@ backend/.env.local
 # 前端
 frontend/node_modules/
 frontend/dist/
-frontend/e2e-cred.json
+frontend/tests/e2e/e2e-shots/
 frontend/connectivity-*.log
 frontend/connectivity-*.err.log
 
@@ -16,9 +16,31 @@ backend/.venv/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/.pytest_cache/
+**/__pycache__/
+**/.pytest_cache/
+**/.pytest-*/
+**/.pytest_tmp*/
+**/.verify*
+**/.vf_*
+backend/data/
 backend/*.log
 backend/*.err.log
 backend/e2e-*.pyc
+
+# 测试与验证临时产物
+.pytest-*/
+e2e-evidence-*/
+**/e2e-shots/
+**/e2e-cred*.json*
+
+# 本地数据与运行状态
+data/
+**/celerybeat-*
+
+# 通用构建与本地环境
+**/.venv/
+**/node_modules/
+**/dist/
 
 # 编辑器 / 系统
 .idea/
