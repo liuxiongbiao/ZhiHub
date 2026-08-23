@@ -1,9 +1,17 @@
+/**
+ * src/views/login/Register.vue
+ *
+ * 职责: 注册页 —— 支持手机号（短信验证码）与邮箱（邮件激活）两种注册方式（PRD §3.1.1）；
+ *      注册成功后跳转后续初始化流程。
+ *
+ * 依赖: auth API（验证码发送/注册）、router（跳转）。
+ */
 <template>
   <div class="register-page">
     <el-card class="register-card">
       <h2>注册</h2>
       <el-tabs v-model="regTab" class="reg-tabs">
-        <!-- 手机号注册（含短信验证码，PRD 3.1.1） -->
+        <!-- 手机号注册（含短信验证码，PRD §3.1.1） -->
         <el-tab-pane label="手机号注册" name="phone">
           <el-form ref="phoneFormRef" :model="phoneForm" :rules="phoneRules" label-position="top" @submit.prevent="handlePhoneRegister">
             <el-form-item label="手机号" prop="phone">
@@ -29,7 +37,7 @@
           </el-form>
         </el-tab-pane>
 
-        <!-- 邮箱注册（PRD 3.1.1） -->
+        <!-- 邮箱注册（PRD §3.1.1） -->
         <el-tab-pane label="邮箱注册" name="email">
           <el-form ref="emailFormRef" :model="emailForm" :rules="emailRules" label-position="top" @submit.prevent="handleEmailRegister">
             <el-form-item label="邮箱" prop="email">
@@ -142,11 +150,15 @@ async function handleEmailRegister() {
   try { await emailFormRef.value.validate() } catch { return }
   loading.value = true
   try {
-    await registerEmail({
+    const res = await registerEmail({
       email: emailForm.email, password: emailForm.password,
       tenant_name: emailForm.tenant_name.trim(),
     })
-    ElMessage.success('注册成功，请登录')
+    if (res.data.activation_link) {
+      ElMessage.success('注册成功，请点击激活链接完成邮箱验证')
+    } else {
+      ElMessage.success('注册成功，激活邮件已发送，请查收后登录')
+    }
     router.push('/login')
   } catch (e: any) {
     ElMessage.error(e?.message || '注册失败')

@@ -20,7 +20,14 @@
  *   这三条防线保证请求层/状态层/路由层不会形成 import 环
  */
 import axios from 'axios'
-import { AUTH_STORAGE_KEY, API_BASE_URL } from '@/constants'
+import { API_BASE_URL } from '@/constants'
+import {
+  getAuthToken,
+  getRefreshToken,
+  handleAuthFailure,
+  setAuthFailureHandler,
+  updateAuthTokens,
+} from './auth-session'
 
 export class ApiError extends Error {
   constructor(
@@ -45,10 +52,8 @@ function extractDetail(data: unknown): string {
   return '请求失败'
 }
 
-let _unauthorizedHandler: (() => void) | null = null
-
 export function setUnauthorizedHandler(fn: () => void): void {
-  _unauthorizedHandler = fn
+  setAuthFailureHandler(fn)
 }
 
 const request = axios.create({
@@ -56,20 +61,46 @@ const request = axios.create({
   timeout: 10000,
 })
 
+interface RetryableRequestConfig {
+  url?: string
+  headers?: Record<string, string>
+  _refreshRetried?: boolean
+}
+
+let refreshFlight: Promise<string> | null = null
+
+function refreshAccessToken(): Promise<string> {
+  if (refreshFlight) return refreshFlight
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) {
+    handleAuthFailure()
+    return Promise.reject(new ApiError(401, '登录已过期'))
+  }
+  refreshFlight = axios.post<{
+    access_token: string
+    refresh_token: string
+  }>(`${API_BASE_URL}/auth/refresh`, { refresh_token: refreshToken })
+    .then((response) => {
+      updateAuthTokens(response.data.access_token, response.data.refresh_token)
+      return response.data.access_token
+    })
+    .catch((error) => {
+      handleAuthFailure()
+      throw error
+    })
+    .finally(() => {
+      refreshFlight = null
+    })
+  return refreshFlight
+}
+
 // 请求拦截器: 从 localStorage 取 token 注入 Authorization
 request.interceptors.request.use((config) => {
-  try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEY)
-    if (raw) {
-      const stored = JSON.parse(raw) as { token?: string }
-      if (stored.token) {
-        config.headers.Authorization = `Bearer ${stored.token}`
-        // CSRF 防护: 状态变更请求携带 X-CSRF-Token 头（复用 JWT 令牌）
-        config.headers['X-CSRF-Token'] = stored.token
-      }
-    }
-  } catch {
-    // localStorage 数据损坏，忽略
+  const token = getAuthToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+    // CSRF 防护: 状态变更请求携带 X-CSRF-Token 头（复用 JWT 令牌）
+    config.headers['X-CSRF-Token'] = token
   }
   return config
 })
@@ -77,13 +108,29 @@ request.interceptors.request.use((config) => {
 // 响应拦截器: 成功返回完整 response（调用方用 res.data 取 body）；错误归一化 ApiError
 request.interceptors.response.use(
   (res) => res,
-  (error) => {
+  async (error) => {
     const status = error.response?.status ?? 0
     const data = error.response?.data
+    const original = error.config as RetryableRequestConfig | undefined
 
-    if (status === 401) {
-      localStorage.removeItem(AUTH_STORAGE_KEY)
-      _unauthorizedHandler?.()
+    if (
+      status === 401
+      && original
+      && !original._refreshRetried
+      && !original.url?.includes('/auth/refresh')
+    ) {
+      original._refreshRetried = true
+      try {
+        const accessToken = await refreshAccessToken()
+        original.headers = original.headers ?? {}
+        original.headers.Authorization = `Bearer ${accessToken}`
+        original.headers['X-CSRF-Token'] = accessToken
+        return request(original)
+      } catch {
+        // refreshAccessToken 已统一清理登录态并通知路由层。
+      }
+    } else if (status === 401) {
+      handleAuthFailure()
     }
 
     const message = extractDetail(data)

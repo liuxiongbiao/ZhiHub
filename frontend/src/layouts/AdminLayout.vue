@@ -1,3 +1,11 @@
+/**
+ * src/layouts/AdminLayout.vue
+ *
+ * 职责: 企业管理后台布局 —— 左侧导航菜单、顶部用户区与内容区；
+ *      菜单按角色渲染，路由切换经 vue-router，未读提醒经站内信 API 轮询。
+ *
+ * 依赖: userStore（当前用户/退出登录）、tenantStore（租户信息）、notification API（未读提醒）。
+ */
 <template>
   <el-container class="admin-layout">
     <el-aside width="220px" class="sidebar">
@@ -20,12 +28,12 @@
           <el-icon><ChatDotRound /></el-icon>
           <span>Widget 预览</span>
         </el-menu-item>
-        <el-menu-item index="/widget/config">
+        <el-menu-item v-if="userStore.role === 'admin'" index="/widget/config">
           <el-icon><Brush /></el-icon>
           <span>品牌定制</span>
         </el-menu-item>
 
-        <el-sub-menu index="group-knowledge">
+        <el-sub-menu v-if="userStore.role === 'admin'" index="group-knowledge">
           <template #title>
             <el-icon><Collection /></el-icon>
             <span>知识管理</span>
@@ -49,7 +57,7 @@
             <el-icon><Document /></el-icon>
             <span>工单看板</span>
           </el-menu-item>
-          <el-menu-item index="/session/monitor">
+          <el-menu-item v-if="userStore.role === 'admin'" index="/session/monitor">
             <el-icon><ChatDotRound /></el-icon>
             <span>会话监控</span>
           </el-menu-item>
@@ -63,7 +71,7 @@
           </el-menu-item>
         </el-sub-menu>
 
-        <el-sub-menu index="group-billing">
+        <el-sub-menu v-if="userStore.role === 'admin'" index="group-billing">
           <template #title>
             <el-icon><TrendCharts /></el-icon>
             <span>计费</span>
@@ -93,11 +101,15 @@
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item index="/setup">
+        <el-menu-item v-if="userStore.role === 'admin'" index="/setup">
           <el-icon><Setting /></el-icon>
           <span>配置向导</span>
         </el-menu-item>
-        <el-menu-item index="/audit/logs">
+        <el-menu-item v-if="userStore.role === 'admin'" index="/settings">
+          <el-icon><Tools /></el-icon>
+          <span>规则配置</span>
+        </el-menu-item>
+        <el-menu-item v-if="userStore.role === 'admin'" index="/audit/logs">
           <el-icon><DocumentChecked /></el-icon>
           <span>审计日志</span>
         </el-menu-item>
@@ -155,7 +167,7 @@
 </template>
 
 <!--
-  AdminLayout.vue - 后台管理布局(012 前端打磨)
+  AdminLayout.vue - 后台管理布局(规格 012 前端打磨)
 
   结构:
     el-container
@@ -176,13 +188,13 @@ import { ElMessage } from 'element-plus'
 import {
   Service, Odometer, Collection, Files, Search, Tickets, Document, List,
   Wallet, TrendCharts, DataLine, Money, MagicStick, Notebook, Headset,
-  ChatDotRound, Setting, User, ArrowDown, SwitchButton, Brush, DocumentChecked, Bell,
+  ChatDotRound, Setting, Tools, User, ArrowDown, SwitchButton, Brush, DocumentChecked, Bell,
 } from '@element-plus/icons-vue'
 import { getNotifications, getUnreadCount, markNotificationRead, type NotificationItem } from '@/api/notification'
 import { useTenantStore } from '@/store/modules/tenant'
 import { useUserStore } from '@/store/modules/user'
 
-/** 套餐类型 -> 中文标签 */
+/** 套餐类型 → 中文标签 */
 const PLAN_LABEL: Record<string, string> = {
   trial: '试用', basic: '基础版', pro: '专业版', enterprise: '企业版',
 }
@@ -240,7 +252,7 @@ onMounted(() => {
   // 组合现有轮询节奏刷新未读（简化：初始+麃铃展开时刷新）
 })
 
-/** 下拉菜单命令分发: logout -> 退出登录 */
+/** 下拉菜单命令分发: logout → 退出登录 */
 function handleCommand(cmd: string) {
   if (cmd === 'logout') handleLogout()
   if (cmd === 'profile') router.push('/profile')

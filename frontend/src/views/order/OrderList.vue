@@ -1,3 +1,10 @@
+/**
+ * src/views/order/OrderList.vue
+ *
+ * 职责: 订单管理页 —— 按履约状态分栏看板展示租户订单，支持新建订单、查看物流单号与状态计数。
+ *
+ * 依赖: order API（列表/创建），状态分组与计数在前端聚合展示。
+ */
 <template>
   <div>
     <PageHeader title="订单列表" subtitle="查看所有订单及支付/履约状态" />
@@ -6,7 +13,7 @@
         <el-button type="primary" size="small" @click="openCreate">新建订单</el-button>
       </div>
       <el-card shadow="never">
-        <!-- 013 审查 P1-6：按履约状态分栏看板（PRD 3.6/3.8） -->
+        <!-- 审计复核：按履约状态分栏看板（PRD §3.6/3.8） -->
         <el-tabs v-model="activeStatus" @tab-change="loadOrders">
           <el-tab-pane v-for="g in statusGroups" :key="g.value" :name="g.value">
             <template #label>{{ g.label }}（{{ countBy(g.value) }}）</template>
@@ -22,6 +29,9 @@
           <el-table-column prop="tracking_no" label="物流单号" width="160" show-overflow-tooltip>
             <template #default="{ row }">{{ row.tracking_no || '-' }}</template>
           </el-table-column>
+          <el-table-column label="创建方" width="90">
+            <template #default="{ row }">{{ creatorLabel(row.created_by) }}</template>
+          </el-table-column>
           <el-table-column prop="created_at" label="创建时间" width="180"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
           <el-table-column label="操作" width="100">
             <template #default="{ row }">
@@ -32,7 +42,7 @@
         </el-table>
       </el-card>
 
-      <!-- 013 US6: 发货弹窗 -->
+      <!-- 规格 013 US6: 发货弹窗 -->
       <el-dialog v-model="shipDialog" title="订单发货" width="420px">
         <p>订单号：{{ shipRow?.order_no }}</p>
         <el-input v-model="trackingNo" placeholder="请输入物流单号" />
@@ -42,7 +52,7 @@
         </template>
       </el-dialog>
 
-      <!-- closure-plan P1-3: 新建订单弹窗 -->
+      <!-- : 新建订单弹窗 -->
       <el-dialog v-model="createDialog" title="新建订单" width="460px">
         <el-form :model="createForm" label-width="90px">
           <el-form-item label="订单号">
@@ -91,6 +101,7 @@ const statusGroups = [
   { value: 'paid', label: '已支付' },
   { value: 'shipped', label: '已发货' },
   { value: 'completed', label: '已完成' },
+  { value: 'refund_requested', label: '待退款审批' },
   { value: 'refunding', label: '退款中' },
   { value: 'refunded', label: '已退款' },
   { value: 'cancelled', label: '已取消' },
@@ -102,12 +113,18 @@ function countBy(status: string): number {
 }
 
 function statusType(status: string): string {
-  return { completed: 'success', refunded: 'success', cancelled: 'info', refunding: 'warning', paid: 'primary', shipped: 'primary' }[status] || 'info'
+  return { completed: 'success', refunded: 'success', cancelled: 'info', refund_requested: 'warning', refunding: 'warning', paid: 'primary', shipped: 'primary' }[status] || 'info'
 }
 function statusLabel(status: string): string {
   return (ORDER_STATUS_MAP as Record<string, string>)[status] || status
 }
 function formatDate(iso: string): string { return new Date(iso).toLocaleString('zh-CN') }
+
+/** 创建方标签（PRD §3.5：agent=Agent / staff=坐席） */
+function creatorLabel(v: string | undefined): string {
+  const map: Record<string, string> = { agent: 'Agent', staff: '坐席' }
+  return map[v || ''] || v || '-'
+}
 
 async function loadOrders() {
   loading.value = true

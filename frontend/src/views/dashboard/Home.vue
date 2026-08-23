@@ -1,16 +1,24 @@
+/**
+ * src/views/dashboard/Home.vue
+ *
+ * 职责: 管理后台工作台首页 —— 展示系统降级告警、配额预警、配置向导完成度提示等
+ *      状态横幅，以及租户用量概览与常用功能入口。
+ *
+ * 数据来源: tenantStore（degradation_alert / warning_banner / tenant_name）与用量统计 API。
+ */
 <template>
   <div>
     <PageHeader title="工作台" :subtitle="`欢迎回来，${tenantStore.tenant_name || '管理员'}`" />
     <div class="page-container">
-      <!-- 013 US5: 系统降级告警横幅（PRD 3.8） -->
+      <!-- 规格 013 US5: 系统降级告警横幅（PRD §3.8） -->
       <el-alert v-if="tenantStore.degradation_alert" type="error" :closable="false" show-icon class="banner-alert">
         检索基础设施异常降级中，知识库检索质量可能受影响，请稍后重试。
       </el-alert>
-      <!-- 013 US5: 配额预警横幅（PRD 3.9） -->
+      <!-- 规格 013 US5: 配额预警横幅（PRD §3.9） -->
       <el-alert v-if="tenantStore.warning_banner" type="warning" :closable="false" show-icon class="banner-alert">
         配额预警：当前用量已达 {{ tenantStore.warning_banner }}，请关注用量或升级套餐。
       </el-alert>
-      <!-- PRD 3.1/3.8：配置向导完成度提示（未完成红点横幅，点击直达向导） -->
+      <!-- PRD §3.1/3.8：配置向导完成度提示（未完成红点横幅，点击直达向导） -->
       <el-alert
         v-if="wizardIncomplete"
         type="info"
@@ -55,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Collection, Tickets, List, ChatDotRound, User } from '@element-plus/icons-vue'
@@ -72,12 +80,12 @@ const router = useRouter()
 const wizardIncomplete = ref(false)
 const wizardStep = ref('')
 
-const quickEntries = [
-  { name: '知识库', desc: '管理与检索', path: '/knowledge/list', icon: Collection, color: '#409eff' },
+const quickEntries = computed(() => [
+  { name: '知识库', desc: '管理与检索', path: '/knowledge/list', icon: Collection, color: '#409eff', adminOnly: true },
   { name: '工单看板', desc: '查看与处理', path: '/ticket/list', icon: Tickets, color: '#e6a23c' },
   { name: '订单列表', desc: '订单与支付', path: '/order/list', icon: List, color: '#67c23a' },
-  { name: '成员邀请', desc: '邀请坐席', path: '/onboarding/members', icon: User, color: '#f56c6c' },
-]
+  { name: '成员邀请', desc: '邀请坐席', path: '/onboarding/members', icon: User, color: '#f56c6c', adminOnly: true },
+].filter((entry) => !entry.adminOnly || tenantStore.current_user?.role === 'admin'))
 
 onMounted(async () => {
   if (!tenantStore.tenant_id) {

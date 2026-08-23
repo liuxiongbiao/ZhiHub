@@ -36,6 +36,18 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true },
   },
   {
+    path: '/activate-email',
+    name: 'activate-email',
+    component: () => import('@/views/login/ActivateEmail.vue'),
+    meta: { public: true },
+  },
+  {
+    path: '/accept-invite',
+    name: 'accept-invite',
+    component: () => import('@/views/onboarding/AcceptInvite.vue'),
+    meta: { public: true },
+  },
+  {
     path: '/',
     component: () => import('@/layouts/AdminLayout.vue'),
     children: [
@@ -51,28 +63,34 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/onboarding/SetupWizard.vue'),
         meta: { requiresRole: ['admin'] },
       },
-      // 013 US5: 成员邀请（admin）
+      {
+        path: 'settings',
+        name: 'plan-settings',
+        component: () => import('@/views/onboarding/PlanSettings.vue'),
+        meta: { requiresRole: ['admin'] },
+      },
+      // 规格 013 US5: 成员邀请（admin）
       {
         path: 'onboarding/members',
         name: 'member-invite',
         component: () => import('@/views/onboarding/MemberInvite.vue'),
         meta: { requiresRole: ['admin'] },
       },
-      // 013: Widget 品牌定制（White-label，admin）
+      // 规格 013: Widget 品牌定制（White-label，admin）
       {
         path: 'widget/config',
         name: 'widget-config',
         component: () => import('@/views/onboarding/WidgetConfig.vue'),
         meta: { requiresRole: ['admin'] },
       },
-      // 013: 审计日志（admin）
+      // 规格 013: 审计日志（admin）
       {
         path: 'audit/logs',
         name: 'audit-logs',
         component: () => import('@/views/audit/AuditLog.vue'),
         meta: { requiresRole: ['admin'] },
       },
-      // 013: 个人中心（密码重置 / 邮箱 / 微信绑定）
+      // 规格 013: 个人中心（密码重置 / 邮箱 / 微信绑定）
       {
         path: 'profile',
         name: 'profile',
@@ -82,11 +100,13 @@ const routes: RouteRecordRaw[] = [
         path: 'knowledge/list',
         name: 'knowledge-list',
         component: () => import('@/views/knowledge/KnowledgeList.vue'),
+        meta: { requiresRole: ['admin'] },
       },
       {
         path: 'knowledge/search-test',
         name: 'knowledge-search-test',
         component: () => import('@/views/knowledge/SearchTest.vue'),
+        meta: { requiresRole: ['admin'] },
       },
       {
         path: 'ticket/list',
@@ -102,7 +122,7 @@ const routes: RouteRecordRaw[] = [
         path: 'order/refunds',
         name: 'order-refunds',
         component: () => import('@/views/order/RefundApproval.vue'),
-        meta: { requiresRole: ['admin'] },  // 后端 refunds 端点 require_role("admin")
+        meta: { requiresRole: ['admin', 'agent'] },
       },
       {
         path: 'billing/usage',
@@ -121,7 +141,7 @@ const routes: RouteRecordRaw[] = [
         name: 'session-detail',
         component: () => import('@/views/session/SessionDetail.vue'),
       },
-      // 013 审查 P1-1：会话监控列表（PRD 3.8，admin）
+      // 规格 013 审查 ：会话监控列表（PRD §3.8，admin）
       {
         path: 'session/monitor',
         name: 'session-monitor',
@@ -149,6 +169,35 @@ const routes: RouteRecordRaw[] = [
         path: 'console',
         name: 'agent-console',
         component: () => import('@/views/agent/AgentConsole.vue'),
+        meta: { requiresRole: ['admin', 'agent'] },
+      },
+      // : 坐席侧内聚路由——复用管理端同款视图，但挂在 AgentLayout 下，
+      // 客服不必跳出工作台布局（原先 AgentLayout 菜单指向 /ticket/list 等管理端路径）
+      {
+        path: 'tickets',
+        name: 'agent-tickets',
+        component: () => import('@/views/ticket/TicketList.vue'),
+        meta: { requiresRole: ['admin', 'agent'] },
+      },
+      {
+        path: 'orders',
+        name: 'agent-orders',
+        component: () => import('@/views/order/OrderList.vue'),
+        meta: { requiresRole: ['admin', 'agent'] },
+      },
+      {
+        path: 'refunds',
+        name: 'agent-refunds',
+        component: () => import('@/views/order/RefundApproval.vue'),
+        meta: { requiresRole: ['admin', 'agent'] },
+      },
+      //  收尾三: 坐席个人中心——复用管理端 Profile.vue，但挂在 AgentLayout 下，
+      // 客服不必跳回 AdminLayout 的 /profile
+      {
+        path: 'profile',
+        name: 'agent-profile',
+        component: () => import('@/views/profile/Profile.vue'),
+        meta: { requiresRole: ['admin', 'agent'] },
       },
     ],
   },

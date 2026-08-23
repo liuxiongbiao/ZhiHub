@@ -38,6 +38,15 @@ interface AuthSnapshot {
 }
 
 /**
+ *  角色默认首页：admin → /（管理员看板），agent → /agent/console（客服工作台）。
+ * 未知/空角色保守回 /。登录成功跳转（Login.vue safeRedirect）与守卫拦截共用此函数，
+ * 保证"登录落地页"与"被拦截后回退页"一致。
+ */
+export function homePathForRole(role: string | null | undefined): string {
+  return role === 'agent' ? '/agent/console' : '/'
+}
+
+/**
  * 纯决策函数——无 pinia/router 依赖，可独立单测。
  * 返回 true 放行，返回 RouteLocationRaw 重定向。
  */
@@ -47,9 +56,9 @@ export function resolveNavigation(
 ): RouteLocationRaw | true {
   // A. 公开路由（meta.public）
   if (to.meta.public) {
-    // A1 已登录访问登录/注册 → 送回后台
+    // A1 已登录访问登录/注册 → 送回角色首页
     if (auth.isLoggedIn && (to.name === 'login' || to.name === 'register')) {
-      return { path: '/' }
+      return { path: homePathForRole(auth.role) }
     }
     return true
   }
@@ -67,8 +76,8 @@ export function resolveNavigation(
   // B3 role 命中白名单 → 放行
   if (auth.role && required.includes(auth.role)) return true
 
-  // B4 未命中 → 送回 dashboard（后端仍是最终防线）
-  return { path: '/', query: { forbidden: '1' } }
+  // B4 未命中 → 按角色送回对应首页（后端仍是最终防线）
+  return { path: homePathForRole(auth.role), query: { forbidden: '1' } }
 }
 
 /** 注册 beforeEach 守卫，惰性取 store 避免 import 循环。 */
@@ -93,7 +102,7 @@ export function wireUnauthorized(router: Router): void {
     userStore.reset()
     const current = router.currentRoute.value
     if (current.name !== 'login') {
-      router.push({ path: '/login' }).catch(() => {})
+      router.push({ path: '/login', query: { redirect: current.fullPath } }).catch(() => {})
     }
   })
 }

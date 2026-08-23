@@ -11,7 +11,7 @@ export interface RegisterRequest {
   code: string
 }
 
-// 013 US1: 多方式登录/注册扩展（PRD 3.1.1/3.1.2）
+// 规格 013 US1: 多方式登录/注册扩展（PRD §3.1.1/3.1.2）
 export interface SendCodeResponse {
   message: string
   code: string
@@ -36,6 +36,8 @@ export interface EmailRegisterResponse {
   email: string
   role: string
   plan_type: string
+  email_verified?: boolean
+  activation_link?: string | null
 }
 
 export interface EmailLoginRequest {
@@ -51,6 +53,7 @@ export interface WechatCallbackResponse {
   need_bind: boolean
   openid: string | null
   access_token: string | null
+  refresh_token: string | null
   token_type: string
   user_id: number | null
   tenant_id: number | null
@@ -72,6 +75,7 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   access_token: string
+  refresh_token: string
   token_type: string
   user_id: number
   tenant_id: number
@@ -81,6 +85,17 @@ export interface LoginResponse {
 
 export interface MessageResponse {
   message: string
+}
+
+export interface RefreshResponse {
+  access_token: string
+  refresh_token: string
+  token_type: string
+}
+
+export interface WsTokenResponse {
+  token: string
+  expires_in: number
 }
 
 export interface CurrentUser {

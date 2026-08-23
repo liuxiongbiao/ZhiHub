@@ -1,5 +1,5 @@
 <!-- frontend/src/views/profile/Profile.vue -->
-<!-- 013: 个人中心（密码重置 / 邮箱绑定 / 微信绑定，PRD 3.1） -->
+<!-- 规格 013: 个人中心（密码重置 / 邮箱绑定 / 微信绑定，PRD §3.1） -->
 <template>
   <div>
     <PageHeader title="个人中心" subtitle="账号安全设置" />
@@ -47,6 +47,26 @@
             </el-form>
           </el-tab-pane>
 
+          <el-tab-pane label="绑定手机号" name="phone">
+            <el-form :model="phoneForm" label-position="top" @submit.prevent="handleBindPhone">
+              <el-form-item label="手机号">
+                <el-input v-model="phoneForm.phone" placeholder="请输入待绑定手机号" />
+                <div v-if="boundPhone" class="muted">当前已绑定：{{ boundPhone }}</div>
+              </el-form-item>
+              <el-form-item label="短信验证码">
+                <div class="code-row">
+                  <el-input v-model="phoneForm.code" placeholder="请输入验证码" />
+                  <el-button :disabled="phoneCooldown > 0" @click="sendPhoneCode">
+                    {{ phoneCooldown > 0 ? `${phoneCooldown}s` : '获取验证码' }}
+                  </el-button>
+                </div>
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="loading" @click="handleBindPhone">绑定手机号</el-button>
+              </el-form-item>
+            </el-form>
+          </el-tab-pane>
+
           <el-tab-pane label="绑定微信" name="wechat">
             <div class="wechat-pane">
               <p class="muted">绑定后可使用微信扫码登录。</p>
@@ -62,7 +82,7 @@
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { sendCode, passwordReset, bindEmail, wechatAuth, wechatBind } from '@/api/auth'
+import { sendCode, passwordReset, bindEmail, bindPhone, wechatAuth, wechatBind } from '@/api/auth'
 import { useUserStore } from '@/store/modules/user'
 import { useRoute } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -74,9 +94,12 @@ const loading = ref(false)
 const wxLoading = ref(false)
 const pwdCooldown = ref(0)
 const emailCooldown = ref(0)
+const phoneCooldown = ref(0)
 
 const pwdForm = reactive({ phone: userStore.phone || '', code: '', newPassword: '' })
 const emailForm = reactive({ email: '', code: '' })
+const phoneForm = reactive({ phone: '', code: '' })
+const boundPhone = ref(userStore.phone || '')
 
 function startCooldown(target: { value: number }) {
   target.value = 60
@@ -130,6 +153,30 @@ async function handleBindEmail() {
   } finally { loading.value = false }
 }
 
+async function sendPhoneCode() {
+  if (!/^1[3-9]\d{9}$/.test(phoneForm.phone)) { ElMessage.warning('手机号不正确'); return }
+  try {
+    await sendCode(phoneForm.phone, 'sms')
+    ElMessage.success('验证码已发送')
+    startCooldown(phoneCooldown)
+  } catch (e: any) { ElMessage.error(e?.message || '发送失败') }
+}
+
+async function handleBindPhone() {
+  if (!phoneForm.phone || !phoneForm.code) { ElMessage.warning('请填写手机号和验证码'); return }
+  loading.value = true
+  try {
+    await bindPhone(phoneForm.phone, phoneForm.code)
+    ElMessage.success('手机号绑定成功')
+    boundPhone.value = phoneForm.phone
+    phoneForm.code = ''
+  } catch (e: any) {
+    if (e?.status === 401) ElMessage.error('验证码错误或已过期')
+    else if (e?.status === 409) ElMessage.error('该手机号已被其他账号绑定')
+    else ElMessage.error(e?.message || '绑定失败')
+  } finally { loading.value = false }
+}
+
 async function handleBindWechat() {
   wxLoading.value = true
   try {
@@ -140,7 +187,7 @@ async function handleBindWechat() {
 }
 
 
-// 013 fresh-eyes P1: wechat bind callback loop
+// 微信绑定回调死循环防护：绑定成功后跳回个人页，不再重复触发绑定流程
 onMounted(async () => {
   const code = route.query.code as string | undefined
   if (!code) return

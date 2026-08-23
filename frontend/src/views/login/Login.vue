@@ -1,3 +1,11 @@
+/**
+ * src/views/login/Login.vue
+ *
+ * 职责: 登录页 —— 支持账号密码、邮箱登录与微信扫码三种方式（PRD §3.1）；
+ *      登录成功后写入本地登录态并跳转目标页，已登录用户访问本页会被重定向。
+ *
+ * 依赖: auth API（登录/微信回调）、auth-session（令牌存取）、router（redirect 参数）。
+ */
 <template>
   <div class="login-page">
     <el-card class="login-card">
@@ -18,7 +26,22 @@
           </el-form>
         </el-tab-pane>
 
-        <!-- 手机验证码登录 (013 US1) -->
+        <!-- 邮箱密码登录 -->
+        <el-tab-pane label="邮箱登录" name="email">
+          <el-form ref="emailFormRef" :model="emailForm" :rules="emailRules" label-position="top" @submit.prevent="handleEmailLogin">
+            <el-form-item label="邮箱" prop="email">
+              <el-input v-model="emailForm.email" placeholder="请输入邮箱" />
+            </el-form-item>
+            <el-form-item label="密码" prop="password">
+              <el-input v-model="emailForm.password" type="password" placeholder="请输入密码" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" native-type="submit" :loading="loading">登录</el-button>
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+
+        <!-- 手机验证码登录 (规格 013 US1) -->
         <el-tab-pane label="手机验证码" name="sms">
           <el-form ref="smsFormRef" :model="smsForm" :rules="smsRules" label-position="top" @submit.prevent="handleSmsLogin">
             <el-form-item label="手机号" prop="phone">
@@ -38,7 +61,7 @@
           </el-form>
         </el-tab-pane>
 
-        <!-- 微信扫码登录 (013 US1) -->
+        <!-- 微信扫码登录 (规格 013 US1) -->
         <el-tab-pane label="微信扫码" name="wechat">
           <div class="wechat-pane">
             <el-button type="success" :loading="wechatLoading" @click="handleWechatLogin">微信扫码登录</el-button>
@@ -59,6 +82,7 @@ import { reactive, ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useUserStore } from '@/store/modules/user'
+import { homePathForRole } from '@/permission'
 import { smsSend, wechatAuth, wechatCallback } from '@/api/auth'
 
 const router = useRouter()
@@ -70,8 +94,10 @@ const codeCooldown = ref(0)
 const wechatLoading = ref(false)
 
 const pwdFormRef = ref<FormInstance>()
+const emailFormRef = ref<FormInstance>()
 const smsFormRef = ref<FormInstance>()
 const pwdForm = reactive({ phone: '', password: '' })
+const emailForm = reactive({ email: '', password: '' })
 const smsForm = reactive({ phone: '', code: '' })
 
 const phoneRule = [
@@ -85,14 +111,29 @@ const pwdRules: FormRules = {
     { min: 8, message: '密码至少 8 位', trigger: 'blur' },
   ],
 }
+const emailRules: FormRules = {
+  email: [
+    { required: true, message: '请输入邮箱', trigger: 'blur' },
+    { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
+  ],
+  password: [
+    { required: true, message: '请输入密码', trigger: 'blur' },
+    { min: 8, message: '密码至少 8 位', trigger: 'blur' },
+  ],
+}
 const smsRules: FormRules = {
   phone: phoneRule,
   code: [{ required: true, message: '请输入验证码', trigger: 'blur' }],
 }
 
+// : 合法 redirect（以单个 / 开头，拒 // 开放重定向）优先；否则按角色回默认首页
+// （admin → /，agent → /agent/console），密码/邮箱/短信/微信回调四条链路共用。
+//  收尾一: query.redirect 可能是 string / string[]（重复参数）/ null / undefined，
+// 仅 typeof === 'string' 才允许参与判断，其余类型一律回退角色首页，不产生运行时错误。
 function safeRedirect() {
-  const redirect = route.query.redirect as string | undefined
-  const safe = redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/'
+  const redirect = route.query.redirect
+  const fallback = homePathForRole(userStore.role)
+  const safe = typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : fallback
   router.push(safe)
 }
 
@@ -102,6 +143,19 @@ async function handlePwdLogin() {
   loading.value = true
   try {
     await userStore.login({ phone: pwdForm.phone, password: pwdForm.password })
+    ElMessage.success('登录成功')
+    safeRedirect()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '登录失败')
+  } finally { loading.value = false }
+}
+
+async function handleEmailLogin() {
+  if (!emailFormRef.value) return
+  try { await emailFormRef.value.validate() } catch { return }
+  loading.value = true
+  try {
+    await userStore.loginEmail({ email: emailForm.email, password: emailForm.password })
     ElMessage.success('登录成功')
     safeRedirect()
   } catch (e: any) {
@@ -151,7 +205,7 @@ async function handleWechatLogin() {
 }
 
 
-// 013 fresh-eyes P1: wechat scan-code callback loop (PRD 3.1)
+// 微信扫码回调死循环防护：回调页面直接落地登录态，不再二次跳转（PRD §3.1）
 onMounted(async () => {
   const code = route.query.code as string | undefined
   const state = route.query.state as string | undefined
@@ -161,9 +215,10 @@ onMounted(async () => {
     const res = await wechatCallback(code, state)
     if (res.data.need_bind) {
       ElMessage.warning('该微信尚未绑定账号，请先登录后在个人中心完成绑定')
-    } else if (res.data.access_token) {
+    } else if (res.data.access_token && res.data.refresh_token) {
       userStore.$patch({
         token: res.data.access_token,
+        refresh_token: res.data.refresh_token,
         user_id: res.data.user_id,
         tenant_id: res.data.tenant_id,
         role: (res.data.role ?? 'admin') as 'admin' | 'agent',

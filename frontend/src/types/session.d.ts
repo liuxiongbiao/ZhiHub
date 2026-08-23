@@ -71,7 +71,7 @@ export interface SendMessageResponse {
 }
 
 
-// 013 US3/US4: Trace / 留言 / CSAT / 快捷回复 类型（对齐后端 schemas/session.py）
+// 规格 013 US3/US4: Trace / 留言 / CSAT / 快捷回复 类型（对齐后端 schemas/session.py）
 export interface TraceResponse {
   session_id: number
   traces: AgentTrace[]

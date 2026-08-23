@@ -25,6 +25,7 @@ import type { LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, Sm
 
 interface UserState {
   token: string
+  refresh_token: string
   user_id: number | null
   tenant_id: number | null
   role: 'admin' | 'agent' | null
@@ -38,6 +39,7 @@ function readStoredUser(): UserState {
       const parsed = JSON.parse(raw)
       return {
         token: parsed.token ?? '',
+        refresh_token: parsed.refresh_token ?? '',
         user_id: parsed.user_id ?? null,
         tenant_id: parsed.tenant_id ?? null,
         role: parsed.role ?? null,
@@ -45,7 +47,7 @@ function readStoredUser(): UserState {
       }
     }
   } catch { /* 存储损坏则回退空状态 */ }
-  return { token: '', user_id: null, tenant_id: null, role: null, phone: null }
+  return { token: '', refresh_token: '', user_id: null, tenant_id: null, role: null, phone: null }
 }
 
 export const useUserStore = defineStore('user', {
@@ -60,6 +62,7 @@ export const useUserStore = defineStore('user', {
       const res = await apiLogin(payload)
       const data = res.data
       this.token = data.access_token
+      this.refresh_token = data.refresh_token
       this.user_id = data.user_id
       this.tenant_id = data.tenant_id
       this.role = data.role as 'admin' | 'agent'
@@ -78,6 +81,7 @@ export const useUserStore = defineStore('user', {
       const res = await apiLoginSms(payload)
       const data = res.data
       this.token = data.access_token
+      this.refresh_token = data.refresh_token
       this.user_id = data.user_id
       this.tenant_id = data.tenant_id
       this.role = data.role as 'admin' | 'agent'
@@ -90,6 +94,7 @@ export const useUserStore = defineStore('user', {
       const res = await apiLoginEmail(payload)
       const data = res.data
       this.token = data.access_token
+      this.refresh_token = data.refresh_token
       this.user_id = data.user_id
       this.tenant_id = data.tenant_id
       this.role = data.role as 'admin' | 'agent'
@@ -109,6 +114,7 @@ export const useUserStore = defineStore('user', {
         AUTH_STORAGE_KEY,
         JSON.stringify({
           token: this.token,
+          refresh_token: this.refresh_token,
           user_id: this.user_id,
           tenant_id: this.tenant_id,
           role: this.role,
@@ -120,6 +126,7 @@ export const useUserStore = defineStore('user', {
     reset(): void {
       this.$patch({
         token: '',
+        refresh_token: '',
         user_id: null,
         tenant_id: null,
         role: null,
