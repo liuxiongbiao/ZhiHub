@@ -1,6 +1,6 @@
 """app/services/notification_service.py
 
-站内信服务（closure-plan P1-5）：创建/列表/未读数/已读。
+站内信服务：创建/列表/未读数/已读。
 配额预警、转人工提醒等触发点写库，前端铃铛轮询展示。
 """
 

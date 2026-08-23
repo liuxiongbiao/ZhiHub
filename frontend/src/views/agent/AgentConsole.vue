@@ -1,3 +1,11 @@
+/**
+ * src/views/agent/AgentConsole.vue
+ *
+ * 职责: 坐席工作台 —— 展示等待人工的会话队列，坐席可认领/退回会话、使用快捷回复，
+ *      并查看当前会话的 Agent 执行轨迹（TraceTimeline）。
+ *
+ * 依赖: session API（列表/认领/退回/快捷回复/trace）、WsClient（新会话与输入状态实时刷新）。
+ */
 <template>
   <div class="agent-console">
     <h2>坐席工作台</h2>
@@ -28,8 +36,13 @@
         <div v-if="!selectedSession" class="empty-chat">从左侧选择会话开始处理</div>
         <div v-else class="chat-trace-wrap">
           <div class="chat-area">
-            <ChatWindow :key="selectedSession.session_id" :session-id="selectedSession.session_id" :prefill-text="prefillText" />
-            <!-- 013 US5: 快捷回复 -->
+            <ChatWindow
+              :key="selectedSession.session_id"
+              :session-id="selectedSession.session_id"
+              :prefill-text="prefillText"
+              mode="agent"
+            />
+            <!-- 规格 013 US5: 快捷回复 -->
             <div class="quick-reply-bar">
               <el-popover placement="top-start" :width="320" trigger="click">
                 <template #reference><el-button size="small">快捷回复</el-button></template>
@@ -40,7 +53,7 @@
               </el-popover>
             </div>
           </div>
-          <!-- 013 US3: Agent 执行轨迹 -->
+          <!-- 规格 013 US3: Agent 执行轨迹 -->
           <div class="trace-area">
             <h4>Agent 执行轨迹</h4>
             <TraceTimeline :trace="currentTrace" />
@@ -54,7 +67,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getSessionList, claimSession, returnToAgent, getTrace, getQuickReplies } from '@/api/session'
+import { getWsToken } from '@/api/auth'
+import { getSessionList, claimSession, returnToAgent, getTrace, getQuickReplies, selectLatestTrace } from '@/api/session'
 import type { Session } from '@/types/session'
 import type { AgentTrace } from '@/types/trace'
 import ChatWindow from '@/components/chat/ChatWindow.vue'
@@ -77,24 +91,35 @@ const qrLoading = ref(false)
 let wsClient: WsClient | null = null
 const typingMap = ref<Record<number, boolean>>({})
 
-/** 建立坐席工作台 WebSocket（013 US8，替换 10s 轮询） */
-function connectWs() {
+/** 建立坐席工作台 WebSocket（规格 013 US8，替换 10s 轮询） */
+async function connectWs() {
   try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEY)
-    const token = raw ? (JSON.parse(raw).token ?? '') : ''
+    const token = (await getWsToken()).data.token
     if (!token) return
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${proto}//${window.location.host}${API_BASE_URL}/ws/agent?token=${encodeURIComponent(token)}`
-    wsClient = new WsClient(wsUrl)
+    wsClient = new WsClient(wsUrl, async () => (await getWsToken()).data.token)
     wsClient.onMessage((msg) => {
+      const payload = msg.payload
       if (msg.type === 'new_session') {
         // 新待认领会话实时刷新队列
         loadWaiting()
-      } else if (msg.type === 'typing' && typeof msg.session_id === 'number') {
-        typingMap.value[msg.session_id] = Boolean(msg.is_typing)
+      } else if (msg.type === 'session_claimed' && typeof payload.session_id === 'number') {
+        const sessionId = payload.session_id
+        const raw = localStorage.getItem(AUTH_STORAGE_KEY)
+        const currentUserId = raw ? Number(JSON.parse(raw).user_id) : 0
+        if (Number(payload.agent_id) !== currentUserId) {
+          waitingSessions.value = waitingSessions.value.filter((item) => item.session_id !== sessionId)
+          if (selectedSession.value?.session_id === sessionId) selectedSession.value = null
+        } else {
+          const own = waitingSessions.value.find((item) => item.session_id === sessionId)
+          if (own) own.status = 'human_handling'
+        }
+      } else if (msg.type === 'typing' && typeof payload.session_id === 'number') {
+        typingMap.value[payload.session_id] = Boolean(payload.is_typing)
       }
     })
-    wsClient.connect()
+    wsClient.connect().catch(() => {})
   } catch {
     // WS 连接失败时保持初始加载，不阻塞工作台
   }
@@ -117,8 +142,7 @@ function selectSession(row: Session | null) {
 async function loadTrace(sessionId: number) {
   try {
     const res = await getTrace(sessionId)
-    const traces = res.data.traces
-    currentTrace.value = traces && traces.length > 0 ? traces[traces.length - 1] : null
+    currentTrace.value = selectLatestTrace(res.data.traces)
   } catch { currentTrace.value = null }
 }
 
@@ -127,7 +151,10 @@ async function handleClaim(row: Session) {
     await claimSession(row.session_id)
     ElMessage.success(`已认领会话 #${row.session_id}`)
     await loadWaiting()
-    selectedSession.value = row
+    selectedSession.value = waitingSessions.value.find((item) => item.session_id === row.session_id) || {
+      ...row,
+      status: 'human_handling',
+    }
     loadTrace(row.session_id)
   } catch (e: any) {
     ElMessage.error(e?.message || '认领失败（可能已被他人认领）')

@@ -30,15 +30,20 @@ backend/app/core/ws_manager.py
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 from collections import defaultdict
 from typing import Any
 
 from fastapi import WebSocket
+from redis import asyncio as async_redis
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 单连接推送超时（T31）: 慢/卡死客户端不再阻塞同租户全部坐席的实时推送
+# 单连接推送超时: 慢/卡死客户端不再阻塞同租户全部坐席的实时推送
 WS_SEND_TIMEOUT = 5.0
 
 
@@ -50,11 +55,90 @@ class ConnectionManager:
     如需跨 worker 推送，需额外引入 Redis Pub/Sub（本 demo 单 worker 不做）。
     """
 
-    def __init__(self) -> None:
-        # tenant_id -> 该租户所有在线坐席 WS 连接集合
+    def __init__(self, channel: str | None = None) -> None:
+        # tenant_id → 该租户所有在线坐席 WS 连接集合
         self._connections: dict[int, set[WebSocket]] = defaultdict(set)
+        # session_id → 该会话终端用户连接；客服消息只推送目标会话，避免租户内串话。
+        self._session_connections: dict[int, set[WebSocket]] = defaultdict(set)
         # WS 端点所在事件循环（connect 时捕获），供同步广播跨线程调度协程
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._channel = channel or settings.ws_pubsub_channel
+        self._redis_async: Any | None = None
+        self._pubsub: Any | None = None
+        self._listener_task: asyncio.Task | None = None
+        self._owns_redis = False
+        self._pubsub_started = False
+
+    async def start_pubsub(self, redis_client: Any | None = None) -> None:
+        """订阅跨进程广播通道；每个 API worker 只投递自己的本地连接。"""
+        if self._listener_task is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        self._owns_redis = redis_client is None
+        self._redis_async = redis_client or async_redis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=settings.redis_db,
+            password=settings.redis_password or None,
+            decode_responses=True,
+        )
+        self._pubsub = self._redis_async.pubsub()
+        await self._pubsub.subscribe(self._channel)
+        self._pubsub_started = True
+        self._listener_task = asyncio.create_task(
+            self._listen_pubsub(), name="zhihub-ws-pubsub",
+        )
+
+    async def stop_pubsub(self) -> None:
+        """停止订阅并释放当前 worker 的 Pub/Sub 连接。"""
+        task, self._listener_task = self._listener_task, None
+        self._pubsub_started = False
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if self._pubsub is not None:
+            with contextlib.suppress(Exception):
+                await self._pubsub.unsubscribe(self._channel)
+            with contextlib.suppress(Exception):
+                await self._pubsub.aclose()
+            self._pubsub = None
+        if self._owns_redis and self._redis_async is not None:
+            with contextlib.suppress(Exception):
+                await self._redis_async.aclose()
+        self._redis_async = None
+
+    async def _listen_pubsub(self) -> None:
+        """消费 Redis 事件并向当前进程持有的连接发送。"""
+        assert self._pubsub is not None
+        async for item in self._pubsub.listen():
+            if item.get("type") != "message":
+                continue
+            try:
+                event = json.loads(item["data"])
+                target_id = int(event["target_id"])
+                if event["target"] == "tenant":
+                    await self._broadcast_local_tenant(target_id, event["message"])
+                elif event["target"] == "session":
+                    await self._broadcast_local_session(target_id, event["message"])
+            except Exception as exc:
+                logger.warning(f"Invalid WS pub/sub event ignored: {exc}")
+
+    async def _publish(self, target: str, target_id: int, message: dict[str, Any]) -> None:
+        """发布跨进程事件；未启动订阅时降级为当前进程投递。"""
+        if not self._pubsub_started or self._redis_async is None:
+            if target == "tenant":
+                await self._broadcast_local_tenant(target_id, message)
+            else:
+                await self._broadcast_local_session(target_id, message)
+            return
+        await self._redis_async.publish(
+            self._channel,
+            json.dumps(
+                {"target": target, "target_id": target_id, "message": message},
+                ensure_ascii=False,
+            ),
+        )
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """缓存 WS 所在事件循环。connect 时调用。"""
@@ -83,25 +167,69 @@ class ConnectionManager:
             self._connections.pop(tenant_id, None)
         logger.info(f"WS disconnected: tenant={tenant_id}")
 
+    async def connect_session(self, websocket: WebSocket, session_id: int) -> None:
+        """接受终端用户 WS 并注册到会话分桶。"""
+        await websocket.accept()
+        self._session_connections[session_id].add(websocket)
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+
+    def disconnect_session(self, websocket: WebSocket, session_id: int) -> None:
+        self._session_connections[session_id].discard(websocket)
+        if not self._session_connections[session_id]:
+            self._session_connections.pop(session_id, None)
+
+    @staticmethod
+    def _wire_envelope(message: dict[str, Any]) -> dict[str, Any]:
+        """统一输出 type/payload；平铺字段仅作为旧客户端过渡兼容。"""
+        message_type = message.get("type") or message.get("event")
+        payload = message.get("payload")
+        if not isinstance(payload, dict):
+            payload = {
+                key: value
+                for key, value in message.items()
+                if key not in {"type", "event", "payload"}
+            }
+        envelope: dict[str, Any] = {"type": message_type, "payload": payload}
+        # 已有测试和灰度客户端仍读取 event/平铺字段；新客户端只消费 envelope。
+        envelope["event"] = message_type
+        envelope.update(payload)
+        return envelope
+
+    async def _broadcast(self, connections: set[WebSocket], message: dict[str, Any]) -> None:
+        wire_message = self._wire_envelope(message)
+        for websocket in list(connections):
+            try:
+                await asyncio.wait_for(
+                    websocket.send_json(wire_message),
+                    timeout=WS_SEND_TIMEOUT,
+                )
+            except Exception as exc:
+                logger.warning(f"WS send failed, removing connection: {exc}")
+                connections.discard(websocket)
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+
+    async def _broadcast_local_tenant(self, tenant_id: int, message: dict[str, Any]) -> None:
+        await self._broadcast(self._connections.get(tenant_id, set()), message)
+
+    async def _broadcast_local_session(self, session_id: int, message: dict[str, Any]) -> None:
+        await self._broadcast(self._session_connections.get(session_id, set()), message)
+
     async def broadcast_to_tenant(self, tenant_id: int, message: dict[str, Any]) -> None:
         """向某租户所有在线坐席 WS 推送消息（异步，须在事件循环中调用）。
 
         发送失败的连接视为已关闭，从表中移除，避免僵尸连接累积。
-        T31: 每个连接 send 加 5s 超时——慢/卡死客户端不再阻塞同租户全部推送
+        : 每个连接 send 加 5s 超时——慢/卡死客户端不再阻塞同租户全部推送
         （head-of-line blocking）。
         """
-        conns = list(self._connections.get(tenant_id, set()))
-        for ws in conns:
-            try:
-                await asyncio.wait_for(ws.send_json(message), timeout=WS_SEND_TIMEOUT)
-            except Exception as e:
-                # 连接已关闭 / 客户端断开 / 发送超时 -- 清理
-                logger.warning(f"WS send failed, removing connection: {e}")
-                self._connections[tenant_id].discard(ws)
-                try:
-                    await ws.close()  # L9: 显式关闭底层连接，防资源泄漏（客户端不知服务端已放弃推送）
-                except Exception:
-                    pass  # close 失败可忽略，连接已从表移除
+        await self._publish("tenant", tenant_id, message)
+
+    async def broadcast_to_session(self, session_id: int, message: dict[str, Any]) -> None:
+        """向单个会话的终端用户连接实时推送。"""
+        await self._publish("session", session_id, message)
 
     def broadcast_to_tenant_sync(self, tenant_id: int, message: dict[str, Any]) -> None:
         """同步触发广播（供同步业务代码调用）。
@@ -116,13 +244,11 @@ class ConnectionManager:
         注意: 本函数不阻塞等待发送完成（fire-and-forget），调用方无法获知推送结果。
         这是设计取舍: 实时推送是 best-effort，不应阻塞业务主流程。
         """
-        if not self._connections.get(tenant_id):
-            # 无在线坐席，无需推送
+        if not self._pubsub_started and not self._connections.get(tenant_id):
             return
-
         loop = self._loop
         if loop is not None and loop.is_running():
-            # 业务代码在线程池，WS 在循环线程 -- 跨线程提交协程
+            # 业务代码在线程池，WS 在循环线程 —— 跨线程提交协程
             asyncio.run_coroutine_threadsafe(
                 self.broadcast_to_tenant(tenant_id, message), loop
             )
@@ -131,9 +257,24 @@ class ConnectionManager:
             try:
                 asyncio.run(self.broadcast_to_tenant(tenant_id, message))
             except RuntimeError:
-                # 已有运行循环但未捕获 -- 忽略，避免崩溃
+                # 已有运行循环但未捕获 —— 忽略，避免崩溃
                 logger.warning("broadcast_to_tenant_sync: cannot schedule broadcast")
 
+    def broadcast_to_session_sync(self, session_id: int, message: dict[str, Any]) -> None:
+        """同步触发目标会话广播，供客服回复服务调用。"""
+        if not self._pubsub_started and not self._session_connections.get(session_id):
+            return
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast_to_session(session_id, message), loop,
+            )
+            return
+        try:
+            asyncio.run(self.broadcast_to_session(session_id, message))
+        except RuntimeError:
+            logger.warning("broadcast_to_session_sync: cannot schedule broadcast")
 
-# 模块级单例 -- 全进程共享一份连接表
+
+# 模块级单例 —— 全进程共享一份连接表
 manager = ConnectionManager()

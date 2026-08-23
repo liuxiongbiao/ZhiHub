@@ -1,5 +1,5 @@
 // frontend/src/api/notification.ts
-// 站内信接口（closure-plan P1-5）
+// 站内信接口
 import request from './request'
 
 export interface NotificationItem {

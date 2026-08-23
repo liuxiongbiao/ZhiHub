@@ -23,5 +23,5 @@ class QuickReply(BaseModel):
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     # 模板内容（坐席一键发送的回复文本）
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # 快捷指令前缀（可选，如 "/refund" -> "您的退款已受理..."）
+    # 快捷指令前缀（可选，如 "/refund" → "您的退款已受理..."）
     shortcut: Mapped[str | None] = mapped_column(String(50), nullable=True)

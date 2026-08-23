@@ -34,13 +34,15 @@ from app.crud import session as session_crud
 
 logger = logging.getLogger(__name__)
 
-# Redis 分布式锁键前缀 + TTL -- 格式 claim:session:{session_id}
+# Redis 分布式锁键前缀 + TTL —— 格式 claim:session:{session_id}
 CLAIM_LOCK_PREFIX = "claim:session:"
 CLAIM_LOCK_TTL = 300  # 5 分钟认领锁；坐席异常离线后 5 分钟自动释放，避免会话永久锁定
 
 
 class HumanHandoffError(Exception): pass
 class SessionAlreadyClaimed(HumanHandoffError): pass
+class AgentMessageForbidden(HumanHandoffError): pass
+class AgentMessageStateInvalid(HumanHandoffError): pass
 
 
 def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int) -> dict:
@@ -72,7 +74,7 @@ def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int
     lock_key = f"{CLAIM_LOCK_PREFIX}{session_id}"
 
     # 1. 原子锁: SETNX key agent_id EX 300
-    # -- nx=True 保证"不存在才设置"是原子的，两个坐席并发只有一个返回 True
+    # —— nx=True 保证"不存在才设置"是原子的，两个坐席并发只有一个返回 True
     acquired = r.set(lock_key, str(agent_id), ex=CLAIM_LOCK_TTL, nx=True)
     if not acquired:
         current = r.get(lock_key)
@@ -87,7 +89,7 @@ def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int
         r.delete(lock_key)  # 释放锁 -- 状态不支持认领
         raise HumanHandoffError(f"会话状态 {s.status} 不支持认领")
 
-    # 3. 更新状态 -- 认领成功，写 assignee_id 并推进状态
+    # 3. 更新状态 —— 认领成功，写 assignee_id 并推进状态
     # 异常时释放锁避免泄漏至 TTL，保证其他坐席可认领
     try:
         session_crud.update_status(db, s, "human_handling")
@@ -100,19 +102,78 @@ def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int
 
     logger.info(f"Session {session_id} claimed by agent {agent_id}")
 
-    # PRD 3.7: 认领成功后向同租户在线坐席推送实时通知。
+    # PRD §3.7: 认领成功后向同租户在线坐席推送实时通知。
     # broadcast_to_tenant_sync 是 fire-and-forget，不阻塞业务；无在线坐席时直接返回。
     # 用途: 工作台其他坐席实时感知"该会话已被认领"，避免重复认领尝试。
     manager.broadcast_to_tenant_sync(
         tenant_id,
         {
-            "event": "session_claimed",
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "tenant_id": tenant_id,
+            "type": "session_claimed",
+            "payload": {
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "tenant_id": tenant_id,
+            },
+        },
+    )
+    # 向终端用户会话通道广播 human_claimed，widget.js 据此展示"客服已接入"。
+    manager.broadcast_to_session_sync(
+        session_id,
+        {
+            "type": "human_claimed",
+            "payload": {
+                "session_id": session_id,
+                "agent_id": agent_id,
+            },
         },
     )
     return {"session_id": session_id, "agent_id": agent_id, "status": "human_handling"}
+
+
+def send_agent_message(
+    db: Session,
+    *,
+    session_id: int,
+    tenant_id: int,
+    agent_id: int,
+    content: str,
+) -> dict:
+    """当前认领客服发送消息：校验接管关系、以 agent 角色落库并实时推送终端用户。"""
+    session = session_crud.get_by_id(db, session_id, tenant_id)
+    if session is None:
+        raise HumanHandoffError(f"会话不存在: {session_id}")
+    if session.status != "human_handling":
+        raise AgentMessageStateInvalid("会话不处于人工接管状态")
+    if session.assignee_id != agent_id:
+        raise AgentMessageForbidden("只有当前认领坐席可以回复")
+
+    message = session_crud.create_message(
+        db,
+        session_id=session_id,
+        role="agent",
+        content=content,
+    )
+    db.commit()
+    manager.broadcast_to_session_sync(
+        session_id,
+        {
+            "type": "agent_message",
+            "payload": {
+                "session_id": session_id,
+                "message_id": message.id,
+                "role": "agent",
+                "content": content,
+            },
+        },
+    )
+    logger.info(f"Agent {agent_id} replied to session {session_id}")
+    return {
+        "message_id": message.id,
+        "role": "agent",
+        "content": content,
+        "sources": [],
+        "metadata": None,
+    }
 
 
 def return_to_agent(db: Session, *, session_id: int, tenant_id: int, agent_id: int) -> dict:
@@ -140,24 +201,40 @@ def return_to_agent(db: Session, *, session_id: int, tenant_id: int, agent_id: i
     s = session_crud.get_by_id(db, session_id, tenant_id)
     if s is None:
         raise HumanHandoffError(f"会话不存在: {session_id}")
-    # 校验操作者是当前认领者 -- 防止其他坐席越权退回别人的会话
+    # 校验操作者是当前认领者 —— 防止其他坐席越权退回别人的会话
     if s.assignee_id != agent_id:
         raise HumanHandoffError("只有当前认领坐席可以退回")
 
     session_crud.update_status(db, s, "agent_handling")
     s.assignee_id = None
+    # PRD §3.7：退回 Agent 时向用户端插入过渡提示
+    session_crud.create_message(
+        db, session_id=session_id, role="system",
+        content="正在为您继续查询相关信息...",
+    )
     db.commit()
 
-    # 释放认领锁 -- 退回 Agent 后会话可被重新认领
+    # 释放认领锁 —— 退回 Agent 后会话可被重新认领
     r = get_redis()
     r.delete(f"{CLAIM_LOCK_PREFIX}{session_id}")
+
+    # 向终端用户会话通道广播 human_returned，widget.js 据此展示"已转回智能助手"。
+    manager.broadcast_to_session_sync(
+        session_id,
+        {
+            "type": "human_returned",
+            "payload": {
+                "session_id": session_id,
+            },
+        },
+    )
 
     logger.info(f"Session {session_id} returned to agent")
     return {"session_id": session_id, "status": "agent_handling"}
 
 
 def leave_message_if_no_agent(db: Session, *, session_id: int, tenant_id: int, user_message: str) -> dict:
-    """无在线坐席时留言自动建工单（007: category=message 标记留言工单）.
+    """无在线坐席时留言自动建工单（规格 007: category=message 标记留言工单）.
 
     注意：本函数假定调用方已判定 has_online_agent==False（见 session.py leave-message 端点）。
 
@@ -187,7 +264,7 @@ def leave_message_if_no_agent(db: Session, *, session_id: int, tenant_id: int, u
     ticket = create_ticket(
         db, tenant_id=tenant_id, ticket_no=ticket_no,
         title=f"会话{session_id}留言", description=user_message, priority="medium",
-        category="message",
+        category="message", created_by="message",
     )
     db.commit()
     logger.info(f"Auto ticket {ticket_no} created for session {session_id} (category=message)")

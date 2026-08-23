@@ -30,6 +30,7 @@ backend/app/api/v1/ws.py
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -38,8 +39,9 @@ from app.core.security import decode_access_token
 from app.core.ws_manager import manager
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-# 允许连接工作台的角色 -- end_user 无权连接
+# 允许连接工作台的角色 —— end_user 无权连接
 _ALLOWED_ROLES = {"agent", "admin"}
 
 
@@ -72,11 +74,18 @@ async def agent_workstation(websocket: WebSocket) -> None:
         return
     # 查 JWT 黑名单（jti）：登出即时失效，与 HTTP 中间件一致
     jti = payload.get("jti")
-    if jti and is_blocklisted(jti):
-        await websocket.close(code=1008)
-        return
+    if jti:
+        try:
+            blocked = is_blocklisted(jti)
+        except Exception as e:
+            # Redis 故障与 HTTP 中间件一致 fail-open
+            logger.warning(f"Redis unavailable, WS blocklist check skipped: {e}")
+            blocked = False
+        if blocked:
+            await websocket.close(code=1008)
+            return
 
-    # 2. 角色校验 -- 仅坐席/管理员可连工作台
+    # 2. 角色校验 —— 仅坐席/管理员可连工作台
     role = payload.get("role")
     if role not in _ALLOWED_ROLES:
         await websocket.close(code=1008)
@@ -87,20 +96,31 @@ async def agent_workstation(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    # 3. 注册连接 -> accept + 入 tenant 分桶 + 捕获事件循环
+    # 仅接受 /ws-token 签发的短效工作台令牌
+    if not payload.get("ws"):
+        await websocket.close(code=1008)
+        return
+
+    # 3. 注册连接 → accept + 入 tenant 分桶 + 捕获事件循环
+    user_id = int(payload["sub"])
     await manager.connect(websocket, tenant_id)
+    from app.services.session_service import mark_agent_offline, mark_agent_online
+    mark_agent_online(tenant_id, user_id)
     try:
         # 4. 保持连接: 循环接收客户端消息（心跳/指令），断开时抛 WebSocketDisconnect
-        #    025: 解析 typing 事件并广播给同租户坐席（输入状态实时同步）
+        # 解析 typing 事件并广播给同租户坐席（输入状态实时同步）
         while True:
             data = await websocket.receive_text()
-            await _handle_client_message(data, tenant_id)
+            await _handle_client_message(data, tenant_id, user_id)
     except WebSocketDisconnect:
+        pass
+    finally:
         manager.disconnect(websocket, tenant_id)
+        mark_agent_offline(tenant_id, user_id)
 
 
-async def _handle_client_message(data: str, tenant_id: int) -> None:
-    """解析客户端 WS 消息，识别 typing 事件并广播给同租户坐席（025）。
+async def _handle_client_message(data: str, tenant_id: int, user_id: int | None = None) -> None:
+    """解析客户端 WS 消息，识别 typing 事件并广播给同租户坐席。
 
     消息格式: {"type": "typing", "session_id": 123, "is_typing": true}
     非 JSON 或非 typing 类型视为心跳，静默忽略（保持连接存活）。
@@ -113,10 +133,66 @@ async def _handle_client_message(data: str, tenant_id: int) -> None:
     if not isinstance(msg, dict):
         return
 
+    if msg.get("type") == "heartbeat":
+        if user_id is not None:
+            from app.services.session_service import mark_agent_online
+            mark_agent_online(tenant_id, user_id)
+        return
+
     if msg.get("type") == "typing":
         # 广播输入状态给同租户坐席工作台
         await manager.broadcast_to_tenant(tenant_id, {
             "type": "typing",
+            "payload": {
+                "session_id": msg.get("session_id"),
+                "is_typing": bool(msg.get("is_typing", False)),
+            },
+            # 旧版调用方兼容；ConnectionManager 会统一输出 envelope。
             "session_id": msg.get("session_id"),
             "is_typing": bool(msg.get("is_typing", False)),
         })
+
+
+@router.websocket("/session/{session_id}")
+async def end_user_session(websocket: WebSocket, session_id: int) -> None:
+    """终端用户会话 WS：仅接收目标会话的人工客服回复。"""
+    token = websocket.query_params.get("token")
+    payload = decode_access_token(token) if token else None
+    if payload is None:
+        await websocket.close(code=1008)
+        return
+    jti = payload.get("jti")
+    if jti:
+        try:
+            if is_blocklisted(jti):
+                await websocket.close(code=1008)
+                return
+        except Exception as exc:
+            logger.warning(f"Redis unavailable, WS blocklist check skipped: {exc}")
+
+    tenant_id = payload.get("tenant_id")
+    if tenant_id is None:
+        await websocket.close(code=1008)
+        return
+    if payload.get("role") == "widget" and payload.get("session_id") != session_id:
+        await websocket.close(code=1008)
+        return
+
+    from app.core.database import SessionLocal
+    from app.crud import session as session_crud
+    db = SessionLocal()
+    try:
+        if session_crud.get_by_id(db, session_id, int(tenant_id)) is None:
+            await websocket.close(code=1008)
+            return
+    finally:
+        db.close()
+
+    await manager.connect_session(websocket, session_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect_session(websocket, session_id)

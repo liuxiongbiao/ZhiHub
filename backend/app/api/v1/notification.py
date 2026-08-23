@@ -1,6 +1,6 @@
 """app/api/v1/notification.py
 
-站内信路由（closure-plan P1-5）：
+站内信路由：
   GET /notifications                列表（?unread=1 只看未读）
   GET /notifications/unread-count   未读数
   POST /notifications/{id}/read     标记已读

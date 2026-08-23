@@ -1,4 +1,4 @@
-"""add notifications table (closure-plan P1-5)
+"""add notifications table ()
 
 Revision ID: d22_notifications
 Revises: d21_order_tracking_no

@@ -46,7 +46,7 @@ def notify_quota_warning(tenant_id: int, level: str, count: int, quota: int) -> 
     message = f"[配额预警] 租户 {tenant_id} 用量已达 {level}（{count}/{quota}）"
     logger.warning(message)
 
-    # closure-plan P1-5: 写站内信（真实触达，前端铃铛可查）
+    # 写站内信（真实触达，前端铃铛可查）
     try:
         from app.core.database import SessionLocal
         from app.services.notification_service import create_notification
@@ -63,11 +63,48 @@ def notify_quota_warning(tenant_id: int, level: str, count: int, quota: int) -> 
     except Exception as e:
         logger.warning(f"Quota warning notification write failed (non-blocking): {e}")
 
+    # PRD §3.9：配额预警邮件提醒（租户管理员有邮箱者）
+    try:
+        from app.core.database import SessionLocal
+        from app.models.tenant_member import TenantMember
+        from app.models.user import User
+        from sqlalchemy import select
+
+        db = SessionLocal()
+        try:
+            emails = [
+                e for e in db.execute(
+                    select(User.email)
+                    .join(TenantMember, TenantMember.user_id == User.id)
+                    .where(
+                        TenantMember.tenant_id == tenant_id,
+                        TenantMember.role == "admin",
+                        User.email.isnot(None),
+                    )
+                ).scalars().all() if e
+            ]
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Quota warning admin emails load failed: {e}")
+        emails = []
+
+    from app.core.email_client import send_email
+    for email in emails:
+        try:
+            send_email(
+                to=email,
+                subject=f"[智枢] 配额预警：{level}",
+                text=f"租户 {tenant_id} 当月对话用量已达 {level}（{count}/{quota}），超出部分将按量计费。请及时关注或升级套餐。",
+            )
+        except Exception as e:
+            logger.warning(f"Quota warning email failed (to={email}): {e}")
+
     r = get_redis()
     key = f"{NOTIF_COUNT_PREFIX}quota_warning:{tenant_id}"
     r.incr(key)
     r.expire(key, NOTIF_TTL)
 
 
-# T29 移除: notify_human_handoff / notify_agent_claim 全项目无调用方（转人工/认领推送
+# 已移除（全项目无调用方）: notify_human_handoff / notify_agent_claim 全项目无调用方（转人工/认领推送
 # 实际由 human_service 直接走 ws_manager 完成）；保留 notify_quota_warning（有调用方）。
