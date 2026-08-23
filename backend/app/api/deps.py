@@ -55,8 +55,12 @@ def require_role(*roles: str) -> Callable:
     return _checker
 
 
-def require_tenant() -> Callable:
-    """依赖工厂: 返回闭包，加载并校验租户状态。closed → 403；返回 Tenant 供路由使用。"""
+def require_tenant(*, allow_pending_deletion: bool = False) -> Callable:
+    """加载并校验租户状态。
+
+    注销等待期默认拒绝业务接口，仅首页、注销状态、数据导出和撤销接口显式放行，
+    保证 30 天窗口是真正的“仅导出/撤销”窗口，而不是仍可继续写入数据。
+    """
 
     def _resolver(request: Request, db: Session = Depends(get_db)) -> Tenant:
         tenant_id = getattr(request.state, "tenant_id", None)
@@ -67,6 +71,11 @@ def require_tenant() -> Callable:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
         if tenant.status == "closed":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="租户已注销")
+        if tenant.status == "pending_deletion" and not allow_pending_deletion:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="租户处于注销等待期，仅可导出数据或撤销注销",
+            )
         return tenant
 
     return _resolver

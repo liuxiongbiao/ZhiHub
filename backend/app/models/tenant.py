@@ -10,9 +10,10 @@ backend/app/models/tenant.py
   简化: 砍掉 widget 品牌定制字段、storage_quota_mb 精细存储上限。
 """
 
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Integer, Numeric, String
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel
@@ -31,9 +32,14 @@ class Tenant(BaseModel):
     quota_conversations_per_month: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # 座席数量上限，控制该租户下能有多少个 TenantMember
     seat_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    # 租户状态：active(正常)/readonly(只读，欠费等场景)/closed(已关闭)
+    # 租户状态：active(正常)/readonly(只读，欠费等场景)/pending_deletion(注销等待期)/closed(已关闭)
     # enterprise 套餐注册时为 pending_review（待审核，不自动激活）
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    # PRD §8.5：管理员申请注销后保留 30 天数据导出窗口；到期由维护任务物理删除。
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scheduled_deletion_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    # 撤销注销时恢复申请前状态（active/readonly/pending_review），避免把欠费租户误恢复为 active。
+    cancellation_previous_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # 配置向导当前步骤：basic→knowledge→mcp→team→done（PRD §3.1，有序推进不可跳步）
     wizard_step: Mapped[str] = mapped_column(String(20), nullable=False, default="basic")
     # 退款审批阈值：单笔退款金额超过此值需要人工审批（对应后续 human-in-the-loop 逻辑）

@@ -127,6 +127,18 @@ export interface PlanChangeResult {
   conversation_quota: number
 }
 
+/** 租户注销状态（PRD §8.5）。 */
+export interface TenantCancellationStatus {
+  tenant_id: number
+  status: string
+  deletion_pending: boolean
+  requested_at: string | null
+  scheduled_deletion_at: string | null
+  days_remaining: number | null
+  can_revoke: boolean
+  export_available: boolean
+}
+
 /** admin 邀请坐席成员（受 seat_limit 约束，超限 409） */
 export async function inviteMember(phone: string) {
   const res = await request.post('/tenant/invite', { phone })
@@ -205,4 +217,19 @@ export async function updateRefundThreshold(refund_approval_threshold: number) {
 /** 租户核心数据导出（PRD §8.5 最小实现，CSV 打包 ZIP，仅 admin） */
 export function exportTenantData() {
   return request.get('/tenant/export', { responseType: 'blob' })
+}
+
+/** 查询注销状态；等待期内仍允许访问。 */
+export function getTenantCancellation() {
+  return request.get<TenantCancellationStatus>('/tenant/cancellation')
+}
+
+/** 申请注销，立即进入 30 天仅导出/撤销窗口。 */
+export function requestTenantCancellation() {
+  return request.post<TenantCancellationStatus>('/tenant/cancellation')
+}
+
+/** 截止日前撤销注销。 */
+export function revokeTenantCancellation() {
+  return request.delete<TenantCancellationStatus>('/tenant/cancellation')
 }

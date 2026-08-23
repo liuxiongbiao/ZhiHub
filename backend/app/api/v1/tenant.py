@@ -37,6 +37,7 @@ from app.schemas.tenant import (
     PlanChangeResponse,
     RefundThresholdRequest,
     RefundThresholdResponse,
+    TenantCancellationResponse,
     TenantHomeResponse,
     WidgetConfigQueryResponse,
     WidgetConfigRequest,
@@ -78,6 +79,8 @@ def _map_tenant_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, tenant_service.InvalidPlanChange):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, tenant_service.TenantCancellationConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     # TenantError 基类（入参校验等）→ 422
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -86,7 +89,7 @@ def _map_tenant_error(exc: Exception) -> HTTPException:
 def home(
     request: Request,
     current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(require_tenant()),
+    tenant: Tenant = Depends(require_tenant(allow_pending_deletion=True)),
 ):
     """后台首页: 加载当前用户 + 租户信息 + 告警横幅，返回 TenantHomeResponse。
 
@@ -147,6 +150,71 @@ def _get_warning_banner(tenant_id: int) -> str | None:
 def billing(tenant: Tenant = Depends(require_tenant())):
     """管理员专属账单接口（require_role("admin") 拦截非 admin 角色）。"""
     return {"tenant_id": tenant.id, "plan_type": tenant.plan_type, "usage": {}}
+
+
+# ────────── 租户注销（PRD §8.5）──────────
+@router.get(
+    "/cancellation",
+    response_model=TenantCancellationResponse,
+    dependencies=[
+        Depends(require_role("admin")),
+        Depends(require_tenant(allow_pending_deletion=True)),
+    ],
+)
+def cancellation_status(request: Request, db: Session = Depends(get_db)):
+    """查询注销状态；注销等待期仍可访问。"""
+
+    try:
+        return tenant_service.get_tenant_cancellation_status(db, request.state.tenant_id)
+    except tenant_service.TenantError as exc:
+        raise _map_tenant_error(exc) from exc
+
+
+@router.post(
+    "/cancellation",
+    response_model=TenantCancellationResponse,
+    dependencies=[Depends(require_role("admin")), Depends(require_tenant())],
+)
+def request_cancellation(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """管理员申请注销：立即进入 30 天仅导出/撤销窗口。"""
+
+    try:
+        return tenant_service.request_tenant_cancellation(
+            db,
+            request.state.tenant_id,
+            user_id=current_user.id,
+        )
+    except tenant_service.TenantError as exc:
+        raise _map_tenant_error(exc) from exc
+
+
+@router.delete(
+    "/cancellation",
+    response_model=TenantCancellationResponse,
+    dependencies=[
+        Depends(require_role("admin")),
+        Depends(require_tenant(allow_pending_deletion=True)),
+    ],
+)
+def revoke_cancellation(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """在删除截止日前撤销注销，恢复申请前状态。"""
+
+    try:
+        return tenant_service.revoke_tenant_cancellation(
+            db,
+            request.state.tenant_id,
+            user_id=current_user.id,
+        )
+    except tenant_service.TenantError as exc:
+        raise _map_tenant_error(exc) from exc
 
 
 # ────────── 套餐升级（PRD §3.9）──────────
@@ -514,10 +582,13 @@ def update_refund_threshold(
 
 @router.get(
     "/export",
-    dependencies=[Depends(require_role("admin")), Depends(require_tenant())],
+    dependencies=[
+        Depends(require_role("admin")),
+        Depends(require_tenant(allow_pending_deletion=True)),
+    ],
 )
 def export_tenant_data(request: Request, db: Session = Depends(get_db)):
-    """租户核心数据导出（PRD 8.5 最小实现）：CSV 打包 ZIP，仅 admin。"""
+    """租户核心数据导出：正常服务期及注销等待期均可下载，仅 admin。"""
     data, filename = tenant_service.export_tenant_data(db, request.state.tenant_id)
     return Response(
         content=data,

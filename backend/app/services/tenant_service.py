@@ -19,7 +19,9 @@ backend/app/services/tenant_service.py
 """
 
 import json
+import math
 import re
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 # Widget 品牌/域名白名单校验规则
@@ -39,6 +41,7 @@ from app.config import settings
 from app.core.security import generate_random_token, hash_password
 from app.crud import tenant as tenant_crud
 from app.crud import user as user_crud
+from app.models.tenant import Tenant
 from app.services.audit_service import log_audit
 from app.utils.validators import validate_password_strength, validate_phone
 
@@ -103,13 +106,17 @@ class InvalidPlanChange(TenantError):
     """套餐目标非法、重复升级或尝试降级。"""
 
 
+class TenantCancellationConflict(TenantError):
+    """注销申请重复、不可撤销或状态冲突 -> 409。"""
+
+
 # ────────── 配置向导 ──────────
 class TenantInactive(TenantError):
     """租户状态不允许操作（readonly/closed/pending_review）-> 403"""
 
 
 # 不允许发起新会话的租户状态（PRD §3.1：试用到期只读/欠费只读/已注销/待审批）
-BLOCKED_NEW_SESSION_STATUSES = {"readonly", "closed", "pending_review"}
+BLOCKED_NEW_SESSION_STATUSES = {"readonly", "closed", "pending_review", "pending_deletion"}
 
 
 def require_active_tenant(db: Session, tenant_id: int):
@@ -123,7 +130,7 @@ def require_active_tenant(db: Session, tenant_id: int):
 
 
 def require_message_allowed_tenant(db: Session, tenant_id: int):
-    """消息入口门禁：closed 拒绝继续；readonly 允许进行中会话走完（PRD 3.1 降级语义）。"""
+    """消息入口门禁：closed/注销等待期拒绝；readonly 允许进行中会话走完。"""
     tenant = tenant_crud.get_by_id(db, tenant_id)
     if tenant is None:
         # 会话存在但租户行缺失（脏数据/测试夹具）：放行并告警，避免主链路 500
@@ -132,8 +139,8 @@ def require_message_allowed_tenant(db: Session, tenant_id: int):
             f"require_message_allowed_tenant: tenant {tenant_id} not found, allowing"
         )
         return None
-    if tenant.status == "closed":
-        raise TenantInactive("租户已注销，无法继续会话")
+    if tenant.status in {"closed", "pending_deletion"}:
+        raise TenantInactive("租户已申请注销，无法继续会话")
     return tenant
 
 
@@ -567,13 +574,137 @@ def update_refund_threshold(db: Session, tenant_id: int, threshold: float) -> di
     }
 
 
-# ────────── 租户数据导出（PRD §8.5 最小实现）──────────
+# ────────── 租户注销与数据导出（PRD §8.5）──────────
+def _cancellation_now(now: datetime | None = None) -> datetime:
+    """统一返回 naive UTC，匹配数据库 DateTime 字段。"""
+
+    value = now or datetime.now(timezone.utc)
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _cancellation_status_payload(tenant: Tenant, *, now: datetime | None = None) -> dict:
+    current = _cancellation_now(now)
+    pending = tenant.status == "pending_deletion" and tenant.scheduled_deletion_at is not None
+    due = tenant.scheduled_deletion_at if pending else None
+    seconds = (due - current).total_seconds() if due is not None else None
+    return {
+        "tenant_id": tenant.id,
+        "status": tenant.status,
+        "deletion_pending": pending,
+        "requested_at": tenant.cancellation_requested_at.isoformat() + "Z"
+        if tenant.cancellation_requested_at else None,
+        "scheduled_deletion_at": due.isoformat() + "Z" if due else None,
+        "days_remaining": max(0, math.ceil(seconds / 86400)) if seconds is not None else None,
+        "can_revoke": bool(pending and seconds is not None and seconds > 0),
+        "export_available": True,
+    }
+
+
+def get_tenant_cancellation_status(
+    db: Session, tenant_id: int, *, now: datetime | None = None,
+) -> dict:
+    """查询当前租户注销状态；等待期内继续允许管理员导出与撤销。"""
+
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    return _cancellation_status_payload(tenant, now=now)
+
+
+def request_tenant_cancellation(
+    db: Session,
+    tenant_id: int,
+    *,
+    user_id: int,
+    now: datetime | None = None,
+) -> dict:
+    """管理员申请注销：立即进入仅导出窗口，并计划 30 天后物理删除。"""
+
+    current = _cancellation_now(now)
+    tenant = (
+        db.query(Tenant)
+        .filter(Tenant.id == tenant_id)
+        .with_for_update()
+        .first()
+    )
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    if tenant.status == "pending_deletion" or tenant.cancellation_requested_at is not None:
+        raise TenantCancellationConflict("租户已处于注销等待期，请勿重复申请")
+    if tenant.status == "closed":
+        raise TenantCancellationConflict("租户已注销")
+
+    tenant.cancellation_previous_status = tenant.status
+    tenant.cancellation_requested_at = current
+    tenant.scheduled_deletion_at = current + timedelta(
+        days=settings.tenant_cancellation_retention_days
+    )
+    tenant.status = "pending_deletion"
+    log_audit(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="tenant_cancellation_requested",
+        target_type="tenant",
+        target_id=tenant_id,
+        detail=f"scheduled_deletion_at={tenant.scheduled_deletion_at.isoformat()}Z",
+    )
+    db.commit()
+    db.refresh(tenant)
+    return _cancellation_status_payload(tenant, now=current)
+
+
+def revoke_tenant_cancellation(
+    db: Session,
+    tenant_id: int,
+    *,
+    user_id: int,
+    now: datetime | None = None,
+) -> dict:
+    """在 30 天窗口结束前撤销注销，并精确恢复申请前租户状态。"""
+
+    current = _cancellation_now(now)
+    tenant = (
+        db.query(Tenant)
+        .filter(Tenant.id == tenant_id)
+        .with_for_update()
+        .first()
+    )
+    if tenant is None:
+        raise TenantNotFound("租户不存在")
+    if tenant.status != "pending_deletion" or tenant.scheduled_deletion_at is None:
+        raise TenantCancellationConflict("租户没有待撤销的注销申请")
+    if tenant.scheduled_deletion_at <= current:
+        raise TenantCancellationConflict("注销撤销窗口已结束，数据正在等待物理删除")
+
+    previous_status = tenant.cancellation_previous_status
+    if previous_status not in {"active", "readonly", "pending_review"}:
+        previous_status = "active"
+    tenant.status = previous_status
+    tenant.cancellation_requested_at = None
+    tenant.scheduled_deletion_at = None
+    tenant.cancellation_previous_status = None
+    log_audit(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="tenant_cancellation_revoked",
+        target_type="tenant",
+        target_id=tenant_id,
+        detail=f"restored_status={previous_status}",
+    )
+    db.commit()
+    db.refresh(tenant)
+    return _cancellation_status_payload(tenant, now=current)
+
+
 def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
     """导出租户核心业务数据（CSV 打包为 ZIP）。
 
     覆盖: 知识库文档、会话、消息、工单、订单、退款审批、账单、用量记录。
-    本版本为管理员手动导出（PRD 8.5 的最小实现）；注销申请、30 天窗口与物理删除
-    列入后续迭代（见 PRD 9.3）。
+    管理员可在正常服务期或注销后的 30 天等待期内下载该归档。
     """
     import csv
     import io

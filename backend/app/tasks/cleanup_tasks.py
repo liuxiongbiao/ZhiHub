@@ -40,10 +40,14 @@ backend/app/tasks/cleanup_tasks.py
 """
 
 import logging
+import json
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from celery import shared_task
-from sqlalchemy import update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session as DbSession
 
 from app.models.session import Session
@@ -68,6 +72,7 @@ def run_periodic_maintenance() -> dict:
     db = SessionLocal()
     try:
         return {
+            "tenant_cancellations": cleanup_expired_tenant_cancellations(db),
             "sessions": cleanup_idle_sessions(db),
             "refunds": cleanup_overdue_refunds(db),
             "orders": cleanup_expired_orders(db),
@@ -79,6 +84,364 @@ def run_periodic_maintenance() -> dict:
         }
     finally:
         db.close()
+
+
+def cleanup_expired_tenant_cancellations(
+    db: DbSession, *, now: datetime | None = None,
+) -> dict:
+    """物理删除已超过 30 天导出窗口的租户数据（PRD §8.5）。
+
+    外部存储先删、关系库后删；任一外部存储失败则保留 MySQL 租户行并在下一轮重试。
+    所有删除均按 tenant_id/doc_id/session_id 精确限定且具备幂等性。共享平台账号仅在
+    已不属于任何其他租户且没有剩余外键引用时删除。
+    """
+
+    current = now or _utcnow()
+    if current.tzinfo is not None:
+        current = current.astimezone(timezone.utc).replace(tzinfo=None)
+    from app.models.tenant import Tenant
+
+    tenant_ids = list(
+        db.execute(
+            select(Tenant.id).where(
+                Tenant.status == "pending_deletion",
+                Tenant.scheduled_deletion_at.isnot(None),
+                Tenant.scheduled_deletion_at <= current,
+            )
+        ).scalars().all()
+    )
+    deleted = 0
+    failed = 0
+    for tenant_id in tenant_ids:
+        try:
+            if _purge_expired_tenant(db, tenant_id=tenant_id, now=current):
+                deleted += 1
+        except Exception as exc:
+            db.rollback()
+            failed += 1
+            logger.exception(
+                "Tenant physical purge failed; retained for retry (tenant=%s): %s",
+                tenant_id,
+                exc,
+            )
+    if deleted:
+        logger.info("Cleanup: %s expired tenant cancellations physically deleted", deleted)
+    return {"tenants_deleted": deleted, "tenants_failed": failed}
+
+
+def _purge_expired_tenant(db: DbSession, *, tenant_id: int, now: datetime) -> bool:
+    """锁定并复核截止时间后，执行单租户跨存储物理删除。"""
+
+    from app.models.billing_event import BillingEvent
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.order import Order
+    from app.models.session import Session
+    from app.models.tenant import Tenant
+    from app.models.tenant_member import TenantMember
+
+    tenant = (
+        db.query(Tenant)
+        .filter(Tenant.id == tenant_id)
+        .with_for_update()
+        .first()
+    )
+    if (
+        tenant is None
+        or tenant.status != "pending_deletion"
+        or tenant.scheduled_deletion_at is None
+        or tenant.scheduled_deletion_at > now
+    ):
+        db.rollback()
+        return False
+
+    documents = list(
+        db.execute(
+            select(KnowledgeDocument.id, KnowledgeDocument.filename).where(
+                KnowledgeDocument.tenant_id == tenant_id
+            )
+        ).all()
+    )
+    session_ids = list(
+        db.execute(select(Session.id).where(Session.tenant_id == tenant_id)).scalars().all()
+    )
+    order_ids = list(
+        db.execute(select(Order.id).where(Order.tenant_id == tenant_id)).scalars().all()
+    )
+    user_ids = list(
+        db.execute(
+            select(TenantMember.user_id).where(TenantMember.tenant_id == tenant_id)
+        ).scalars().all()
+    )
+    billing_event_keys = list(
+        db.execute(
+            select(BillingEvent.event_key).where(BillingEvent.tenant_id == tenant_id)
+        ).scalars().all()
+    )
+
+    _purge_tenant_external_data(
+        tenant_id=tenant_id,
+        documents=documents,
+        session_ids=session_ids,
+        order_ids=order_ids,
+        billing_event_keys=billing_event_keys,
+    )
+    _purge_tenant_relational_data(
+        db,
+        tenant_id=tenant_id,
+        session_ids=session_ids,
+        order_ids=order_ids,
+        user_ids=user_ids,
+    )
+    db.commit()
+    return True
+
+
+def _purge_tenant_external_data(
+    *,
+    tenant_id: int,
+    documents: list,
+    session_ids: list[int],
+    order_ids: list[int],
+    billing_event_keys: list[str],
+) -> None:
+    """删除 MongoDB、Milvus、ES、Redis 与上传源文件中的租户数据。"""
+
+    from app.config import settings
+
+    # MongoDB：Agent 轨迹与 DeepAgent 任务均直接带 tenant_id。
+    from pymongo import MongoClient
+
+    mongo = MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=3000)
+    try:
+        mongo.admin.command("ping")
+        mongo["zhihub"]["agent_traces"].delete_many({"tenant_id": tenant_id})
+        mongo["zhihub"]["deep_agent_tasks"].delete_many({"tenant_id": tenant_id})
+    finally:
+        mongo.close()
+
+    # Milvus：知识切片和长期记忆都以 tenant_id 为分区键。
+    from pymilvus import Collection, utility
+    from app.core.embedding_client import (
+        COLLECTION_NAME,
+        MEMORY_COLLECTION_NAME,
+        _connect_milvus,
+        get_es_client,
+    )
+
+    _connect_milvus()
+    for collection_name in (COLLECTION_NAME, MEMORY_COLLECTION_NAME):
+        if utility.has_collection(collection_name):
+            collection = Collection(collection_name)
+            collection.delete(expr=f"tenant_id == {tenant_id}")
+            collection.flush()
+
+    # Elasticsearch：知识切片按 tenant_id 删除；索引尚未创建时视为空数据。
+    es = get_es_client()
+    if es.indices.exists(index="knowledge_chunks"):
+        es.delete_by_query(
+            index="knowledge_chunks",
+            body={"query": {"term": {"tenant_id": tenant_id}}},
+            refresh=True,
+        )
+
+    _purge_tenant_redis_data(
+        tenant_id=tenant_id,
+        session_ids=session_ids,
+        order_ids=order_ids,
+        billing_event_keys=billing_event_keys,
+    )
+    _delete_tenant_upload_files(documents)
+
+
+def _purge_tenant_redis_data(
+    *,
+    tenant_id: int,
+    session_ids: list[int],
+    order_ids: list[int],
+    billing_event_keys: list[str],
+) -> None:
+    """清理所有可归属到租户、会话或订单的 Redis 临时状态。"""
+
+    from app.core.redis import get_redis
+
+    redis_client = get_redis()
+    patterns = [
+        f"billing:quota:{tenant_id}:*",
+        f"billing:warning:{tenant_id}:*",
+        f"warning_banner:{tenant_id}:*",
+        f"billing:usage_last:{tenant_id}:*",
+        f"answer_cache:{tenant_id}:*",
+        f"agents:online:{tenant_id}:*",
+        f"idempotency:{tenant_id}:*",
+        f"idempotency:processing:{tenant_id}:*",
+    ]
+    exact_keys = [
+        f"billing:degraded:{tenant_id}",
+        f"degradation:{tenant_id}",
+        f"rate:tenant:{tenant_id}:minute",
+        f"notif:count:quota_warning:{tenant_id}",
+    ]
+    for session_id in session_ids:
+        exact_keys.extend(
+            [
+                f"session:context:{session_id}",
+                f"session:rounds:{session_id}",
+                f"claim:session:{session_id}",
+                f"rate:widget:{session_id}:minute",
+            ]
+        )
+    for namespace in order_ids:
+        patterns.extend(
+            [
+                f"idempotency:{namespace}:*",
+                f"idempotency:processing:{namespace}:*",
+            ]
+        )
+    exact_keys.extend(f"billing:event:{event_key}" for event_key in billing_event_keys)
+
+    matched: set[str] = set(exact_keys)
+    for pattern in patterns:
+        matched.update(redis_client.scan_iter(match=pattern))
+
+    # 邀请 key 的 token 不含 tenant_id，需检查其 JSON value 后精确删除。
+    for key in redis_client.scan_iter(match="invite:*"):
+        raw = redis_client.get(key)
+        try:
+            if raw and int(json.loads(raw).get("tenant_id")) == tenant_id:
+                matched.add(key)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    if matched:
+        redis_client.delete(*matched)
+
+
+def _delete_tenant_upload_files(documents: list) -> None:
+    """按已查得 doc_id + basename 删除共享上传目录和旧临时目录源文件。"""
+
+    from app.config import settings
+
+    roots = [Path(settings.upload_storage_dir).resolve(), Path(tempfile.gettempdir(), "zhihub_uploads").resolve()]
+    for doc_id, filename in documents:
+        basename = os.path.basename(filename)
+        for root in roots:
+            path = (root / f"{doc_id}_{basename}").resolve()
+            if path.parent != root:
+                raise RuntimeError(f"拒绝删除上传目录之外的路径: {path}")
+            if path.is_file():
+                path.unlink()
+
+
+def _purge_tenant_relational_data(
+    db: DbSession,
+    *,
+    tenant_id: int,
+    session_ids: list[int],
+    order_ids: list[int],
+    user_ids: list[int],
+) -> None:
+    """按外键从叶子到根删除 MySQL 数据，并保留仍属于其他租户的共享用户。"""
+
+    from app.models.answer_feedback import AnswerFeedback
+    from app.models.audit_log import AuditLog
+    from app.models.billing_event import BillingEvent
+    from app.models.billing_invoice import BillingInvoice
+    from app.models.csat import CsatEvaluation
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.message import Message
+    from app.models.notification import Notification
+    from app.models.order import Order
+    from app.models.quick_reply import QuickReply
+    from app.models.refresh_token import RefreshToken
+    from app.models.refund_approval import RefundApproval
+    from app.models.refund_approval_event import RefundApprovalEvent
+    from app.models.refund_outbox import RefundOutbox
+    from app.models.security_incident import SecurityIncident
+    from app.models.session import Session
+    from app.models.tenant import Tenant
+    from app.models.tenant_member import TenantMember
+    from app.models.ticket import Ticket
+    from app.models.usage_record import UsageRecord
+    from app.models.user import User
+
+    message_ids = list(
+        db.execute(select(Message.id).where(Message.session_id.in_(session_ids))).scalars().all()
+    ) if session_ids else []
+    approval_ids = list(
+        db.execute(
+            select(RefundApproval.id).where(RefundApproval.order_id.in_(order_ids))
+        ).scalars().all()
+    ) if order_ids else []
+
+    mysql_guard = db.bind is not None and db.bind.dialect.name == "mysql"
+    if mysql_guard:
+        db.execute(text("SET @zhihub_tenant_purge = 1"))
+    try:
+        if message_ids:
+            db.execute(delete(AnswerFeedback).where(AnswerFeedback.message_id.in_(message_ids)))
+        if session_ids:
+            db.execute(delete(CsatEvaluation).where(CsatEvaluation.session_id.in_(session_ids)))
+            db.execute(delete(BillingEvent).where(BillingEvent.session_id.in_(session_ids)))
+            db.execute(delete(SecurityIncident).where(SecurityIncident.session_id.in_(session_ids)))
+            db.execute(delete(Message).where(Message.session_id.in_(session_ids)))
+            db.execute(delete(Session).where(Session.id.in_(session_ids)))
+        if approval_ids:
+            db.execute(delete(RefundOutbox).where(RefundOutbox.approval_id.in_(approval_ids)))
+            db.execute(
+                delete(RefundApprovalEvent).where(
+                    RefundApprovalEvent.approval_id.in_(approval_ids)
+                )
+            )
+            db.execute(delete(RefundApproval).where(RefundApproval.id.in_(approval_ids)))
+        if order_ids:
+            db.execute(delete(Order).where(Order.id.in_(order_ids)))
+
+        db.execute(delete(Ticket).where(Ticket.tenant_id == tenant_id))
+        db.execute(delete(AuditLog).where(AuditLog.tenant_id == tenant_id))
+        db.execute(delete(Notification).where(Notification.tenant_id == tenant_id))
+        db.execute(delete(QuickReply).where(QuickReply.tenant_id == tenant_id))
+        db.execute(delete(BillingInvoice).where(BillingInvoice.tenant_id == tenant_id))
+        db.execute(delete(UsageRecord).where(UsageRecord.tenant_id == tenant_id))
+        db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id))
+        # refresh_tokens 是自引用链，先断开 parent 再批量删除。
+        db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.tenant_id == tenant_id)
+            .values(parent_token_id=None)
+        )
+        db.execute(delete(RefreshToken).where(RefreshToken.tenant_id == tenant_id))
+        db.execute(delete(TenantMember).where(TenantMember.tenant_id == tenant_id))
+        db.flush()
+
+        for user_id in set(user_ids):
+            if not _user_has_remaining_references(db, user_id):
+                db.execute(delete(User).where(User.id == user_id))
+        db.execute(delete(Tenant).where(Tenant.id == tenant_id))
+    finally:
+        if mysql_guard:
+            db.execute(text("SET @zhihub_tenant_purge = 0"))
+
+
+def _user_has_remaining_references(db: DbSession, user_id: int) -> bool:
+    """判断平台用户是否仍被其他租户或业务记录引用。"""
+
+    from app.models.audit_log import AuditLog
+    from app.models.refresh_token import RefreshToken
+    from app.models.refund_approval import RefundApproval
+    from app.models.refund_approval_event import RefundApprovalEvent
+    from app.models.session import Session
+    from app.models.tenant_member import TenantMember
+    from app.models.ticket import Ticket
+
+    checks = (
+        select(TenantMember.id).where(TenantMember.user_id == user_id),
+        select(RefreshToken.id).where(RefreshToken.user_id == user_id),
+        select(AuditLog.id).where(AuditLog.user_id == user_id),
+        select(Session.id).where(Session.assignee_id == user_id),
+        select(Ticket.id).where(Ticket.assignee_id == user_id),
+        select(RefundApproval.id).where(RefundApproval.approver_id == user_id),
+        select(RefundApprovalEvent.id).where(RefundApprovalEvent.actor_id == user_id),
+    )
+    return any(db.execute(query.limit(1)).scalar_one_or_none() is not None for query in checks)
 
 
 def cleanup_agent_presence() -> dict:

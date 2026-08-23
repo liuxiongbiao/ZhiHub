@@ -5,13 +5,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { mockRequest } = vi.hoisted(() => ({
-  mockRequest: { get: vi.fn(), post: vi.fn(), put: vi.fn() }
+  mockRequest: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }
 }))
 vi.mock('@/api/request', () => ({ default: mockRequest }))
 import {
   inviteMember, getAuditLogs,
   getWidgetConfig, rotateWidgetApiKey, getWidgetDomains, setWidgetDomains,
   getPlanCatalog, changeTenantPlan,
+  getTenantCancellation, requestTenantCancellation, revokeTenantCancellation,
 } from '@/api/tenant'
 beforeEach(() => { vi.clearAllMocks() })
 describe('tenant api (规格 013 US5)', () => {
@@ -64,5 +65,19 @@ describe('tenant plan api (PRD 3.9)', () => {
     mockRequest.put.mockResolvedValue({ data: { current_plan: 'basic', change_status: 'effective' } })
     await changeTenantPlan('basic')
     expect(mockRequest.put).toHaveBeenCalledWith('/tenant/plan', { target_plan: 'basic' })
+  })
+})
+
+describe('tenant cancellation api (PRD 8.5)', () => {
+  it('uses status, request and revoke endpoints', async () => {
+    mockRequest.get.mockResolvedValue({ data: { deletion_pending: false } })
+    mockRequest.post.mockResolvedValue({ data: { deletion_pending: true } })
+    mockRequest.delete.mockResolvedValue({ data: { deletion_pending: false } })
+    await getTenantCancellation()
+    await requestTenantCancellation()
+    await revokeTenantCancellation()
+    expect(mockRequest.get).toHaveBeenCalledWith('/tenant/cancellation')
+    expect(mockRequest.post).toHaveBeenCalledWith('/tenant/cancellation')
+    expect(mockRequest.delete).toHaveBeenCalledWith('/tenant/cancellation')
   })
 })

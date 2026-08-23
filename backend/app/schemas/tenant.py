@@ -145,3 +145,17 @@ class PlanChangeResponse(BaseModel):
     change_status: str
     seat_limit: int
     conversation_quota: int
+
+
+# ────────── 租户注销（PRD §8.5）──────────
+class TenantCancellationResponse(BaseModel):
+    """注销状态：申请后进入 30 天导出窗口，到期执行物理删除。"""
+
+    tenant_id: int
+    status: str
+    deletion_pending: bool
+    requested_at: str | None = None
+    scheduled_deletion_at: str | None = None
+    days_remaining: int | None = None
+    can_revoke: bool = False
+    export_available: bool = True

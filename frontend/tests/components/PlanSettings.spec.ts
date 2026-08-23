@@ -13,6 +13,9 @@ const api = vi.hoisted(() => ({
   getRefundThreshold: vi.fn(),
   updateRefundThreshold: vi.fn(),
   exportTenantData: vi.fn(),
+  getTenantCancellation: vi.fn(),
+  requestTenantCancellation: vi.fn(),
+  revokeTenantCancellation: vi.fn(),
 }))
 const confirm = vi.hoisted(() => vi.fn().mockResolvedValue('confirm'))
 
@@ -43,7 +46,7 @@ function mountPage() {
         PageHeader: { template: '<header />' },
         'el-card': { template: '<section><slot name="header"/><slot/></section>' },
         'el-tag': { template: '<span><slot/></span>' },
-        'el-button': { template: '<button :disabled="$attrs.disabled" @click="$emit(\'click\')"><slot/></button>' },
+        'el-button': { emits: ['click'], template: '<button :disabled="$attrs.disabled" @click="$emit(\'click\')"><slot/></button>' },
         'el-form': { template: '<form><slot/></form>' },
         'el-form-item': { template: '<div><slot/></div>' },
         'el-input-number': { template: '<input />' },
@@ -59,6 +62,13 @@ describe('PlanSettings.vue', () => {
     setActivePinia(createPinia())
     api.getPlanCatalog.mockResolvedValue({ data: { current_plan: 'trial', pending_plan: null, plans } })
     api.getRefundThreshold.mockResolvedValue({ data: { refund_approval_threshold: 1000 } })
+    api.getTenantCancellation.mockResolvedValue({
+      data: {
+        tenant_id: 1, status: 'active', deletion_pending: false,
+        requested_at: null, scheduled_deletion_at: null, days_remaining: null,
+        can_revoke: false, export_available: true,
+      },
+    })
     api.changeTenantPlan.mockResolvedValue({
       data: { tenant_id: 1, current_plan: 'basic', pending_plan: null, change_status: 'effective', seat_limit: 2, conversation_quota: 2000 },
     })
@@ -82,5 +92,38 @@ describe('PlanSettings.vue', () => {
     await flushPromises()
     expect(confirm).toHaveBeenCalled()
     expect(api.changeTenantPlan).toHaveBeenCalledWith('basic')
+  })
+
+  it('submits cancellation and switches to export-only status', async () => {
+    api.requestTenantCancellation.mockResolvedValue({
+      data: {
+        tenant_id: 1, status: 'pending_deletion', deletion_pending: true,
+        requested_at: '2026-08-24T00:00:00Z', scheduled_deletion_at: '2026-09-23T00:00:00Z',
+        days_remaining: 30, can_revoke: true, export_available: true,
+      },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    const button = wrapper.findAll('button').find((item) => item.text().includes('申请注销租户'))
+    await button!.trigger('click')
+    await flushPromises()
+    expect(api.requestTenantCancellation).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('注销等待期')
+    expect(wrapper.text()).toContain('撤销注销')
+  })
+
+  it('renders an existing pending deletion without loading writable settings', async () => {
+    api.getTenantCancellation.mockResolvedValue({
+      data: {
+        tenant_id: 1, status: 'pending_deletion', deletion_pending: true,
+        requested_at: '2026-08-24T00:00:00Z', scheduled_deletion_at: '2026-09-23T00:00:00Z',
+        days_remaining: 30, can_revoke: true, export_available: true,
+      },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).toContain('预计剩余 30 天')
+    expect(api.getPlanCatalog).not.toHaveBeenCalled()
+    expect(api.getRefundThreshold).not.toHaveBeenCalled()
   })
 })

@@ -204,7 +204,7 @@ def create_widget_session(db: Session, *, api_key: str, origin: str | None) -> d
         raise DomainNotAllowed("来源域名未在白名单中")
 
     # readonly/closed/pending_review 租户拒绝新会话
-    if tenant.status in ("readonly", "closed", "pending_review"):
+    if tenant.status in ("readonly", "closed", "pending_review", "pending_deletion"):
         raise TenantUnavailable("租户当前不可用，无法发起新会话")
 
     end_user_id = f"eu-{secrets.token_hex(8)}"

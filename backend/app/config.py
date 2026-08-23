@@ -142,6 +142,7 @@ class Settings(BaseSettings):
     order_payment_timeout_minutes: int = 30      # 订单待支付超时自动取消分钟数（PRD 3.6）
     order_shipped_timeout_days: int = 7          # 订单发货后自动完成天数（PRD 3.6）
     trial_period_days: int = 30                  # 试用版天数，到期降级只读（PRD 3.1）
+    tenant_cancellation_retention_days: int = 30 # 注销申请后的数据导出保留窗口（PRD 8.5）
     doc_validity_days: int = 90                  # 知识库文档有效期天数
     quality_garbage_threshold: float = 0.3       # 文档乱码率阈值（超过判为低质）
     storage_doc_limit: int = 50                  # 租户文档数量上限
