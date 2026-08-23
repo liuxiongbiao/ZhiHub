@@ -51,3 +51,6 @@ Thumbs.db
 
 # æµ‹è¯•ä¸´æ—¶äº§ç‰©
 frontend/tests/e2e/e2e-cred.json
+
+# CI ÒÀÀµÉó¼ÆÊä³ö
+backend/audit.json

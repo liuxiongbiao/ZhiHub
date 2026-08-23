@@ -1,0 +1,3 @@
+{
+  "PYSEC-2026-1325": "python-ecdsa Minerva timing attack affects only ECDSA signing/ECDH on P-256. The project's JWT algorithm whitelist (config._check_jwt_algorithm) allows only HS256/RS256, so python-jose never invokes ecdsa's signing path. No upstream fix is planned (side-channels considered out of scope by python-ecdsa). Reviewed 2026-08-23."
+}
