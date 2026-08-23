@@ -4,8 +4,8 @@ Revision ID: d25_refund_outbox_review_history
 Revises: d24_widget_channel
 Create Date: 2026-08-12
 
-P1-1: refund_approvals.review_history（只追加审批链，禁止覆写）
-P1-2: refund_outbox（外部退款与 DB 事务解耦，支持重试与对账）
+: refund_approvals.review_history（只追加审批链，禁止覆写）
+: refund_outbox（外部退款与 DB 事务解耦，支持重试与对账）
 """
 
 from alembic import op

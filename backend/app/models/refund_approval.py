@@ -1,10 +1,10 @@
 """
 backend/app/models/refund_approval.py
 
-职责: refund_approvals 表 ORM 模型定义（退款审批记录，只追加不覆写）
+职责: refund_approvals 表 ORM 模型定义（退款审批当前状态投影）
 
 核心设计:
-  退款审批流水，规则定稿禁止 UPDATE/DELETE，靠 client_request_id 做幂等去重。
+  本表保存退款审批聚合的当前状态；不可变审批流水见 refund_approval_events。
   关键字段: order_id(关联订单)、amount(退款金额)、status(pending/approved/rejected)、
             client_request_id(幂等键，客户端唯一请求 ID)、approver_id(审批人)
   幂等粒度: 复合唯一 (order_id, client_request_id) —— 同一订单的同一请求 id 只允许一条；
@@ -26,7 +26,7 @@ class RefundApproval(BaseModel):
         UniqueConstraint("order_id", "client_request_id", name="uq_refund_approval_order_client"),
     )
 
-    # 关联订单（T27: 资金流水 FK 兜底，防孤儿数据）
+    # 关联订单（: 资金流水 FK 兜底，防孤儿数据）
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("orders.id", name="fk_refund_approvals_order_id"), nullable=False, index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)  # 退款金额（Numeric 防精度）
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 退款原因
@@ -36,5 +36,7 @@ class RefundApproval(BaseModel):
     # 否则 autogenerate 持续报"缺 ix_refund_approvals_client_request_id"漂移）
     client_request_id: Mapped[str] = mapped_column(String(100), nullable=False)
     approver_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", name="fk_refund_approvals_approver_id"), nullable=True)  # 审批人 ID
-    # P1-1: 审批链只追加记录（JSON 数组），禁止覆写已有审批结论
+    # 审批链只追加记录（JSON 数组），禁止覆写已有审批结论
     review_history: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 退款申请前的订单状态（paid/shipped），审批拒绝/撤销/超时取消时精确回退
+    pre_status: Mapped[str | None] = mapped_column(String(20), nullable=True)

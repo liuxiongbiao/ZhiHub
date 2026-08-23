@@ -52,7 +52,7 @@ def update_status_optimistic(db: Session, order: Order, new_status: str) -> bool
     )
     if result.rowcount == 0:
         return False
-    # T26: 内存对象与 DB 同步——Core update 绕过 ORM，status 需手动赋值，
+    # 内存对象与 DB 同步——Core update 绕过 ORM，status 需手动赋值，
     # 否则同事务内再读 order.status 得到旧值（隐雷）
     order.status = new_status
     db.expire(order, ["version"])
@@ -61,13 +61,53 @@ def update_status_optimistic(db: Session, order: Order, new_status: str) -> bool
 
 
 def create_refund_approval(
-    db: Session, *, order_id: int, amount: float, reason: str | None = None, client_request_id: str,
+    db: Session, *, order_id: int, amount: float, reason: str | None = None,
+    client_request_id: str, pre_status: str | None = None,
 ) -> RefundApproval:
-    """创建退款审批记录（client_request_id 作幂等键）。"""
-    approval = RefundApproval(order_id=order_id, amount=amount, reason=reason, client_request_id=client_request_id)
+    """创建退款审批聚合（client_request_id 作幂等键）。"""
+    approval = RefundApproval(
+        order_id=order_id,
+        amount=amount,
+        reason=reason,
+        client_request_id=client_request_id,
+        pre_status=pre_status,
+    )
     db.add(approval)
     db.flush()
     return approval
+
+
+def claim_refund_decision(
+    db: Session, *, approval_id: int, decision: str, approver_id: int | None,
+) -> bool:
+    """条件更新 pending 审批；并发赢家返回 True，其他请求返回 False。"""
+    result = db.execute(
+        update(RefundApproval)
+        .where(RefundApproval.id == approval_id, RefundApproval.status == "pending")
+        .values(status=decision, approver_id=approver_id)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
+def create_refund_event(
+    db: Session, *, approval_id: int, event_type: str,
+    actor_id: int | None = None, actor_role: str | None = None,
+    detail: str | None = None,
+):
+    """只追加一条退款审批事件。"""
+    from app.models.refund_approval_event import RefundApprovalEvent
+
+    item = RefundApprovalEvent(
+        approval_id=approval_id,
+        event_type=event_type,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        detail=detail,
+    )
+    db.add(item)
+    db.flush()
+    return item
 
 
 def get_refund_by_request_id(db: Session, client_request_id: str) -> RefundApproval | None:

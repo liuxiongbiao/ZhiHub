@@ -1,10 +1,17 @@
 <!-- frontend/src/views/order/RefundApproval.vue -->
-<!-- 职责: 售后审批列表 - 待审批高亮(012 前端打磨:PageHeader + el-card) -->
+<!-- 职责: 售后审批列表 - 待审批高亮(规格 012 前端打磨:PageHeader + el-card) -->
 <template>
   <div>
     <PageHeader title="退款审批" subtitle="审核用户提交的退款申请" />
 
     <div class="page-container">
+      <el-alert
+        :title="ruleText"
+        type="info"
+        :closable="false"
+        show-icon
+        class="rule-alert"
+      />
       <el-card shadow="never">
         <el-table :data="refunds" v-loading="loading" stripe>
           <el-table-column prop="id" label="审批ID" width="80" />
@@ -24,7 +31,9 @@
           <el-table-column label="操作" width="140">
             <template #default="{ row }">
               <template v-if="row.status === 'pending'">
-                <el-button link type="success" size="small" @click="handleApprove(row, 'approved')">批准</el-button>
+                <el-button link type="success" size="small" @click="handleApprove(row, 'approved')">
+                  {{ requiresAdminReview(row) ? '提交复核' : '批准' }}
+                </el-button>
                 <el-button link type="danger" size="small" @click="handleApprove(row, 'rejected')">拒绝</el-button>
                 <el-button link type="warning" size="small" @click="handleCancel(row)">撤销</el-button>
               </template>
@@ -48,12 +57,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getRefundList, approveRefund, cancelRefund, type RefundApproval } from '@/api/order'
+import { getRefundList, getRefundRules, approveRefund, cancelRefund, type RefundApproval } from '@/api/order'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { useUserStore } from '@/store/modules/user'
 
-/** 退款审批状态 -> 中文标签 */
+/** 退款审批状态 → 中文标签 */
 const STATUS_MAP: Record<string, string> = {
   pending: '待审批', approved: '已批准', rejected: '已拒绝',
   refunding: '退款中', refunded: '已退款', cancelled: '已撤销',
@@ -64,13 +74,31 @@ const loading = ref(false)
 const page = ref(1)
 const pageSize = 10
 const total = ref(0)
+const approvalThreshold = ref(0)
+const ruleText = ref('正在加载退款审批额度…')
+const userStore = useUserStore()
+const isAgent = computed(() => userStore.role === 'agent')
 
-/** 审批状态 -> el-tag 配色 */
+function requiresAdminReview(row: RefundApproval): boolean {
+  return isAgent.value && approvalThreshold.value > 0 && row.amount > approvalThreshold.value
+}
+
+async function loadRules() {
+  try {
+    const res = await getRefundRules()
+    approvalThreshold.value = res.data.approval_threshold
+    ruleText.value = `客服可终审单笔不超过 ¥${approvalThreshold.value.toFixed(2)} 的退款；超额申请将提交管理员复核。`
+  } catch {
+    ruleText.value = '退款终审额度加载失败，服务端仍会执行额度校验。'
+  }
+}
+
+/** 审批状态 → el-tag 配色 */
 function statusType(status: string): string {
   return { pending: 'warning', approved: 'success', rejected: 'danger', refunding: 'warning', refunded: 'success', cancelled: 'info' }[status] || 'info'
 }
 
-/** ISO 时间串 -> 中文本地化时间 */
+/** ISO 时间串 → 中文本地化时间 */
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN')
 }
@@ -98,23 +126,33 @@ async function handleApprove(row: RefundApproval, decision: 'approved' | 'reject
     return
   }
   try {
-    await approveRefund(row.id, decision)
-    ElMessage.success(`${label}成功`)
+    const res = await approveRefund(row.id, decision)
+    ElMessage.success(res.data.message || `${label}成功`)
     loadRefunds()
   } catch (e: any) {
     ElMessage.error(e?.message || '操作失败')
   }
 }
 
-/** 撤销售后申请（仅 pending 可撤销，013 US6） */
+/** 撤销售后申请（仅 pending 可撤销，规格 013 US6） */
 async function handleCancel(row: RefundApproval) {
+  let reason = ''
   try {
-    await ElMessageBox.confirm(`确认撤销售后申请 #${row.id}（¥${row.amount.toFixed(2)}）？`, '撤销确认', { type: 'warning' })
+    const res = await ElMessageBox.prompt(
+      `请填写撤销售后申请 #${row.id}（¥${row.amount.toFixed(2)}）的原因`,
+      '撤销确认',
+      { type: 'warning', inputPlaceholder: '撤销原因（必填）' },
+    )
+    reason = (res.value || '').trim()
+    if (!reason) {
+      ElMessage.warning('撤销原因必填')
+      return
+    }
   } catch {
     return
   }
   try {
-    await cancelRefund(row.id)
+    await cancelRefund(row.id, reason)
     ElMessage.success('已撤销')
     loadRefunds()
   } catch (e: any) {
@@ -122,9 +160,13 @@ async function handleCancel(row: RefundApproval) {
   }
 }
 
-onMounted(loadRefunds)
+onMounted(() => {
+  loadRules()
+  loadRefunds()
+})
 </script>
 
 <style scoped lang="scss">
 .muted { color: var(--zh-text-placeholder); font-size: 12px; }
+.rule-alert { margin-bottom: 16px; }
 </style>
