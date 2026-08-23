@@ -1,6 +1,6 @@
-"""014 Widget 公共通道 API：匿名会话创建 / 发消息 / 撤销售后申请。
+"""规格 014 Widget 公共通道 API：匿名会话创建 / 发消息 / 撤销售后申请。
 
-业务规则来源: PRD 3.1.3 / specs/014-widget-public-channel/spec.md
+业务规则来源: PRD §3.1.3 / docs/specs/014-widget-public-channel/spec.md
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -31,12 +31,16 @@ class WidgetSessionResponse(BaseModel):
     token: str
     expires_in: int
     welcome_text: str | None = None
+    # 品牌字段随会话响应下发，widget.js 据此应用租户主题色与 Logo
+    theme_color: str | None = None
+    logo_url: str | None = None
 
 
 class WidgetRefundCancelRequest(BaseModel):
-    """终端用户撤销售后申请（016）：会话 + 手机号（后 4 位匹配订单绑定手机号）。"""
+    """终端用户撤销售后申请（规格 016）：会话 + 手机号 + 撤销原因（PRD 3.6）。"""
     session_id: int
     phone: str
+    reason: str
 
 
 @router.post("/session", response_model=WidgetSessionResponse, status_code=201)
@@ -45,16 +49,22 @@ def create_widget_session(body: WidgetSessionCreateRequest, request: Request, db
     from app.services.widget_service import (
         DomainNotAllowed,
         InvalidApiKey,
+        TenantUnavailable,
         WidgetError,
         create_widget_session as do_create,
     )
 
-    origin = body.origin or request.headers.get("Origin") or request.headers.get("Referer")
+    # Origin 信任顺序 —— 浏览器真实请求头 Origin 优先，其次 Referer，
+    # 仅当请求无这两个头时才回退 body.origin（非浏览器客户端的兼容通道）。
+    # 避免攻击者用「body 填白名单域名 + 浏览器真实 Origin 是恶意域」绕过域名白名单。
+    origin = request.headers.get("Origin") or request.headers.get("Referer") or body.origin
     try:
         return do_create(db, api_key=body.api_key, origin=origin)
     except InvalidApiKey as e:
         raise HTTPException(status_code=401, detail=str(e)) from e
     except DomainNotAllowed as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except TenantUnavailable as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except WidgetError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -69,6 +79,10 @@ def send_widget_message(
 ):
     """Widget 令牌发消息：令牌会话与路径一致 + 会话归属 + 限流。"""
     tenant_id = _get_tenant_id(request)
+    # PRD §3.4 双重限流：Widget 匿名通道补租户级限流（全局中间件对匿名请求跳过）
+    from app.services.rate_limit_service import check_tenant_rate_limit
+    if not check_tenant_rate_limit(tenant_id)["allowed"]:
+        raise HTTPException(status_code=429, detail="租户请求过于频繁，请稍后再试")
     if getattr(request.state, "widget_session_id", None) != session_id:
         raise HTTPException(status_code=403, detail="会话令牌不匹配")
 
@@ -97,7 +111,7 @@ def widget_cancel_refund(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """终端用户撤销自己的退款申请（016）：会话归属 + 手机号后 4 位匹配。"""
+    """终端用户撤销自己的退款申请（规格 016）：会话归属 + 手机号后 4 位匹配。"""
     tenant_id = _get_tenant_id(request)
     if getattr(request.state, "widget_session_id", None) != body.session_id:
         raise HTTPException(status_code=403, detail="会话令牌不匹配")
@@ -110,7 +124,7 @@ def widget_cancel_refund(
     from app.services.order_service import OrderError, cancel_refund
     try:
         result = cancel_refund(
-            db, approval_id=approval_id, tenant_id=tenant_id, phone=body.phone,
+            db, approval_id=approval_id, tenant_id=tenant_id, phone=body.phone, reason=body.reason,
         )
         db.commit()
         return result

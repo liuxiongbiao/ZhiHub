@@ -4,7 +4,7 @@ Revision ID: d24_widget_channel
 Revises: d23_notifications_server_default
 Create Date: 2026-08-12
 
-014 Widget 公共通道：租户级 API Key（仅存 SHA-256 哈希）与域名白名单。
+规格 014 Widget 公共通道：租户级 API Key（仅存 SHA-256 哈希）与域名白名单。
 """
 
 from alembic import op
