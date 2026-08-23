@@ -533,7 +533,7 @@ cd C:\Users\Lenovo\Desktop\Three\zhihub\backend
 | 6 | 端到端生成场景 P95/P99（阈值修复后） | ✅ 已实测但**未达标**（P95 9.5s / P99 10.8s，串行 4 次外部调用所致） | 优化方向与流式口径见 `docs/p1_bench_report.md` C 节 |
 | 7 | 短信真实发送 <3s | 🔶 无法测 | deploy/.env 未配置阿里云短信 AccessKey（只有 SMTP） |
 | 8 | 浏览器兼容性（Firefox/Edge 手动过一遍） | ⚪ 未做 | 手动或用 Playwright 跑现有 e2e 脚本 |
-| 9 | CI 首次实际运行 | 🔶 未推 GitHub | 推送仓库后观察首轮 CI |
+| 9 | CI 首次实际运行 | ⏳ 已推送（2026-08-23，main 分支 24 个提交），CI 已自动触发，首轮结果待观察 | 红了把 Actions 日志贴给审计方修复 |
 | 10 | Nginx 反代 API 转发验证 | ✅ 已验证 | /health 200 透传 + SPA fallback 200 + 真实 API 路径 401 正确拒绝 |
 | 11 | 前端生产构建 `npm run build` | ✅ 已验证 | `✓ built in 11.60s`；仅 element 分包 936KB 偏大（见 §十二 C） |
 
