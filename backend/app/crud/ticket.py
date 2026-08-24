@@ -44,6 +44,16 @@ def list_tickets(
     return list(items), total
 
 
+def count_by_status(db: Session, tenant_id: int) -> dict[str, int]:
+    """一次聚合当前租户各工单状态，供看板展示全局计数。"""
+    rows = db.execute(
+        select(Ticket.status, func.count(Ticket.id))
+        .where(Ticket.tenant_id == tenant_id)
+        .group_by(Ticket.status)
+    ).all()
+    return {str(status): int(count) for status, count in rows}
+
+
 def create_ticket(
     db: Session, *, tenant_id: int, ticket_no: str, title: str,
     description: str | None = None, priority: str = "medium", category: str = "general",

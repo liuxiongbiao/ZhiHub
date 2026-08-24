@@ -23,7 +23,7 @@ backend/app/services/order_service.py
 
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import or_, select, update as sa_update
@@ -63,7 +63,7 @@ def _track_order_state(order, from_status: str, to_status: str, operator: str | 
 
 def _track_refund_decision(approval, order, decision: str, approver_id: int) -> None:
     from app.services.analytics_service import track_event
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     latency = max(0, (now - approval.created_at).total_seconds()) if approval.created_at else 0
     track_event(
         "refund_approved" if decision == "approved" else "refund_rejected",
@@ -418,7 +418,7 @@ def process_refund_outbox(
     """执行 pending 或租约过期的 processing 退款，重试前先向渠道对账。"""
     from app.models.refund_outbox import RefundOutbox
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     stale_before = now - timedelta(seconds=lease_seconds)
     claimable = or_(
         RefundOutbox.status == "pending",
@@ -535,7 +535,7 @@ def process_refund_outbox_batch(
     """批量处理 pending，并恢复租约超时的 processing 记录。"""
     from app.models.refund_outbox import RefundOutbox
 
-    stale_before = datetime.utcnow() - timedelta(seconds=lease_seconds)
+    stale_before = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=lease_seconds)
     rows = db.execute(
         select(RefundOutbox).where(
             or_(

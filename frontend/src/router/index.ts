@@ -56,6 +56,12 @@ const routes: RouteRecordRaw[] = [
         name: 'dashboard',
         component: () => import('@/views/dashboard/Home.vue'),
       },
+      {
+        path: 'demo-center',
+        name: 'demo-center',
+        component: () => import('@/views/demo/DemoCenter.vue'),
+        meta: { requiresRole: ['admin'] },
+      },
       // 配置向导(仅 admin，后端 require_role 兜底)
       {
         path: 'setup',
@@ -109,6 +115,12 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresRole: ['admin'] },
       },
       {
+        path: 'knowledge/quality',
+        name: 'knowledge-quality',
+        component: () => import('@/views/knowledge/KnowledgeQuality.vue'),
+        meta: { requiresRole: ['admin'] },
+      },
+      {
         path: 'ticket/list',
         name: 'ticket-list',
         component: () => import('@/views/ticket/TicketList.vue'),
@@ -158,6 +170,12 @@ const routes: RouteRecordRaw[] = [
         path: 'agent-report',
         name: 'agent-report',
         component: () => import('@/views/agent-report/DeepAgentReport.vue'),
+      },
+      {
+        path: 'platform/operations',
+        name: 'platform-operations',
+        component: () => import('@/views/platform/PlatformOperations.vue'),
+        meta: { requiresRole: ['admin'] },
       },
       // Widget 预览(终端用户聊天 demo)
       {

@@ -655,6 +655,11 @@ def seed(
             raise DemoSeedKnowledgeError(
                 f"演示知识处理失败（未伪装 ready）: {', '.join(failed_docs)}"
             )
+        # 关系库演示对话始终恢复；Mongo 事件/轨迹/报告在 test 环境默认跳过，
+        # 避免单元测试依赖外部服务，开发/演示环境则生成完整可视化故事。
+        from app.services.demo_story_service import restore_demo_story
+
+        restore_demo_story(db, tenant_id)
         return _summary_from_db(db, tenant_id, created)
     finally:
         if own_db and db is not None:
@@ -667,6 +672,7 @@ def _summary_from_db(db: Session, tenant_id: int, created: bool) -> dict:
     from app.models.billing_invoice import BillingInvoice
     from app.models.knowledge_document import KnowledgeDocument
     from app.models.notification import Notification
+    from app.models.message import Message
     from app.models.order import Order
     from app.models.quick_reply import QuickReply
     from app.models.refund_approval import RefundApproval
@@ -692,6 +698,9 @@ def _summary_from_db(db: Session, tenant_id: int, created: bool) -> dict:
         "tickets": db.query(Ticket).filter_by(tenant_id=tenant_id).count(),
         "refunds": db.query(RefundApproval).filter(RefundApproval.order_id.in_(order_ids)).count(),
         "sessions": db.query(Session).filter_by(tenant_id=tenant_id).count(),
+        "messages": db.query(Message).join(Session, Message.session_id == Session.id).filter(
+            Session.tenant_id == tenant_id
+        ).count(),
         "quick_replies": db.query(QuickReply).filter_by(tenant_id=tenant_id).count(),
         "invoices": db.query(BillingInvoice).filter_by(tenant_id=tenant_id).count(),
         "usage_records": db.query(UsageRecord).filter_by(tenant_id=tenant_id).count(),

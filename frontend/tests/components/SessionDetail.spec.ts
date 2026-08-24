@@ -29,7 +29,12 @@ describe('SessionDetail.vue route validation', () => {
   })
 
   it('shows a recoverable error state for a non-numeric session id', async () => {
-    const wrapper = mount(SessionDetail, { global: { plugins: [ElementPlus] } })
+    const wrapper = mount(SessionDetail, {
+      global: {
+        plugins: [ElementPlus],
+        stubs: { RouterLink: { template: '<a><slot /></a>' } },
+      },
+    })
     await flushPromises()
 
     expect(wrapper.text()).toContain('无效的会话编号')

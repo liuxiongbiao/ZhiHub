@@ -60,11 +60,23 @@ def create_order(body: CreateOrderRequest, request: Request, db: Session = Depen
 
 
 @router.get("/list")
-def list_orders(request: Request, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)):
+def list_orders(
+    request: Request,
+    status_filter: str | None = Query(None, alias="status"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
     """订单列表（分页）: 调 order_crud.list_orders。"""
     tenant_id = _get_tenant_id(request)
-    items, total = order_crud.list_orders(db, tenant_id, page=page, page_size=page_size)
-    return {"items": [{"id": o.id, "order_no": o.order_no, "amount": o.amount, "paid_amount": o.paid_amount, "status": o.status, "tracking_no": o.tracking_no, "created_by": o.created_by, "created_at": o.created_at} for o in items], "total": total, "page": page, "page_size": page_size}
+    items, total = order_crud.list_orders(
+        db, tenant_id, status=status_filter, page=page, page_size=page_size,
+    )
+    return {
+        "items": [{"id": o.id, "order_no": o.order_no, "amount": o.amount, "paid_amount": o.paid_amount, "status": o.status, "tracking_no": o.tracking_no, "created_by": o.created_by, "created_at": o.created_at} for o in items],
+        "total": total, "page": page, "page_size": page_size,
+        "status_counts": order_crud.count_by_status(db, tenant_id),
+    }
 
 
 @router.get("/{order_id}")

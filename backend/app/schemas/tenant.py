@@ -34,6 +34,7 @@ class WizardStatusResponse(BaseModel):
     completed: bool
     total_steps: int
     steps: list[str]
+    checks: list[dict] = Field(default_factory=list)
 
 
 class InviteRequest(BaseModel):

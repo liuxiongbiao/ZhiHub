@@ -24,6 +24,14 @@ export interface WizardStatus {
   total_steps: number
   /** 步骤全表 */
   steps: string[]
+  checks?: Array<{
+    step: string
+    label: string
+    description: string
+    ready: boolean
+    detail: string
+    action_path: string
+  }>
 }
 
 export async function getTenantHome() {
@@ -232,4 +240,28 @@ export function requestTenantCancellation() {
 /** 截止日前撤销注销。 */
 export function revokeTenantCancellation() {
   return request.delete<TenantCancellationStatus>('/tenant/cancellation')
+}
+
+export interface PendingEnterpriseTenant {
+  tenant_id: number
+  tenant_name: string
+  status: string
+  current_plan: string
+  pending_plan: string | null
+  created_at: string
+}
+
+export function getPendingEnterpriseTenants(platformToken: string) {
+  return request.get<{ items: PendingEnterpriseTenant[]; total: number }>(
+    '/tenant/enterprise/pending',
+    { headers: { 'X-Platform-Token': platformToken } },
+  )
+}
+
+export function approveEnterpriseTenant(tenantId: number, platformToken: string) {
+  return request.post(
+    '/tenant/enterprise/approve',
+    { tenant_id: tenantId },
+    { headers: { 'X-Platform-Token': platformToken } },
+  )
 }

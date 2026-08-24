@@ -9,6 +9,7 @@ import type {
   RegisterRequest, RegisterResponse, LoginRequest, LoginResponse, MessageResponse,
   SendCodeResponse, SmsLoginRequest, EmailRegisterRequest, EmailRegisterResponse,
   EmailLoginRequest, WechatAuthResponse, WechatCallbackResponse, WsTokenResponse,
+  DemoPersona, LoginOptionsResponse,
 } from '@/types/auth'
 
 export function register(body: RegisterRequest) {
@@ -27,6 +28,16 @@ export function logout() {
   return request.post<MessageResponse>('/auth/logout', {
     refresh_token: refreshToken || undefined,
   })
+}
+
+/** 登录页公开能力探测：只展示后端当前真正可用的入口。 */
+export function getLoginOptions() {
+  return request.get<LoginOptionsResponse>('/auth/login/options')
+}
+
+/** 本机演示角色快速登录；后端生产环境硬禁用，不传递或保存演示密码。 */
+export function loginDemo(persona: DemoPersona) {
+  return request.post<LoginResponse>('/auth/login/demo', { persona })
 }
 
 /** 坐席工作台 WebSocket 短效令牌 */

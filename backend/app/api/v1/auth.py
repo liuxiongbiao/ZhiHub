@@ -45,6 +45,7 @@ from app.schemas.auth import (
     EmailActivateResponse,
     EmailResendRequest,
     EmailResendResponse,
+    DemoLoginRequest,
     WsTokenResponse,
     LoginRequest,
     LoginResponse,
@@ -55,6 +56,7 @@ from app.schemas.auth import (
     RevokeUserTokensRequest,
     RegisterRequest,
     RegisterResponse,
+    PublicCapabilitiesResponse,
     ResetPasswordRequest,
     SendCodeRequest,
     SendCodeResponse,
@@ -114,6 +116,43 @@ def _should_reveal_code(request: Request) -> bool:
         host = request.client.host if request.client else ""
         return host in ("127.0.0.1", "::1", "localhost") or settings.dev_allow_code_reveal
     return False
+
+
+@router.get("/login/options", response_model=PublicCapabilitiesResponse)
+def login_options(db: Session = Depends(get_db)):
+    """返回登录页可展示的能力状态，不泄露任何第三方凭据。"""
+    from app.models.tenant import Tenant
+
+    demo_available = bool(
+        settings.demo_quick_login_enabled
+        and settings.app_env in {"development", "test", "demo"}
+        and db.query(Tenant.id).filter(
+            Tenant.is_demo.is_(True), Tenant.status == "active"
+        ).first()
+    )
+    return PublicCapabilitiesResponse(
+        email_login=settings.email_enabled or settings.app_env != "production",
+        sms_login=settings.sms_enabled,
+        wechat_login=settings.wechat_enabled,
+        payment=settings.payment_enabled,
+        demo_quick_login=demo_available,
+        demo_personas=list(auth_service.DEMO_PERSONA_PHONES) if demo_available else [],
+    )
+
+
+@router.post("/login/demo", response_model=LoginResponse)
+def login_demo(
+    body: DemoLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """开发/演示环境角色快速登录；生产环境和未显式开启时始终拒绝。"""
+    _enforce_ip_rate_limit(request)
+    try:
+        result = auth_service.demo_quick_login(db, persona=body.persona)
+    except InvalidCredentials as exc:
+        raise HTTPException(status_code=404, detail="演示快速登录不可用") from exc
+    return LoginResponse(**result.__dict__)
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)

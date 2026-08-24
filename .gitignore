@@ -29,6 +29,7 @@ backend/e2e-*.pyc
 
 # 测试与验证临时产物
 .pytest-*/
+backend/.test-tmp/
 e2e-evidence-*/
 **/e2e-shots/
 **/e2e-cred*.json*

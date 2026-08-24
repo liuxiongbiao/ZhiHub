@@ -29,16 +29,32 @@ def get_by_id(db: Session, order_id: int, tenant_id: int) -> Order | None:
     ).scalar_one_or_none()
 
 
-def list_orders(db: Session, tenant_id: int, *, page: int = 1, page_size: int = 20) -> tuple[list[Order], int]:
-    """分页查询租户订单列表（按创建时间倒序）。返回 (items, total)。"""
-    total = db.execute(
-        select(func.count()).select_from(Order).where(Order.tenant_id == tenant_id)
-    ).scalar() or 0
+def list_orders(
+    db: Session, tenant_id: int, *, status: str | None = None,
+    page: int = 1, page_size: int = 20,
+) -> tuple[list[Order], int]:
+    """分页查询租户订单列表（按创建时间倒序），可选状态筛选。"""
+    query = select(Order).where(Order.tenant_id == tenant_id)
+    count_query = select(func.count()).select_from(Order).where(Order.tenant_id == tenant_id)
+    if status:
+        query = query.where(Order.status == status)
+        count_query = count_query.where(Order.status == status)
+    total = db.execute(count_query).scalar() or 0
     items = db.execute(
-        select(Order).where(Order.tenant_id == tenant_id).order_by(Order.created_at.desc())
+        query.order_by(Order.created_at.desc())
         .offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
     return list(items), total
+
+
+def count_by_status(db: Session, tenant_id: int) -> dict[str, int]:
+    """一次聚合当前租户各订单状态，避免前端为计数重复拉取列表。"""
+    rows = db.execute(
+        select(Order.status, func.count(Order.id))
+        .where(Order.tenant_id == tenant_id)
+        .group_by(Order.status)
+    ).all()
+    return {str(status): int(count) for status, count in rows}
 
 
 def update_status_optimistic(db: Session, order: Order, new_status: str) -> bool:

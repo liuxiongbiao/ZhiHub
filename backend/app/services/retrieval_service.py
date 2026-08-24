@@ -48,6 +48,7 @@ VECTOR_TOP_K = 20     # 向量召回数量
 BM25_TOP_K = 20       # BM25 召回数量
 RRF_K = 60            # RRF 融合常数，经验值（缓解高排名项过度主导）
 RERANK_TOP_K = 5      # 精排后保留数量
+RERANK_CANDIDATE_LIMIT = 20  # 交叉编码器只处理融合后的高价值候选，控制冷链路延迟
 # bge-reranker relevance_score 阈值：低于此值触发 HyDE 兜底
 # 标定依据（2026-08-23 真实栈实验，bge-reranker-v2-m3 经硅基流动 API）：
 #   最佳匹配片段 ≈ 0.359，弱相关/无关片段 ≤ 0.013。
@@ -147,6 +148,7 @@ class RetrievalResult:
     low_confidence: bool = False
     empty_knowledge: bool = False
     elapsed_ms: int = 0
+    timings_ms: dict[str, int] = field(default_factory=dict)
 
 
 # ─── 查询改写 ───
@@ -535,6 +537,7 @@ def _track_retrieval_result(tenant_id: int, result: RetrievalResult) -> None:
             "hyde_fallback": result.hyde_fallback,
             "low_confidence": result.low_confidence,
             "empty_knowledge": result.empty_knowledge,
+            "timings_ms": result.timings_ms,
         },
     )
 
@@ -562,37 +565,50 @@ def hybrid_search(
     """
     start = time.perf_counter()
     history = history or []
+    timings: dict[str, int] = {}
 
     # 1. 查询改写
+    stage_start = time.perf_counter()
     rewritten = rewrite_query(history, query)
+    timings["rewrite"] = int((time.perf_counter() - stage_start) * 1000)
 
     # 2. 空知识库检查
+    stage_start = time.perf_counter()
     if _is_knowledge_base_empty(tenant_id):
+        timings["knowledge_check"] = int((time.perf_counter() - stage_start) * 1000)
         elapsed = int((time.perf_counter() - start) * 1000)
         result = RetrievalResult(
             query=query,
             rewritten_query=rewritten if rewritten != query else None,
             empty_knowledge=True,
             elapsed_ms=elapsed,
+            timings_ms=timings,
         )
         _track_retrieval_result(tenant_id, result)
         return result
+    timings["knowledge_check"] = int((time.perf_counter() - stage_start) * 1000)
 
     # 3. 双路召回（ThreadPoolExecutor 真正并行，避免两路延迟叠加）
     from concurrent.futures import ThreadPoolExecutor
+    stage_start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2) as ex:
         fv = ex.submit(vector_recall, rewritten, tenant_id)
         fb = ex.submit(bm25_recall, rewritten, tenant_id)
         vector_raw = fv.result()
         bm25_raw = fb.result()
+    timings["parallel_recall"] = int((time.perf_counter() - stage_start) * 1000)
 
     # 4. RRF 融合
+    stage_start = time.perf_counter()
     fused = rrf_fuse(vector_raw, bm25_raw)
+    timings["rrf_fusion"] = int((time.perf_counter() - stage_start) * 1000)
 
     # 5. Reranker 精排
     hybrid_top = []
     hyde_fallback = False
     low_confidence = False
+    rerank_elapsed = 0
+    hyde_elapsed = 0
     if fused and not settings.embedding_enabled:
         # embedding/rerank 同属向量能力开关；关闭时保留 BM25+RRF 结果，
         # 不调用外部 reranker，也不触发依赖 LLM+向量的 HyDE。
@@ -607,13 +623,15 @@ def hybrid_search(
             ))
     if fused and settings.embedding_enabled:
         # 提取去重的候选文本，送 reranker 交叉编码精排
-        candidates = [c["chunk_text"] for c in fused]
+        rerank_start = time.perf_counter()
+        rerank_pool = fused[:RERANK_CANDIDATE_LIMIT]
+        candidates = [c["chunk_text"] for c in rerank_pool]
         reranked = rerank_api(query=rewritten, documents=candidates, top_n=RERANK_TOP_K)
 
         for r in reranked[:RERANK_TOP_K]:
             idx = r["index"]
-            if idx < len(fused):
-                item = fused[idx]
+            if idx < len(rerank_pool):
+                item = rerank_pool[idx]
                 hybrid_top.append(ChunkResult(
                     doc_id=item.get("doc_id", 0),
                     doc_filename=item.get("doc_filename", ""),
@@ -622,6 +640,7 @@ def hybrid_search(
                     score=r.get("relevance_score", 0.0),
                     source="hybrid",
                 ))
+        rerank_elapsed += int((time.perf_counter() - rerank_start) * 1000)
 
         # 6. 置信度判断：Top1 < 阈值 → HyDE 兜底
         if hybrid_top and hybrid_top[0].score < CONFIDENCE_THRESHOLD:
@@ -629,20 +648,24 @@ def hybrid_search(
                 f"Low confidence (top1={hybrid_top[0].score:.3f}), triggering HyDE fallback"
             )
             hyde_fallback = True
+            hyde_start = time.perf_counter()
             hyde_results = _hyde_retrieval(query, tenant_id)
 
             if hyde_results:
                 # 二次 RRF 融合（原融合结果 + HyDE 结果），再精排一次
                 re_fused = rrf_fuse(fused, hyde_results)
-                re_candidates = [c["chunk_text"] for c in re_fused]
+                re_rerank_start = time.perf_counter()
+                re_rerank_pool = re_fused[:RERANK_CANDIDATE_LIMIT]
+                re_candidates = [c["chunk_text"] for c in re_rerank_pool]
                 re_reranked = rerank_api(
                     query=rewritten, documents=re_candidates, top_n=RERANK_TOP_K
                 )
+                rerank_elapsed += int((time.perf_counter() - re_rerank_start) * 1000)
                 hybrid_top = []
                 for r in re_reranked[:RERANK_TOP_K]:
                     idx = r["index"]
-                    if idx < len(re_fused):
-                        item = re_fused[idx]
+                    if idx < len(re_rerank_pool):
+                        item = re_rerank_pool[idx]
                         hybrid_top.append(ChunkResult(
                             doc_id=item.get("doc_id", 0),
                             doc_filename=item.get("doc_filename", ""),
@@ -651,10 +674,14 @@ def hybrid_search(
                             score=r.get("relevance_score", 0.0),
                             source="hyde",
                         ))
+            hyde_elapsed = int((time.perf_counter() - hyde_start) * 1000)
 
         # PRD §3.3：HyDE 重试后置信度仍低于阈值 → 标记低置信度，供上层 Agent 决策转人工
         if hybrid_top and hybrid_top[0].score < CONFIDENCE_THRESHOLD:
             low_confidence = True
+    timings["rerank"] = rerank_elapsed
+    if hyde_fallback:
+        timings["hyde"] = hyde_elapsed
 
     # 纯向量对比基线：取向量召回 Top5（不经 RRF/rerank），用于 A/B 对比混合检索的收益
     vector_top = []
@@ -678,6 +705,7 @@ def hybrid_search(
         hyde_fallback=hyde_fallback,
         low_confidence=low_confidence,
         elapsed_ms=elapsed,
+        timings_ms=timings,
     )
     _track_retrieval_result(tenant_id, result)
     return result

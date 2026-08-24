@@ -9,9 +9,10 @@ backend/app/core/security.py
   登出吊销靠 Redis 黑名单（见 redis.py），本模块只负责签发/校验。
 
 关键技术点:
-  - bcrypt vs MD5: MD5/SHA 是通用哈希，设计目标是快，GPU 暴力破解可达每秒百亿次；
-    bcrypt 内置 salt + work factor（cost），故意慢（毫秒级），同等硬件下破解成本高几个数量级，
-    且 cost 可随硬件升级自适应调高（passlib deprecated="auto" 会在校验时标记旧哈希需升级）。
+  - bcrypt vs MD5: MD5/SHA 是通用哈希，设计目标是快，GPU 暴力破解成本低；
+    bcrypt 内置 salt + work factor（cost），故意变慢，同等硬件下破解成本高几个数量级。
+  - 直接使用 pyca/bcrypt: 移除已停滞的 passlib 1.7.4 适配层；旧 `$2b$` 哈希
+    可原样校验，新哈希使用 cost=12，无需迁移数据库字段。
   - JWT 无状态: 服务端不存 session，签名校验即可确认身份，水平扩展无需共享 session 存储；
     代价是令牌签发后无法主动失效，故引入 jti 黑名单做吊销。
   - jti 唯一标识: 每个令牌生成时用 secrets.token_hex(16) 产生 32 字符随机串，
@@ -21,22 +22,28 @@ backend/app/core/security.py
 
 依赖关系:
   - 上游: app/api/* 路由、app/core/auth_middleware（鉴权中间件调用 decode_access_token）
-  - 下游: app.config（密钥/算法/过期配置）、passlib（bcrypt）、python-jose（JWT）
+  - 下游: app.config（密钥/算法/过期配置）、pyca/bcrypt、python-jose（JWT）
 """
 
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.config import settings
 
-# bcrypt 上下文：schemes 指定使用 bcrypt 算法；
-# deprecated="auto" 表示若未来切换到更强算法，旧 bcrypt 哈希校验通过后会被标记需要 rehash，
-# 但当前直接使用不影响功能
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+BCRYPT_ROUNDS = 12
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+def _password_bytes(password: str) -> bytes:
+    """将密码编码为 bcrypt 输入，并拒绝会被传统 bcrypt 截断的超长值。"""
+    encoded = password.encode("utf-8")
+    if len(encoded) > BCRYPT_MAX_PASSWORD_BYTES:
+        raise ValueError("密码 UTF-8 编码后不能超过 72 字节")
+    return encoded
 
 
 def hash_password(password: str) -> str:
@@ -51,7 +58,8 @@ def hash_password(password: str) -> str:
     Returns:
         bcrypt 哈希字符串，格式如 $2b$12$...
     """
-    return _pwd_context.hash(password)
+    encoded = _password_bytes(password)
+    return bcrypt.hashpw(encoded, bcrypt.gensalt(rounds=BCRYPT_ROUNDS, prefix=b"2b")).decode("ascii")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -67,7 +75,12 @@ def verify_password(password: str, password_hash: str) -> bool:
     Returns:
         True 匹配，False 不匹配
     """
-    return _pwd_context.verify(password, password_hash)
+    try:
+        encoded = _password_bytes(password)
+        return bcrypt.checkpw(encoded, password_hash.encode("ascii"))
+    except (TypeError, ValueError, UnicodeError):
+        # 损坏/非 bcrypt 哈希或超长输入一律按凭据无效处理，不向外暴露库异常。
+        return False
 
 
 def create_access_token(

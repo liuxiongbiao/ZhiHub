@@ -11,14 +11,23 @@ export interface Ticket {
   description?: string
   status: 'open' | 'in_progress' | 'resolved' | 'closed'
   priority: 'low' | 'medium' | 'high' | 'urgent'
+  created_by?: 'agent' | 'staff' | 'message' | string
   created_at: string
 }
 
 /** 获取工单列表（支持状态筛选+分页） */
 export function getTicketList(params: { page?: number; page_size?: number; status?: string }) {
-  return request.get<{ items: Ticket[]; total: number; page: number; page_size: number }>(
+  return request.get<{ items: Ticket[]; total: number; page: number; page_size: number; status_counts?: Record<string, number> }>(
     '/ticket/list',
     { params }
+  )
+}
+
+/** 按服务端状态机推进工单，非法越级会返回 409。 */
+export function transitionTicket(ticketId: number, status: Ticket['status']) {
+  return request.post<{ ticket_no: string; status: Ticket['status'] }>(
+    `/ticket/${ticketId}/transition`,
+    { status },
   )
 }
 
@@ -33,6 +42,7 @@ export interface CreateTicketBody {
   description?: string
   priority?: string
   category?: string
+  client_request_id?: string
 }
 
 export function createTicket(body: CreateTicketBody) {

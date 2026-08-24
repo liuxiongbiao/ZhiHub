@@ -11,6 +11,11 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import ElementPlus from 'element-plus'
 
 vi.mock('@/api/tenant', () => ({ getTenantHome: vi.fn() }))
+vi.mock('@/api/notification', () => ({
+  getUnreadCount: vi.fn().mockResolvedValue({ data: { count: 0 } }),
+  getNotifications: vi.fn().mockResolvedValue({ data: { items: [] } }),
+  markNotificationRead: vi.fn().mockResolvedValue({ data: {} }),
+}))
 vi.mock('element-plus', async (o) => {
   const a = await o<typeof import('element-plus')>()
   return { ...a, ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }

@@ -1,229 +1,64 @@
-<!-- frontend/src/views/agent-report/DeepAgentReport.vue -->
-<!-- 职责: DeepAgent开放任务 - 发起报告生成/查看执行步骤/查看报告 -->
 <template>
-  <div class="deep-agent-report">
-    <h2>DeepAgent 报告生成</h2>
-    <p class="hint">输入任务目标，DeepAgent 自动规划并执行多步分析</p>
+  <div>
+    <PageHeader title="运营分析助手" subtitle="把分散的运营数据整理成发现、风险和下一步行动" />
+    <div class="page-container report-layout">
+      <aside class="task-sidebar surface-card">
+        <div class="sidebar-head"><div><p class="eyebrow">RECENT BRIEFS</p><h2>最近分析</h2></div><el-button circle size="small" :loading="historyLoading" @click="loadHistory">↻</el-button></div>
+        <div class="task-list"><button v-for="task in tasks" :key="task.task_id" type="button" :class="{ active: selected?.task_id === task.task_id }" @click="selectTask(task)"><span class="task-state" :class="task.status"></span><span><strong>{{ task.goal }}</strong><small>{{ formatTime(task.created_at) }} · {{ statusText(task.status) }}</small></span><b>→</b></button><div v-if="!historyLoading && !tasks.length" class="task-empty">还没有分析记录</div></div>
+      </aside>
 
-    <!-- 输入区 -->
-    <div class="input-area">
-      <el-input
-        v-model="goal"
-        placeholder="例如：生成本周工单积压分析报告"
-        size="large"
-        clearable
-        :disabled="loading"
-        @keyup.enter="handleExecute"
-      >
-        <template #append>
-          <el-button type="primary" :loading="loading" @click="handleExecute">执行</el-button>
+      <main class="report-main">
+        <section class="prompt-card surface-card">
+          <div class="prompt-copy"><p class="eyebrow">ASK FOR AN OUTCOME</p><h1>这次想看清什么？</h1><p>描述业务目标即可，助手会自动规划要查哪些数据、核对哪些规则，并形成可执行简报。</p></div>
+          <div class="preset-grid"><button v-for="preset in presets" :key="preset" type="button" :disabled="loading" @click="goal=preset">{{ preset }}</button></div>
+          <div class="prompt-input"><el-input v-model="goal" size="large" maxlength="500" placeholder="例如：分析本周工单积压与退款风险" :disabled="loading" @keyup.enter="handleExecute"><template #append><el-button type="primary" :loading="loading" @click="handleExecute">开始分析</el-button></template></el-input></div>
+        </section>
+
+        <section v-if="loading" class="analysis-running surface-card"><div class="radar"><i></i><i></i><span>枢</span></div><div><strong>运营分析助手正在工作</strong><p>正在规划步骤、查询业务信号并核对知识规则。你可以留在本页等待，任务会保留在左侧历史中。</p></div></section>
+
+        <template v-if="selected">
+          <section class="result-head surface-card"><div><p class="eyebrow">ANALYSIS RESULT</p><h1>{{ selected.goal }}</h1><div class="result-meta"><el-tag :type="statusType(selected.status)">{{ statusText(selected.status) }}</el-tag><span v-if="selected.total_elapsed_ms" class="mono-data">{{ formatDuration(selected.total_elapsed_ms) }}</span><span>{{ selected.steps?.length || 0 }} 个分析步骤</span></div></div><el-button v-if="selected.report" plain @click="downloadReport">下载 Markdown</el-button></section>
+
+          <el-alert v-if="selected.error" :title="selected.error" type="error" show-icon />
+
+          <section v-if="selected.steps?.length" class="reasoning-card surface-card"><div class="card-head"><div><p class="eyebrow">WORK LOG</p><h2>分析过程</h2><p>默认展示业务过程；技术动作与资源预算可在专家信息中查看。</p></div></div><div class="reasoning-steps"><article v-for="(step,index) in selected.steps" :key="step.step"><span class="step-number mono-data">0{{ index+1 }}</span><div><strong>{{ step.label }}</strong><p>{{ step.observation || '该步骤已完成。' }}</p><details><summary>为什么做这一步</summary><p>{{ step.thought || '根据前一步结果继续分析。' }}</p><code v-if="step.action">{{ step.action }}{{ step.action_input ? ` · ${step.action_input}` : '' }}</code></details></div><small class="mono-data">{{ step.elapsed_ms || 0 }}ms</small></article></div></section>
+
+          <section v-if="selected.report" class="report-card surface-card"><div class="card-head"><div><p class="eyebrow">ACTION BRIEF</p><h2>运营行动简报</h2></div></div><div class="report-content"><template v-for="(block,index) in reportBlocks" :key="index"><h2 v-if="block.level===1">{{ block.text }}</h2><h3 v-else-if="block.level===2">{{ block.text }}</h3><p v-else-if="block.level===3" class="report-list"><span>•</span>{{ block.text }}</p><p v-else>{{ block.text }}</p></template></div><el-collapse class="expert-info"><el-collapse-item title="专家信息"><dl><div><dt>任务 ID</dt><dd class="mono-data">{{ selected.task_id }}</dd></div><div><dt>Token 使用</dt><dd class="mono-data">{{ formatNumber(selected.token_consumed) }} / {{ formatNumber(selected.token_budget) }}</dd></div><div v-if="selected.termination_reason"><dt>终止原因</dt><dd>{{ terminationText(selected.termination_reason) }}</dd></div></dl></el-collapse-item></el-collapse></section>
         </template>
-      </el-input>
-    </div>
 
-    <!-- 执行中 -->
-    <div v-if="loading" class="loading-area">
-      <el-icon class="is-loading"><span>⏳</span></el-icon>
-      <span>DeepAgent 正在执行中...</span>
-    </div>
-
-    <!-- 结果区 -->
-    <div v-if="result" class="result-area">
-      <div class="execution-summary">
-        <el-tag :type="statusType(result.status)">{{ statusText(result.status) }}</el-tag>
-        <span>Token：{{ formatNumber(result.token_consumed) }} / {{ formatNumber(result.token_budget) }}</span>
-        <span v-if="result.termination_reason">终止原因：{{ terminationText(result.termination_reason) }}</span>
-      </div>
-      <!-- 执行步骤 -->
-      <div class="steps-section">
-        <h4>执行步骤 ({{ result.total_elapsed_ms }}ms)</h4>
-        <el-steps :active="result.steps?.length" align-center>
-          <el-step
-            v-for="s in result.steps"
-            :key="s.step"
-            :title="s.label"
-            :description="`${s.elapsed_ms}ms`"
-          />
-        </el-steps>
-
-        <!-- 步骤详情 -->
-        <el-collapse style="margin-top: 16px">
-          <el-collapse-item v-for="s in result.steps" :key="s.step" :title="`Step ${s.step}: ${s.label}`">
-            <pre class="step-detail">{{ JSON.stringify(s.result, null, 2) }}</pre>
-          </el-collapse-item>
-        </el-collapse>
-      </div>
-
-      <!-- 报告 -->
-      <div v-if="result.report" class="report-section">
-        <div class="report-head">
-          <h4>分析报告</h4>
-          <el-button size="small" @click="downloadReport(result.report, 'deep-agent-report.md')">下载报告</el-button>
-        </div>
-        <div class="report-content" v-html="renderMarkdown(result.report)"></div>
-      </div>
-
-      <!-- 错误 -->
-      <el-alert v-if="result.error" :title="result.error" type="error" show-icon />
-    </div>
-
-    <!-- 规格 013 审查 -2：历史任务查询（GET /agent/deep-task/{id}） -->
-    <el-card shadow="never" class="history-card">
-      <template #header><span class="section-title">查询历史任务</span></template>
-      <div class="history-row">
-        <el-input v-model="taskId" placeholder="输入任务 ID（如 deep-xxxxxxxxxxxx）" style="width: 320px" />
-        <el-button type="primary" :loading="querying" @click="handleQueryTask">查询</el-button>
-      </div>
-      <el-alert v-if="queryError" :title="queryError" type="error" show-icon class="query-error" />
-      <div v-if="taskResult?.report" class="report-section">
-        <div class="report-head">
-          <h4>历史报告</h4>
-          <el-button size="small" @click="downloadReport(taskResult.report, `deep-agent-${taskId}.md`)">下载报告</el-button>
-        </div>
-        <div class="report-content" v-html="renderMarkdown(taskResult.report)"></div>
-      </div>
-      <div v-if="taskResult" class="execution-summary history-summary">
-        <el-tag :type="statusType(taskResult.status)">{{ statusText(taskResult.status) }}</el-tag>
-        <span>Token：{{ formatNumber(taskResult.token_consumed) }} / {{ formatNumber(taskResult.token_budget) }}</span>
-        <span v-if="taskResult.termination_reason">终止原因：{{ terminationText(taskResult.termination_reason) }}</span>
-      </div>
-      <el-alert v-if="taskResult?.error" :title="taskResult.error" type="error" show-icon />
-    </el-card>
-
-    <!-- 快捷预设 -->
-    <div class="presets">
-      <h4>快捷预设</h4>
-      <el-button v-for="p in presets" :key="p" size="small" @click="goal = p" :disabled="loading">
-        {{ p }}
-      </el-button>
+        <section v-else-if="!loading" class="report-empty surface-card"><span>↗</span><h2>选择一个目标，生成第一份行动简报</h2><p>演示租户已准备好一份“本周工单积压与退款风险”报告，也可以直接运行上方预设。</p></section>
+      </main>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import request from '@/api/request'
-
-/** 下载报告为 Markdown 文件（PRD §3.11） */
-function downloadReport(text: string, filename: string) {
-  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
+import { createDeepTask, getDeepTask, getDeepTasks, type DeepTask } from '@/api/agent'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const goal = ref('')
 const loading = ref(false)
-const result = ref<any>(null)
-const taskId = ref('')
-const querying = ref(false)
-const queryError = ref('')
-const taskResult = ref<any>(null)
+const historyLoading = ref(false)
+const tasks = ref<DeepTask[]>([])
+const selected = ref<DeepTask | null>(null)
 const MAX_POLL_MS = 11 * 60 * 1000
-
-function formatNumber(value: number | undefined): string {
-  return Number(value || 0).toLocaleString('zh-CN')
-}
-
-function statusText(status: string): string {
-  return ({ pending: '等待中', running: '执行中', completed: '已完成', failed: '失败', truncated: '已熔断' } as Record<string, string>)[status] || status
-}
-
-function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
-  if (status === 'completed') return 'success'
-  if (status === 'failed') return 'danger'
-  if (status === 'truncated') return 'warning'
-  return 'info'
-}
-
-function terminationText(reason: string): string {
-  return ({ token_budget: 'Token 预算耗尽', timeout: '执行超时', tool_limit: '工具调用次数达到上限', execution_error: '执行异常' } as Record<string, string>)[reason] || reason
-}
-
-/** 快捷预设任务目标列表 */
-const presets = [
-  '生成本周工单积压分析报告',
-  '分析本月订单退款趋势',
-  '总结合约客户常见问题',
-]
-
-/** 极简 Markdown 渲染（换行/标题/列表项） */
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-/** 极简 Markdown 渲染（换行/标题/列表项），先 HTML 转义再替换，防存储型 XSS */
-function renderMarkdown(text: string): string {
-  return escapeHtml(text)
-    .replace(/\n/g, '<br>')
-    .replace(/## (.+)/g, '<h4>$1</h4>')
-    .replace(/- (.+)/g, '• $1')
-}
-
-/** 提交任务目标，调 /agent/deep-task 执行并展示结果 */
-async function handleExecute() {
-  if (!goal.value.trim()) return
-  loading.value = true
-  result.value = null
-  try {
-    // RabbitMQ 不可用时接口会同步降级执行，客户端超时需覆盖后端 10 分钟墙钟上限。
-    const res = await request.post('/agent/deep-task', { goal: goal.value.trim() }, { timeout: MAX_POLL_MS })
-    // DeepAgent 为 Celery 异步任务：轮询至终态，覆盖后端 10 分钟墙钟上限。
-    let current = res.data
-    const deadline = Date.now() + MAX_POLL_MS
-    while ((current.status === 'pending' || current.status === 'running') && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 3000))
-      const q = await request.get(`/agent/deep-task/${current.task_id}`, { timeout: 10000 })
-      current = q.data
-    }
-    result.value = current
-  } catch (e: any) {
-    ElMessage.error(e?.message || '执行失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-/** 查询历史 DeepAgent 任务（GET /agent/deep-task/{id}，按租户隔离） */
-async function handleQueryTask() {
-  if (!taskId.value.trim()) { ElMessage.warning('请输入任务 ID'); return }
-  querying.value = true
-  queryError.value = ''
-  taskResult.value = null
-  try {
-    const res = await request.get(`/agent/deep-task/${taskId.value.trim()}`)
-    taskResult.value = res.data
-    if (!res.data?.report) ElMessage.info('任务存在但尚未生成报告')
-  } catch (e: any) {
-    if (e?.status === 404) queryError.value = '任务不存在或已过期'
-    else queryError.value = e?.message || '查询失败'
-  } finally { querying.value = false }
-}
+const presets = ['分析本周工单积压与退款风险', '找出近 30 天低置信问题并提出补知识建议', '总结本月自动解决率变化与人工接管原因']
+const reportBlocks = computed(() => (selected.value?.report || '').split('\n').map((line) => line.trim()).filter(Boolean).map((line) => line.startsWith('# ') ? { level: 1, text: line.slice(2) } : line.startsWith('## ') ? { level: 2, text: line.slice(3) } : /^[-*]\s/.test(line) ? { level: 3, text: line.replace(/^[-*]\s+/, '').replace(/\*\*/g,'') } : /^\d+\.\s/.test(line) ? { level: 3, text: line.replace(/^\d+\.\s+/, '').replace(/\*\*/g,'') } : { level: 0, text: line.replace(/\*\*/g,'') }))
+function formatNumber(value?: number) { return Number(value || 0).toLocaleString('zh-CN') }
+function formatDuration(ms?: number) { if (!ms) return '—'; return ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s` }
+function formatTime(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit' }) : '刚刚' }
+function statusText(value: string) { return ({ pending:'等待中',running:'分析中',completed:'已完成',failed:'失败',truncated:'已安全停止' } as Record<string,string>)[value] || value }
+function statusType(value: string): 'success'|'warning'|'danger'|'info' { return value === 'completed' ? 'success' : value === 'failed' ? 'danger' : value === 'truncated' ? 'warning' : 'info' }
+function terminationText(value: string) { return ({ token_budget:'资源预算已用完',timeout:'分析超时',tool_limit:'业务查询次数达到上限',execution_error:'执行异常' } as Record<string,string>)[value] || value }
+async function loadHistory() { historyLoading.value = true; try { tasks.value = (await getDeepTasks()).data.items; if (!selected.value && tasks.value.length) selected.value = tasks.value[0] } catch (error: any) { ElMessage.error(error?.message || '加载历史分析失败') } finally { historyLoading.value = false } }
+async function selectTask(task: DeepTask) { try { selected.value = (await getDeepTask(task.task_id)).data } catch (error: any) { ElMessage.error(error?.message || '加载分析结果失败') } }
+async function handleExecute() { if (!goal.value.trim()) { ElMessage.warning('请先描述分析目标'); return } loading.value = true; try { let current = (await createDeepTask(goal.value.trim())).data; selected.value = current; const deadline = Date.now()+MAX_POLL_MS; while (['pending','running'].includes(current.status) && Date.now()<deadline) { await new Promise((resolve)=>setTimeout(resolve,3000)); current = (await getDeepTask(current.task_id)).data; selected.value=current } if (['pending','running'].includes(current.status)) ElMessage.warning('任务仍在后台运行，可稍后从左侧历史打开'); else ElMessage.success('运营行动简报已生成'); await loadHistory() } catch (error: any) { ElMessage.error(error?.message || '分析执行失败') } finally { loading.value=false } }
+function downloadReport() { if (!selected.value?.report) return; const blob=new Blob([selected.value.report],{type:'text/markdown;charset=utf-8'}); const url=URL.createObjectURL(blob); const link=document.createElement('a'); link.href=url; link.download=`zhihub-ops-${selected.value.task_id}.md`; link.click(); URL.revokeObjectURL(url) }
+onMounted(loadHistory)
 </script>
 
 <style scoped>
-.deep-agent-report { max-width: 900px; margin: 20px auto; padding: 20px; }
-.hint { color: #999; font-size: 13px; margin-bottom: 16px; }
-.input-area { margin-bottom: 20px; }
-.loading-area { text-align: center; padding: 40px; font-size: 16px; color: #666; }
-.result-area { margin-top: 24px; }
-.execution-summary { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; color: #606266; font-size: 13px; }
-.history-summary { margin-top: 16px; }
-.steps-section { margin-bottom: 24px; }
-.step-detail { font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; }
-.report-section { margin-top: 24px; }
-.report-head { display: flex; align-items: center; justify-content: space-between; }
-.report-content { background: #fafafa; padding: 20px; border-radius: 8px; line-height: 1.8; }
-.presets { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; }
-.presets h4 { margin-bottom: 8px; }
-.presets .el-button { margin: 4px; }
+.report-layout { display: grid; grid-template-columns: 250px minmax(0,1fr); gap: 15px; align-items: start; }.task-sidebar { position: sticky; top: 18px; max-height: calc(100vh - 110px); overflow: hidden; padding: 16px 10px; }.sidebar-head,.card-head { display:flex;justify-content:space-between;align-items:flex-start;padding:0 5px;}.sidebar-head h2,.card-head h2{margin-top:4px;font-size:17px}.task-list{max-height:calc(100vh - 185px);overflow-y:auto;margin-top:12px}.task-list button{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:start;width:100%;padding:12px 8px;text-align:left;color:var(--zh-text-primary);background:transparent;border:0;border-top:1px solid var(--zh-border-light);border-radius:9px;cursor:pointer}.task-list button.active{background:var(--zh-primary-bg)}.task-state{width:7px;height:7px;margin-top:4px;background:var(--zh-amber);border-radius:50%}.task-state.completed{background:var(--zh-signal)}.task-state.failed{background:var(--zh-coral)}.task-list button>span:nth-child(2){display:grid;min-width:0}.task-list strong{display:-webkit-box;overflow:hidden;font-size:10px;line-height:1.5;-webkit-box-orient:vertical;-webkit-line-clamp:2}.task-list small{margin-top:4px;color:var(--zh-text-secondary);font-size:8px}.task-list b{color:var(--zh-text-placeholder);font-size:9px}.task-empty{padding:35px 10px;color:var(--zh-text-secondary);font-size:9px;text-align:center}.report-main{display:grid;gap:14px}.prompt-card{padding:25px;background:linear-gradient(135deg,#fffefa,#f2faf7)}.prompt-copy h1{margin:5px 0;font-size:25px;letter-spacing:-.035em}.prompt-copy>p:not(.eyebrow){color:var(--zh-text-regular);font-size:11px}.preset-grid{display:flex;flex-wrap:wrap;gap:7px;margin:17px 0 12px}.preset-grid button{padding:7px 9px;color:var(--zh-text-regular);font-size:9px;background:#fff;border:1px solid #dbe6e2;border-radius:8px;cursor:pointer}.preset-grid button:hover{color:var(--zh-primary);border-color:var(--zh-primary)}.analysis-running{display:flex;gap:20px;align-items:center;padding:26px}.analysis-running strong{font-size:14px}.analysis-running p{margin-top:5px;color:var(--zh-text-secondary);font-size:9px;line-height:1.7}.radar{position:relative;display:grid;place-items:center;width:62px;height:62px;flex:0 0 auto;background:var(--zh-primary-bg);border-radius:50%}.radar i{position:absolute;inset:0;border:1px solid var(--zh-primary);border-radius:50%;animation:ripple 2s infinite}.radar i:nth-child(2){animation-delay:1s}.radar span{z-index:1;display:grid;place-items:center;width:29px;height:29px;color:#fff;font-size:10px;font-weight:800;background:var(--zh-primary);border-radius:9px}.result-head{display:flex;justify-content:space-between;gap:20px;align-items:center;padding:23px}.result-head h1{max-width:720px;margin:5px 0 9px;font-size:22px;letter-spacing:-.025em}.result-meta{display:flex;gap:9px;align-items:center;color:var(--zh-text-secondary);font-size:9px}.reasoning-card,.report-card{padding:22px}.card-head>div>p:last-child:not(.eyebrow){margin-top:4px;color:var(--zh-text-secondary);font-size:9px}.reasoning-steps{margin-top:15px}.reasoning-steps article{display:grid;grid-template-columns:auto 1fr auto;gap:12px;padding:15px 5px;border-top:1px solid var(--zh-border-light)}.step-number{display:grid;place-items:center;width:28px;height:28px;color:#fff;font-size:8px;background:var(--zh-primary);border-radius:9px}.reasoning-steps strong{font-size:11px}.reasoning-steps article>div>p{margin-top:4px;color:var(--zh-text-regular);font-size:9px;line-height:1.6}.reasoning-steps article>small{color:var(--zh-text-placeholder);font-size:8px}.reasoning-steps details{margin-top:7px}.reasoning-steps summary{color:var(--zh-primary);font-size:8px;cursor:pointer}.reasoning-steps details p{margin-top:5px;color:var(--zh-text-secondary);font-size:8px}.reasoning-steps code{display:block;margin-top:5px;padding:5px;color:#496067;font:8px "Cascadia Code",monospace;background:#f1f4f2;border-radius:5px}.report-content{margin-top:18px;padding:4px 6px 12px}.report-content h2{margin:20px 0 9px;font-size:22px}.report-content h3{margin:17px 0 8px;font-size:15px}.report-content p{margin:7px 0;color:var(--zh-text-regular);font-size:11px;line-height:1.8}.report-list{display:flex;gap:8px}.report-list span{color:var(--zh-primary);font-weight:900}.expert-info{margin-top:8px}.expert-info dl div{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--zh-border-light);font-size:9px}.expert-info dt{color:var(--zh-text-secondary)}.report-empty{display:grid;justify-items:center;padding:65px 20px;text-align:center}.report-empty>span{display:grid;place-items:center;width:52px;height:52px;color:var(--zh-primary);font-size:20px;background:var(--zh-primary-bg);border-radius:17px}.report-empty h2{margin-top:14px;font-size:16px}.report-empty p{max-width:520px;margin-top:6px;color:var(--zh-text-secondary);font-size:9px;line-height:1.7}@keyframes ripple{to{transform:scale(1.35);opacity:0}}@media(max-width:850px){.report-layout{grid-template-columns:1fr}.task-sidebar{position:static;max-height:300px}.task-list{max-height:220px}}
 </style>

@@ -46,8 +46,18 @@ from app.services.audit_service import log_audit
 from app.utils.validators import validate_password_strength, validate_phone
 
 
-# 配置向导步骤（PRD §3.1）：basic → knowledge → mcp → team → done，有序推进
+# 持久化状态保持原有五态；渠道作为上线条件与 team 一起在最后一步校验，
+# 避免给历史租户和已有 API 契约引入一次不必要的数据迁移。
 WIZARD_STEPS = ["basic", "knowledge", "mcp", "team", "done"]
+WIZARD_CHECK_STEPS = ["basic", "knowledge", "mcp", "team", "channel", "done"]
+WIZARD_META = {
+    "basic": ("企业信息", "确认企业名称与套餐", "/settings"),
+    "knowledge": ("知识准备", "至少一份文档已完成解析并可检索", "/knowledge/list"),
+    "mcp": ("业务能力", "订单与工单工具链可用", "/demo-center"),
+    "team": ("人工团队", "至少一名坐席可以接管会话", "/onboarding/members"),
+    "channel": ("客户入口", "生成 Widget API Key 与嵌入通道", "/widget/config"),
+    "done": ("投入使用", "全部关键能力已就绪", "/"),
+}
 
 # 邀请 token 有效期：7 天（PRD §3.1 邀请链接带过期）
 INVITE_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -88,6 +98,10 @@ class TenantNotFound(TenantError):
 
 class WizardAlreadyDone(TenantError):
     """向导已完成，不可再推进 -> 409。"""
+
+
+class WizardStepIncomplete(TenantError):
+    """当前步骤尚未通过真实能力检查 -> 409。"""
 
 
 class SeatLimitExceeded(TenantError):
@@ -144,6 +158,51 @@ def require_message_allowed_tenant(db: Session, tenant_id: int):
     return tenant
 
 
+def _wizard_checks(db: Session, tenant: Tenant) -> list[dict]:
+    """按真实数据计算每一步就绪状态，不以“点击过下一步”代替配置完成。"""
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.tenant_member import TenantMember
+
+    ready_docs = db.query(KnowledgeDocument.id).filter(
+        KnowledgeDocument.tenant_id == tenant.id,
+        KnowledgeDocument.status == "ready",
+        KnowledgeDocument.is_latest.is_(True),
+        KnowledgeDocument.quality_status == "ready",
+    ).count()
+    agents = db.query(TenantMember.id).filter(
+        TenantMember.tenant_id == tenant.id,
+        TenantMember.role == "agent",
+    ).count()
+    ready = {
+        "basic": bool(tenant.name.strip() and tenant.plan_type),
+        "knowledge": ready_docs > 0,
+        "mcp": settings.agent_tool_mode in {"mcp", "fc"},
+        "team": agents > 0,
+        "channel": bool(tenant.widget_api_key_hash),
+    }
+    ready["done"] = all(ready.values())
+    details = {
+        "basic": f"企业：{tenant.name} · 套餐：{tenant.plan_type}",
+        "knowledge": f"{ready_docs} 份可检索文档" if ready_docs else "尚无可检索文档",
+        "mcp": "内置订单/工单工具链已启用" if ready["mcp"] else "业务工具链未启用",
+        "team": f"{agents} 名坐席已加入" if agents else "尚未邀请坐席",
+        "channel": "Widget 通道已生成" if ready["channel"] else "尚未生成 Widget API Key",
+        "done": "系统已具备对外服务条件" if ready["done"] else "仍有步骤需要完成",
+    }
+    checks = []
+    for step in WIZARD_CHECK_STEPS:
+        label, description, action_path = WIZARD_META[step]
+        checks.append({
+            "step": step,
+            "label": label,
+            "description": description,
+            "ready": ready[step],
+            "detail": details[step],
+            "action_path": action_path,
+        })
+    return checks
+
+
 def get_wizard_status(db: Session, tenant_id: int) -> dict:
     """查询向导状态：当前步骤 + 完成度 + 步骤全表。
 
@@ -157,15 +216,22 @@ def get_wizard_status(db: Session, tenant_id: int) -> dict:
     tenant = tenant_crud.get_by_id(db, tenant_id)
     if tenant is None:
         raise TenantNotFound("租户不存在")
+    checks = _wizard_checks(db, tenant)
     return {
         "current_step": tenant.wizard_step,
         "completed": tenant.wizard_step == WIZARD_STEPS[-1],
         "total_steps": len(WIZARD_STEPS),
         "steps": list(WIZARD_STEPS),
+        "checks": checks,
     }
 
 
-def advance_wizard(db: Session, tenant_id: int) -> dict:
+def advance_wizard(
+    db: Session,
+    tenant_id: int,
+    *,
+    enforce_checks: bool = False,
+) -> dict:
     """推进向导到下一步。
 
     校验: 当前步骤必须在 WIZARD_STEPS 中且非最后一步；done 不可再推进。
@@ -189,6 +255,18 @@ def advance_wizard(db: Session, tenant_id: int) -> dict:
     idx = WIZARD_STEPS.index(tenant.wizard_step)
     if idx == len(WIZARD_STEPS) - 1:
         raise WizardAlreadyDone("配置向导已完成")
+    if enforce_checks:
+        checks = _wizard_checks(db, tenant)
+        current_checks = [
+            item for item in checks
+            if item["step"] == tenant.wizard_step
+            or (tenant.wizard_step == "team" and item["step"] == "channel")
+        ]
+        incomplete = next((item for item in current_checks if not item["ready"]), None)
+        if incomplete:
+            raise WizardStepIncomplete(
+                f"{incomplete['label']}尚未完成：{incomplete['detail']}"
+            )
     tenant.wizard_step = WIZARD_STEPS[idx + 1]
     # PRD §2.1 审计日志: 向导推进落库（同事务）
     log_audit(

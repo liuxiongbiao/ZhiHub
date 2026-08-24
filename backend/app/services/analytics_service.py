@@ -146,6 +146,43 @@ def track_event(
         return False
 
 
+def replace_demo_events(tenant_id: int, events: list[dict[str, Any]]) -> int:
+    """原子替换当前租户由演示基线生成的事件。
+
+    仅非生产环境可调用；删除条件同时包含 tenant_id 与 demo_seed 标记，绝不
+    触碰真实交互产生的事件。Mongo 不可用时返回 0，不影响演示租户的关系库数据。
+    """
+    if settings.app_env == "production":
+        return 0
+    try:
+        collection = _get_collection()
+        _ensure_indexes(collection)
+        collection.delete_many(
+            {"tenant_id": int(tenant_id), "properties.demo_seed": True}
+        )
+        documents = []
+        for event in events:
+            name = event.get("event_name")
+            if name not in ALLOWED_EVENTS:
+                continue
+            properties = dict(event.get("properties") or {})
+            properties["demo_seed"] = True
+            documents.append(
+                {
+                    "event_name": name,
+                    "tenant_id": int(tenant_id),
+                    "properties": _sanitize(properties),
+                    "occurred_at": event.get("occurred_at") or _utcnow(),
+                }
+            )
+        if documents:
+            collection.insert_many(documents, ordered=True)
+        return len(documents)
+    except Exception as exc:
+        logger.warning("Demo analytics replacement failed: %s", exc)
+        return 0
+
+
 def _load_events(tenant_id: int | None, since: datetime) -> tuple[list[dict], bool]:
     query: dict[str, Any] = {"occurred_at": {"$gte": since}}
     if tenant_id is not None:
@@ -173,6 +210,18 @@ def _as_float(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    """无第三方依赖的线性百分位计算，空集合返回 0。"""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * percentile
+    lower = int(index)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = index - lower
+    return round(ordered[lower] * (1 - weight) + ordered[upper] * weight, 1)
 
 
 def _event_day(event: dict) -> str:
@@ -283,6 +332,89 @@ def _average_csat(db: DbSession, tenant_id: int | None, since: datetime) -> floa
     return round(_as_float(db.execute(stmt).scalar()), 2)
 
 
+def _operational_counts(db: DbSession, tenant_id: int | None) -> dict:
+    """读取首页需要的可行动信号；平台视图按全平台聚合。"""
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.order import Order
+    from app.models.refund_approval import RefundApproval
+    from app.models.session import Session
+    from app.models.tenant import Tenant
+    from app.models.usage_record import UsageRecord
+
+    def scoped_count(model, predicate=None):
+        stmt = select(func.count()).select_from(model)
+        if tenant_id is not None and hasattr(model, "tenant_id"):
+            stmt = stmt.where(model.tenant_id == tenant_id)
+        if predicate is not None:
+            stmt = stmt.where(predicate)
+        return int(db.execute(stmt).scalar() or 0)
+
+    active_sessions = scoped_count(
+        Session, Session.status.in_(["created", "routing", "agent_handling", "waiting_human", "human_handling"])
+    )
+    waiting_human = scoped_count(Session, Session.status == "waiting_human")
+    knowledge_issues = scoped_count(
+        KnowledgeDocument,
+        (KnowledgeDocument.status == "failed")
+        | KnowledgeDocument.quality_status.in_(["pending_review", "expired"]),
+    )
+
+    refund_stmt = (
+        select(func.count())
+        .select_from(RefundApproval)
+        .join(Order, Order.id == RefundApproval.order_id)
+        .where(RefundApproval.status == "pending")
+    )
+    if tenant_id is not None:
+        refund_stmt = refund_stmt.where(Order.tenant_id == tenant_id)
+    pending_refunds = int(db.execute(refund_stmt).scalar() or 0)
+
+    quota_used = quota_total = 0
+    if tenant_id is not None:
+        tenant = db.query(Tenant).filter_by(id=tenant_id).first()
+        if tenant is not None:
+            quota_total = int(tenant.quota_conversations_per_month or 0)
+        month_start = date.today().replace(day=1)
+        quota_used = int(db.execute(
+            select(func.sum(UsageRecord.conversation_count)).where(
+                UsageRecord.tenant_id == tenant_id,
+                UsageRecord.date >= month_start,
+            )
+        ).scalar() or 0)
+    quota_percent = round(quota_used / quota_total * 100, 1) if quota_total else 0.0
+    return {
+        "active_sessions": active_sessions,
+        "waiting_human": waiting_human,
+        "pending_refunds": pending_refunds,
+        "knowledge_issues": knowledge_issues,
+        "quota_used": quota_used,
+        "quota_total": quota_total,
+        "quota_usage_percent": quota_percent,
+    }
+
+
+def _attention_items(counts: dict) -> list[dict]:
+    definitions = (
+        ("waiting_human", "等待人工接管", "/agent/console", "high"),
+        ("pending_refunds", "待审批退款", "/order/refunds", "high"),
+        ("knowledge_issues", "知识文档需处理", "/knowledge/list", "medium"),
+    )
+    items = [
+        {"kind": key, "title": title, "count": counts[key], "path": path, "severity": severity}
+        for key, title, path, severity in definitions
+        if counts.get(key, 0) > 0
+    ]
+    if counts.get("quota_usage_percent", 0) >= 80:
+        items.append({
+            "kind": "quota",
+            "title": "本月配额接近上限",
+            "count": counts["quota_usage_percent"],
+            "path": "/billing/usage",
+            "severity": "medium",
+        })
+    return items
+
+
 def get_overview(
     db: DbSession,
     *,
@@ -302,6 +434,12 @@ def get_overview(
     resolution_total = resolved_auto + resolved_human
     mcp_events = [event for event in events if event.get("event_name") == "mcp_tool_called"]
     mcp_success = sum(1 for event in mcp_events if event.get("properties", {}).get("success"))
+    retrieval_latencies = [
+        _as_float(event.get("properties", {}).get("latency"))
+        for event in events
+        if event.get("event_name") == "retrieval_executed"
+    ]
+    operational = _operational_counts(db, tenant_id)
 
     recent = []
     for event in events[:20]:
@@ -327,6 +465,8 @@ def get_overview(
             "mcp_success_rate": round(mcp_success / len(mcp_events) * 100, 1) if mcp_events else 0,
             "approval_latency_seconds": approval_average,
             "security_blocks": sum(1 for event in events if event.get("event_name") == "security_block"),
+            "retrieval_p95_ms": _percentile(retrieval_latencies, 0.95),
+            **operational,
         },
         "retrieval_comparison": _retrieval_comparison(events),
         "resolution_trend": resolution,
@@ -334,4 +474,84 @@ def get_overview(
         "plan_distribution": _plan_distribution(db, tenant_id),
         "revenue_trend": _revenue_trend(db, tenant_id, since),
         "recent_events": recent,
+        "attention_items": _attention_items(operational),
+    }
+
+
+def get_knowledge_quality(
+    db: DbSession,
+    *,
+    tenant_id: int,
+    days: int = 30,
+) -> dict:
+    """把文档健康与真实检索信号合并为面向运营人员的知识质量摘要。"""
+    from app.models.knowledge_document import KnowledgeDocument
+
+    now = _utcnow()
+    docs = db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.tenant_id == tenant_id,
+        KnowledgeDocument.is_latest.is_(True),
+    ).all()
+    events, event_store_available = _load_events(tenant_id, now - timedelta(days=days - 1))
+    retrievals = [e for e in events if e.get("event_name") == "retrieval_executed"]
+    scores = [
+        _as_float(e.get("properties", {}).get("hybrid_top_score"))
+        for e in retrievals
+        if e.get("properties", {}).get("hybrid_top_score") is not None
+    ]
+    latencies = [_as_float(e.get("properties", {}).get("latency")) for e in retrievals]
+    low = []
+    for event in retrievals:
+        props = event.get("properties", {})
+        score = props.get("confidence")
+        if score is None:
+            score = props.get("hybrid_top_score")
+        if props.get("low_confidence") or (
+            score is not None and _as_float(score) < 0.3
+        ):
+            low.append(event)
+    status_counts = {
+        "total": len(docs),
+        "ready": sum(1 for d in docs if d.status == "ready" and d.quality_status == "ready"),
+        "processing": sum(1 for d in docs if d.status in {"pending", "processing"}),
+        "failed": sum(1 for d in docs if d.status == "failed"),
+        "pending_review": sum(1 for d in docs if d.quality_status == "pending_review"),
+        "expired": sum(1 for d in docs if d.quality_status == "expired"),
+        "chunks": sum(int(d.chunk_count or 0) for d in docs),
+    }
+    readiness = status_counts["ready"] / status_counts["total"] if status_counts["total"] else 0
+    confidence = min(1.0, (sum(scores) / len(scores)) / 0.8) if scores else 0
+    quality_score = round((readiness * 55 + confidence * 45), 0)
+    recommendations = []
+    if not docs:
+        recommendations.append({"title": "上传第一份业务文档", "path": "/knowledge/list", "severity": "high"})
+    if status_counts["failed"] or status_counts["pending_review"]:
+        recommendations.append({"title": "处理失败或待复核文档", "path": "/knowledge/list", "severity": "high"})
+    if low:
+        recommendations.append({"title": "用低置信问题补充同义表达", "path": "/knowledge/search-test", "severity": "medium"})
+    if not recommendations:
+        recommendations.append({"title": "使用示例问题持续验证回答质量", "path": "/knowledge/search-test", "severity": "low"})
+
+    missed_queries = []
+    for event in low[:8]:
+        props = event.get("properties", {})
+        missed_queries.append({
+            "query": props.get("query", "低置信问题"),
+            "confidence": round(_as_float(props.get("confidence") or props.get("hybrid_top_score")), 3),
+            "occurred_at": event.get("occurred_at").isoformat() + "Z" if isinstance(event.get("occurred_at"), datetime) else "",
+        })
+    return {
+        "generated_at": now.isoformat() + "Z",
+        "days": days,
+        "event_store_available": event_store_available,
+        "quality_score": quality_score,
+        "documents": status_counts,
+        "retrieval": {
+            "executions": len(retrievals),
+            "average_confidence": round(sum(scores) / len(scores), 3) if scores else 0,
+            "low_confidence_count": len(low),
+            "p95_latency_ms": _percentile(latencies, 0.95),
+        },
+        "missed_queries": missed_queries,
+        "recommendations": recommendations,
     }

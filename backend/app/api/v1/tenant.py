@@ -79,10 +79,12 @@ def _map_tenant_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, tenant_service.InvalidPlanChange):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, (tenant_service.WizardAlreadyDone, tenant_service.WizardStepIncomplete)):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, tenant_service.TenantCancellationConflict):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     # TenantError 基类（入参校验等）→ 422
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
 
 @router.get("/home", response_model=TenantHomeResponse)
@@ -278,7 +280,11 @@ def wizard_status(request: Request, db: Session = Depends(get_db)):
 def wizard_advance(request: Request, db: Session = Depends(get_db)):
     """推进配置向导到下一步（有序不可跳步）。仅 admin。done 再推进 -> 409。"""
     try:
-        return WizardStatusResponse(**tenant_service.advance_wizard(db, request.state.tenant_id))
+        return WizardStatusResponse(**tenant_service.advance_wizard(
+            db,
+            request.state.tenant_id,
+            enforce_checks=True,
+        ))
     except tenant_service.TenantError as e:
         raise _map_tenant_error(e) from e
 
@@ -377,23 +383,61 @@ def list_audit_logs(
 
 
 # ────────── 企业版审批（PRD §3.1 #17）──────────
+def _require_platform_token(request: Request) -> None:
+    """平台运营令牌与租户登录态双重校验。"""
+    import secrets as _secrets
+
+    from app.config import settings as _settings
+
+    supplied = request.headers.get("X-Platform-Token", "")
+    if not _settings.platform_ops_token or not _secrets.compare_digest(
+        supplied, _settings.platform_ops_token
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="仅平台运营可执行此操作",
+        )
+
+
+@router.get(
+    "/enterprise/pending",
+)
+def list_pending_enterprise(request: Request, db: Session = Depends(get_db)):
+    """列出待审批/待议价企业版租户，使用独立平台令牌跨租户鉴权。"""
+    from sqlalchemy import or_
+
+    _require_platform_token(request)
+    tenants = db.query(Tenant).filter(or_(
+        Tenant.status == "pending_review",
+        Tenant.pending_plan_type == "enterprise",
+    )).order_by(Tenant.created_at.asc()).limit(200).all()
+    return {
+        "items": [
+            {
+                "tenant_id": item.id,
+                "tenant_name": item.name,
+                "status": item.status,
+                "current_plan": item.plan_type,
+                "pending_plan": item.pending_plan_type,
+                "created_at": item.created_at,
+            }
+            for item in tenants
+        ],
+        "total": len(tenants),
+    }
+
+
 @router.post(
     "/enterprise/approve",
     response_model=EnterpriseApproveResponse,
 )
 def approve_enterprise(body: EnterpriseApproveRequest, request: Request, db: Session = Depends(get_db)):
-    """企业版审批（#17）: admin 审批 pending_review 租户 -> active。
+    """企业版审批（#17）: 平台运营审批 pending_review 租户 -> active。
 
-    仅 admin 角色可调用（require_role("admin") 路由级声明）。
+    这是跨租户平台操作，不绑定任意租户登录态；仅接受独立平台运营令牌。
     非 pending_review 状态 -> 409，租户不存在 -> 404。
     """
-    import secrets as _secrets
-
-    from app.config import settings as _settings
-    expected = _settings.platform_ops_token
-    supplied = request.headers.get("X-Platform-Token", "")
-    if not expected or not _secrets.compare_digest(supplied, expected):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅平台运营可执行企业版审批")
+    _require_platform_token(request)
     try:
         result = tenant_service.approve_enterprise(db, body.tenant_id)
     except tenant_service.TenantError as e:

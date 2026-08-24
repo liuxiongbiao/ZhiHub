@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { launch, newPage, apiJson } = require('./e2e-helper.cjs');
 
@@ -26,9 +27,20 @@ async function apiJsonRetry(path, opts = {}) {
   }
 }
 
+async function demoLogin(persona, fallbackPhone, fallbackPassword) {
+  const quick = await apiJsonRetry('/auth/login/demo', {
+    method: 'POST', body: { persona },
+  }).catch(() => null);
+  if (quick && quick.status === 200 && quick.data && quick.data.access_token) return quick;
+  return apiJsonRetry('/auth/login', {
+    method: 'POST', body: { phone: fallbackPhone, password: fallbackPassword },
+  });
+}
+
 const BASE = process.env.E2E_BASE || 'http://localhost';
 const API = process.env.E2E_API || 'http://localhost:8000';
 const SHOTS = path.join(__dirname, 'e2e-shots');
+fs.mkdirSync(SHOTS, { recursive: true });
 const CUSTOMER_PORT = 19997;
 const CUSTOMER_ORIGIN = `http://127.0.0.1:${CUSTOMER_PORT}`;
 // 固定幂等键：重复 E2E 不新增重复退款/工单
@@ -62,9 +74,14 @@ function collectPageErrors(page, label) {
 // 演示身份（demo seed 内固定）
 const ADMIN_PHONE = '13900000000';
 const AGENT1_PHONE = '13900000001';
-// 演示密码：seed 幂等不会重置已存在账号的密码，E2E 用固定演示密码（仅本地演示环境）
-const adminPw = process.env.DEMO_E2E_PASSWORD || 'DemoE2E@Passw0rd';
-const agentPw = adminPw;
+// 快速 persona 登录是默认通道；seed 仍需要密码用于兼容性回退。
+// 未显式配置时每次运行随机生成，避免在源码中留下通用演示口令。
+function randomE2ePassword(prefix) {
+  return `${prefix}!9${crypto.randomBytes(15).toString('base64url')}aA`;
+}
+const sharedPw = process.env.DEMO_E2E_PASSWORD;
+const adminPw = process.env.DEMO_E2E_ADMIN_PASSWORD || sharedPw || randomE2ePassword('ZhAdmin');
+const agentPw = process.env.DEMO_E2E_AGENT_PASSWORD || sharedPw || randomE2ePassword('ZhAgent');
 
 function composeExec(args) {
   const repo = path.resolve(__dirname, '..', '..', '..');
@@ -87,7 +104,7 @@ function runSeed(args = []) {
     runSeed(); // 仅幂等补齐（含 --reset-passwords 保证固定密码可用）
   } else {
     runSeed(['--claim-legacy']);
-    const adminLogin0 = await apiJsonRetry('/auth/login', { method: 'POST', body: { phone: ADMIN_PHONE, password: adminPw } }).catch(() => null);
+    const adminLogin0 = await demoLogin('admin', ADMIN_PHONE, adminPw).catch(() => null);
     const adminToken0 = adminLogin0 && adminLogin0.data && adminLogin0.data.access_token;
     if (adminToken0) {
       const home = await apiJsonRetry('/tenant/home', { token: adminToken0 });
@@ -98,7 +115,7 @@ function runSeed(args = []) {
   }
 
   // ── admin 登录 → token ──
-  const adminLogin = await apiJsonRetry('/auth/login', { method: 'POST', body: { phone: ADMIN_PHONE, password: adminPw } });
+  const adminLogin = await demoLogin('admin', ADMIN_PHONE, adminPw);
   const adminToken = adminLogin.data.access_token;
   if (!adminToken) throw new Error('demo admin login failed');
 
@@ -205,7 +222,7 @@ function runSeed(args = []) {
 
     // 剧本 4/7: 特殊赔偿问题（知识库故意无答案）→ 转人工
     await customerAsk('我收到的商品运输中破损了，你们能额外赔偿我 500 元吗？');
-    const waitingHint = await customer.locator('.zhihub-widget-status', { hasText: '转接人工' }).count();
+    const waitingHint = await customer.locator('.zhihub-widget-status').filter({ hasText: /人工队列|转接人工|预计等待/ }).count();
     record('P03-SCENE-7-HANDOFF', waitingHint > 0, `waitingHint=${waitingHint > 0}`);
     await customer.screenshot({ path: path.join(SHOTS, 'p03-scene7-handoff.png'), fullPage: true });
 
@@ -217,12 +234,17 @@ function runSeed(args = []) {
 
     // 剧本 9-11: 客服登录 → 按 session_id 认领（不认领第一条）→ 回复 → 客户实时收到
     await agent.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
-    const aInputs = agent.locator('input');
-    await aInputs.nth(0).fill(AGENT1_PHONE);
-    await aInputs.nth(1).fill(agentPw);
-    await agent.locator('button:visible', { hasText: '登录' }).click();
+    const quickAgent = agent.locator('.persona-button', { hasText: '一线坐席' });
+    if (await quickAgent.count()) {
+      await quickAgent.click();
+    } else {
+      const aInputs = agent.locator('input');
+      await aInputs.nth(0).fill(AGENT1_PHONE);
+      await aInputs.nth(1).fill(agentPw);
+      await agent.locator('button:visible', { hasText: '登录' }).click();
+    }
     await agent.waitForTimeout(2000);
-    const queueRow = agent.locator('.el-table__row').filter({ hasText: String(sessionId) }).first();
+    const queueRow = agent.locator('.session-item').filter({ hasText: `#${sessionId}` }).first();
     await queueRow.waitFor({ timeout: 20000 }).catch(() => {});
     const queueSeen = await queueRow.count();
     record('P03-SCENE-9-AGENT-QUEUE-BY-ID', queueSeen > 0, `rowForSession=${queueSeen > 0}`);
@@ -238,7 +260,7 @@ function runSeed(args = []) {
     await agent.screenshot({ path: path.join(SHOTS, 'p03-agent-claimed.png'), fullPage: true });
 
     // 剧本 5/12: 客服代客户创建退款 + 工单（固定幂等键，同租户重复提交返回首次结果）
-    const agentLogin = await apiJsonRetry('/auth/login', { method: 'POST', body: { phone: AGENT1_PHONE, password: agentPw } });
+    const agentLogin = await demoLogin('agent1', AGENT1_PHONE, agentPw);
     const agentToken = agentLogin.data.access_token;
     const refundBody = {
       order_no: 'ORD-DEMO-0005', phone: '13911112222', amount: 50.0,

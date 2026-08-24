@@ -16,6 +16,7 @@ const { mocks, msg } = vi.hoisted(() => ({
     createTicket: vi.fn(),
     getWidgetEmbedCode: vi.fn(),
     getWidgetConfig: vi.fn(),
+    getDemoStatus: vi.fn(),
   },
   msg: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }))
@@ -25,6 +26,7 @@ vi.mock('@/api/tenant', () => ({
   getWidgetEmbedCode: mocks.getWidgetEmbedCode,
   getWidgetConfig: mocks.getWidgetConfig,
 }))
+vi.mock('@/api/demo', () => ({ getDemoStatus: mocks.getDemoStatus }))
 vi.mock('element-plus', async (o) => {
   const a = await o<typeof import('element-plus')>()
   return { ...a, ElMessage: msg }
@@ -46,6 +48,7 @@ beforeEach(() => {
   mocks.getWidgetConfig.mockResolvedValue({
     data: { tenant_id: 1, theme_color: '#123456', logo_url: 'https://cdn.example.com/logo.png', welcome_text: '欢迎', domains: [] },
   })
+  mocks.getDemoStatus.mockResolvedValue({ data: { is_demo: false, widget_api_key: null } })
   delete (window as any).ZhiHubWidget
 })
 

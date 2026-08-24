@@ -6,7 +6,7 @@ backend/app/main.py
 核心设计:
   - 中间件链入站顺序: AccessLog -> Auth -> Tenant -> RateLimit（-> CORS -> 路由）
   - Starlette add_middleware 后注册者在外层先执行入站，故注册顺序需逆序写
-  - lifespan 生命周期: 知识库消费者、建表兜底、空闲会话收尾三个 startup 任务
+  - lifespan 生命周期: 建表兜底与 WebSocket 跨进程订阅；业务任务统一交给 Celery
 
   注册代码顺序（从先到后）:
     1. CORSMiddleware   -- 最先注册 = 最内层，最后执行入站
@@ -43,13 +43,12 @@ from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import get_db
 from app.config import settings
-from app.core.rabbitmq import consume_knowledge_tasks
-from app.tasks.knowledge_tasks import process_document
 
 from app.api.v1 import agent as agent_router
 from app.api.v1 import analytics as analytics_router
 from app.api.v1 import auth as auth_router
 from app.api.v1 import billing as billing_router
+from app.api.v1 import demo as demo_router
 from app.api.v1 import knowledge as knowledge_router
 from app.api.v1 import notification as notification_router
 from app.api.v1.mcp import server as mcp_router
@@ -99,17 +98,6 @@ def _configure_logging() -> None:
 
 
 _configure_logging()
-
-
-# 知识库异步消费: 后台线程消费 RabbitMQ knowledge_processing 队列
-def _run_knowledge_consumer() -> None:
-    """后台消费知识库处理队列，崩溃后 5s 自动重连。"""
-    while True:
-        try:
-            consume_knowledge_tasks(process_document)
-        except Exception as e:
-            logger.warning(f"Knowledge consumer crashed, retrying in 5s: {e}")
-            time.sleep(5)
 
 
 # 空闲会话定时收尾（规格 007）: 每 5min 跑一次
@@ -275,6 +263,7 @@ app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["a
 app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(knowledge_router.router, prefix="/api/v1/knowledge", tags=["knowledge"])
 app.include_router(billing_router.router, prefix="/api/v1/billing", tags=["billing"])
+app.include_router(demo_router.router, prefix="/api/v1/demo", tags=["demo"])
 app.include_router(mcp_router.router, prefix="/api/v1/mcp", tags=["mcp"])
 app.include_router(notification_router.router, prefix="/api/v1/notifications", tags=["notifications"])
 app.include_router(order_router.router, prefix="/api/v1/order", tags=["order"])

@@ -111,6 +111,14 @@
   form.appendChild(send);
   box.appendChild(form);
 
+  var leaveAction = document.createElement('button');
+  leaveAction.type = 'button';
+  leaveAction.className = 'zhihub-widget-leave-message';
+  leaveAction.textContent = '暂时离开，给客服留言';
+  leaveAction.style.cssText = 'display:none;width:100%;padding:8px;border:0;border-top:1px solid #eee;' +
+    'color:#8a641d;background:#fff8e8;font-size:12px;cursor:pointer;';
+  box.appendChild(leaveAction);
+
   var btn = document.createElement('button');
   btn.textContent = '在线咨询';
   btn.className = 'zhihub-widget-launcher';
@@ -125,6 +133,8 @@
   var wsRetries = 0;
   var sending = false;         // 发送中锁：防重复提交
   var seenMsgIds = {};         // WS 消息按 message_id 去重（重连补发/重复事件不重复展示）
+  var typingTimer = null;
+  var lastUserText = '';
 
   /** 应用主题色: 头部/发送/启动按钮/用户气泡同步换色 */
   function applyTheme(color) {
@@ -159,6 +169,11 @@
       'background:' + bg + ';color:' + (role === 'user' ? '#fff' : '#333') + ';text-align:left;';
     b.textContent = text;
     p.appendChild(b);
+    var timestamp = document.createElement('div');
+    timestamp.className = 'zhihub-widget-message-time';
+    timestamp.style.cssText = 'margin-top:2px;color:#9aa3a6;font-size:9px;';
+    timestamp.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    p.appendChild(timestamp);
     log.appendChild(p);
     log.scrollTop = log.scrollHeight;
     return b;
@@ -176,6 +191,21 @@
   function showStatus(text) {
     status.textContent = text;
     status.style.display = text ? 'block' : 'none';
+  }
+
+  function showLeaveAction(visible) {
+    leaveAction.style.display = visible ? 'block' : 'none';
+  }
+
+  function sendTyping(isTyping) {
+    if (!session || !ws || ws.readyState !== 1) return;
+    try {
+      ws.send(JSON.stringify({
+        type: 'typing',
+        session_id: session.session_id,
+        is_typing: Boolean(isTyping),
+      }));
+    } catch (e) { /* 输入状态失败不影响消息 */ }
   }
 
   function post(path, body, token) {
@@ -257,6 +287,7 @@
     closeWs();
     session = null;
     seenMsgIds = {};
+    showLeaveAction(false);
     showStatus(reason || '会话已过期，请重新发送消息开始新会话');
   }
 
@@ -332,15 +363,22 @@
       return;
     }
     if (type === 'waiting_human') {
-      showStatus('正在为您转接人工客服，请稍候…');
+      var wait = Number(p.estimated_wait_minutes || 0);
+      var queue = Number(p.queue_length || 0);
+      showStatus(wait > 0
+        ? '已进入人工队列，前方 ' + Math.max(0, queue - 1) + ' 位，预计约 ' + wait + ' 分钟'
+        : '正在为您转接人工客服，请稍候…');
+      showLeaveAction(Number(p.online_agents || 0) === 0 || wait >= 5);
       return;
     }
     if (type === 'human_claimed') {
       showStatus('人工客服已接入');
+      showLeaveAction(false);
       return;
     }
     if (type === 'human_returned') {
       showStatus('已转回智能助手继续为您服务');
+      showLeaveAction(false);
       return;
     }
     if (type === 'session_ended') {
@@ -372,12 +410,43 @@
     if (!open) input.focus();
   });
 
+  input.addEventListener('input', function () {
+    if (!session) return;
+    sendTyping(Boolean(input.value.trim()));
+    if (typingTimer) clearTimeout(typingTimer);
+    typingTimer = setTimer(function () { sendTyping(false); }, 1200);
+  });
+
+  input.addEventListener('blur', function () { sendTyping(false); });
+
+  leaveAction.addEventListener('click', function () {
+    if (!session) return;
+    leaveAction.disabled = true;
+    leaveAction.textContent = '正在提交…';
+    var content = lastUserText
+      ? '请客服稍后联系我。最近问题：' + lastUserText.slice(0, 500)
+      : '请客服稍后联系我处理当前问题。';
+    post('/' + session.session_id + '/leave-message', { content: content }, session.token)
+      .then(function (res) {
+        if (res.status !== 201 && res.status !== 200) throw new Error(res.data.detail || '留言失败');
+        showStatus('留言已提交，客服会通过工单继续跟进');
+        showLeaveAction(false);
+      })
+      .catch(function (err) { showStatus((err && err.message) || '留言失败，请稍后重试'); })
+      .finally(function () {
+        leaveAction.disabled = false;
+        leaveAction.textContent = '暂时离开，给客服留言';
+      });
+  });
+
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     var text = input.value.trim();
     // 发送中锁: 请求未返回前禁止重复提交
     if (!text || sending) return;
     sending = true;
+    lastUserText = text;
+    sendTyping(false);
     send.disabled = true;
     send.textContent = '发送中';
     input.value = '';
@@ -434,6 +503,8 @@
     wsRetries = 0;
     session = null;
     seenMsgIds = {};
+    if (typingTimer) clearTimeout(typingTimer);
+    typingTimer = null;
     sending = false;
     if (root && root.parentNode) root.parentNode.removeChild(root);
   }

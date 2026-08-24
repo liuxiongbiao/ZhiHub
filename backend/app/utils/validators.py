@@ -11,6 +11,7 @@ backend/app/utils/validators.py
   validate_phone()     -> 正则 ^1[3-9]\d{9}$，不匹配抛 ValueError
   validate_password_strength()
     ├─ 长度 < 8       -> ValueError
+    ├─ UTF-8 > 72字节 -> ValueError（bcrypt 上限，防静默截断）
     ├─ 纯数字/纯字母  -> ValueError
     ├─ 在弱密码黑名单 -> ValueError（password、88888888、12345678 等）
     └─ 含连续6字符    -> ValueError（如 abcdefg、1234567）
@@ -66,6 +67,8 @@ def validate_password_strength(pw: str) -> None:
     """密码强度校验，不合法抛 ValueError（含具体原因）。"""
     if pw is None or len(pw) < 8:
         raise ValueError("密码长度至少 8 位")
+    if len(pw.encode("utf-8")) > 72:
+        raise ValueError("密码 UTF-8 编码后不能超过 72 字节")
     if not re.search(r"[A-Za-z]", pw) or not re.search(r"\d", pw):
         raise ValueError("密码需同时包含字母和数字")
     if pw.lower() in _WEAK_PASSWORDS:

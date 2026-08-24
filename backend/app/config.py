@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     email_enabled: bool = False
     # development 环境是否允许验证码/激活链接回显（Docker NAT 下无法按来源 IP 区分本机）
     dev_allow_code_reveal: bool = False
+    # 演示环境免密角色切换。必须显式开启，且 production 会在启动时强制拒绝，
+    # 避免把便捷演示入口误带到真实环境。
+    demo_quick_login_enabled: bool = False
 
     # 计费调度器运行方式（true=backend 进程内 daemon 线程，false=Celery beat 负责）
     in_process_scheduler: bool = True
@@ -263,6 +266,8 @@ class Settings(BaseSettings):
             and not self._is_external_https_url(self.email_verify_link_base)
         ):
             missing.append("EMAIL_VERIFY_LINK_BASE (external HTTPS URL)")
+        if self.app_env == "production" and self.demo_quick_login_enabled:
+            missing.append("DEMO_QUICK_LOGIN_ENABLED (must be false in production)")
         if missing:
             raise ValueError("enabled features have missing configuration: " + ", ".join(missing))
         return self

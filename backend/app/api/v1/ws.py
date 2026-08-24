@@ -119,7 +119,12 @@ async def agent_workstation(websocket: WebSocket) -> None:
         mark_agent_offline(tenant_id, user_id)
 
 
-async def _handle_client_message(data: str, tenant_id: int, user_id: int | None = None) -> None:
+async def _handle_client_message(
+    data: str,
+    tenant_id: int,
+    user_id: int | None = None,
+    session_id: int | None = None,
+) -> None:
     """解析客户端 WS 消息，识别 typing 事件并广播给同租户坐席。
 
     消息格式: {"type": "typing", "session_id": 123, "is_typing": true}
@@ -140,15 +145,16 @@ async def _handle_client_message(data: str, tenant_id: int, user_id: int | None 
         return
 
     if msg.get("type") == "typing":
+        resolved_session_id = session_id if session_id is not None else msg.get("session_id")
         # 广播输入状态给同租户坐席工作台
         await manager.broadcast_to_tenant(tenant_id, {
             "type": "typing",
             "payload": {
-                "session_id": msg.get("session_id"),
+                "session_id": resolved_session_id,
                 "is_typing": bool(msg.get("is_typing", False)),
             },
             # 旧版调用方兼容；ConnectionManager 会统一输出 envelope。
-            "session_id": msg.get("session_id"),
+            "session_id": resolved_session_id,
             "is_typing": bool(msg.get("is_typing", False)),
         })
 
@@ -191,7 +197,14 @@ async def end_user_session(websocket: WebSocket, session_id: int) -> None:
     await manager.connect_session(websocket, session_id)
     try:
         while True:
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            # Widget/终端用户只能广播自己当前会话的输入状态，session_id 由
+            # 已校验的 URL 强制覆盖，不能通过消息体伪造同租户其他会话。
+            await _handle_client_message(
+                data,
+                int(tenant_id),
+                session_id=session_id,
+            )
     except WebSocketDisconnect:
         pass
     finally:

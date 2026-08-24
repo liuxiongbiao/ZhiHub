@@ -4,7 +4,7 @@ backend/app/schemas/auth.py
 职责: 注册/登录/登出/验证码/邮箱/密码找回/绑定 请求体与响应 Pydantic 模型（Pydantic v2）
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RegisterRequest(BaseModel):
@@ -39,6 +39,25 @@ class LoginResponse(BaseModel):
     tenant_id: int
     role: str
     phone: str | None = None
+
+
+class DemoLoginRequest(BaseModel):
+    """演示环境快速登录：只接受固定角色代号，不接收账号或密码。"""
+
+    model_config = ConfigDict(extra="forbid")
+    persona: str = Field(..., pattern="^(admin|agent1|agent2)$")
+
+
+class PublicCapabilitiesResponse(BaseModel):
+    """公开能力状态；只暴露布尔开关，不返回凭据、地址或内部环境名。"""
+
+    password_login: bool = True
+    email_login: bool = False
+    sms_login: bool = False
+    wechat_login: bool = False
+    payment: bool = False
+    demo_quick_login: bool = False
+    demo_personas: list[str] = Field(default_factory=list)
 
 
 class MessageResponse(BaseModel):

@@ -41,6 +41,7 @@ export interface SearchTestResponse {
   hyde_fallback: boolean
   empty_knowledge: boolean
   elapsed_ms: number
+  timings_ms?: Record<string, number>
 }
 
 export interface RebuildResponse {

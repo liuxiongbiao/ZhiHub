@@ -1,6 +1,7 @@
 """契约测试： 电商演示租户 seed（幂等 / 重置 / 环境限制 / 租户隔离 / API 可查）。"""
 
 import pytest
+from sqlalchemy import text
 
 from app.crud import tenant as tenant_crud
 from app.models.order import Order
@@ -48,6 +49,9 @@ class TestDemoSeed:
     def test_seed_idempotent_two_runs(self, demo_env):
         from app.demo import demo_seed
         db = demo_env["db"]
+
+        # 对齐真实 MySQL：强制启用 SQLite 外键，覆盖 CSAT -> message 的清理顺序。
+        db.execute(text("PRAGMA foreign_keys=ON"))
 
         r1 = demo_seed.seed(db=db)
         r2 = demo_seed.seed(db=db)

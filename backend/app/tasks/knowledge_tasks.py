@@ -22,7 +22,7 @@ backend/app/tasks/knowledge_tasks.py
   - 临时文件: 上传时写入 tempfile，处理完删除。文件内容不存数据库（demo 简化）。
 
 依赖关系:
-  - 上游: app/core/rabbitmq.py consume_knowledge_tasks（消息驱动）
+  - 上游: app/core/rabbitmq.py publish_knowledge_task（Celery + RabbitMQ 消息驱动）
   - 下游: app.core.embedding_client（embedding/ES/Milvus）、app.crud.knowledge、
           app.utils.file_parser（解析切片）
 """

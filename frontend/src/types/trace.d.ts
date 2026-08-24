@@ -3,8 +3,9 @@
 
 /** 单步执行记录 */
 export interface TraceStep {
-  step: 'router' | 'retrieval' | 'agent' | 'generation'
+  step: 'router' | 'retrieval' | 'agent' | 'tool' | 'safety' | 'handoff' | 'generation'
   label: string
+  technical_label?: string
   intent?: string
   confidence?: number
   sentiment?: string
@@ -15,6 +16,7 @@ export interface TraceStep {
   agent_type?: string
   answer_preview?: string
   sources_count?: number
+  observation?: string
   elapsed_ms?: number | null
 }
 

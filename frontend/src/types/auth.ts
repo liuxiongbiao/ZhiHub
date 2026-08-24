@@ -87,6 +87,17 @@ export interface MessageResponse {
   message: string
 }
 
+export type DemoPersona = 'admin' | 'agent1' | 'agent2'
+
+export interface LoginOptionsResponse {
+  email_login: boolean
+  sms_login: boolean
+  wechat_login: boolean
+  payment: boolean
+  demo_quick_login: boolean
+  demo_personas: DemoPersona[]
+}
+
 export interface RefreshResponse {
   access_token: string
   refresh_token: string

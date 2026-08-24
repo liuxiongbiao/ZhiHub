@@ -53,8 +53,13 @@ describe('KnowledgeList.vue', () => {
           'el-select': { template: '<select><slot /></select>' },
           'el-option': { template: '<option><slot /></option>' },
           'el-pagination': { template: '<div />' },
+          'el-icon': { template: '<span><slot /></span>' },
+          'el-progress': { template: '<div />' },
+          'el-tag': { template: '<span><slot /></span>' },
+          'el-card': { template: '<section><slot name="header" /><slot /></section>' },
           StatusTag: { template: '<span />' },
         },
+        directives: { loading: () => undefined },
       },
     })
 
@@ -81,8 +86,13 @@ describe('KnowledgeList.vue', () => {
           'el-select': { template: '<select><slot /></select>' },
           'el-option': { template: '<option><slot /></option>' },
           'el-pagination': { template: '<div />' },
+          'el-icon': { template: '<span><slot /></span>' },
+          'el-progress': { template: '<div />' },
+          'el-tag': { template: '<span><slot /></span>' },
+          'el-card': { template: '<section><slot name="header" /><slot /></section>' },
           StatusTag: { template: '<span />' },
         },
+        directives: { loading: () => undefined },
       },
     })
 

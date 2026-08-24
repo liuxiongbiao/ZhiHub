@@ -177,6 +177,14 @@ class RefreshResult:
     role: str
 
 
+DEMO_PERSONA_PHONES = {
+    "admin": "13900000000",
+    "agent1": "13900000001",
+    "agent2": "13900000002",
+}
+DEMO_PERSONA_ROLES = {"admin": "admin", "agent1": "agent", "agent2": "agent"}
+
+
 def _refresh_digest(raw_token: str) -> str:
     """对 refresh token 做单向 SHA-256，数据库永不保存可用凭证原文。"""
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
@@ -210,6 +218,72 @@ def issue_token_pair(
         subject=str(user_id), extra_claims={"tenant_id": tenant_id, "role": role}
     )
     return access, raw_refresh, token_family
+
+
+def demo_quick_login(db: Session, *, persona: str) -> LoginResult:
+    """为当前 active 演示租户签发角色令牌。
+
+    安全边界：功能需显式开启、仅 development/test/demo 可用，并同时校验租户
+    ``is_demo``、active 状态、固定手机号和精确成员角色。任一条件不满足都拒绝，
+    不会退化为普通账号免密登录。
+    """
+    if not settings.demo_quick_login_enabled or settings.app_env not in {
+        "development", "test", "demo",
+    }:
+        raise InvalidCredentials("演示快速登录不可用")
+    phone = DEMO_PERSONA_PHONES.get(persona)
+    expected_role = DEMO_PERSONA_ROLES.get(persona)
+    if not phone or not expected_role:
+        raise InvalidCredentials("演示身份不存在")
+
+    from app.models.tenant import Tenant
+    from app.models.tenant_member import TenantMember
+
+    user = user_crud.get_by_phone(db, phone)
+    if user is None:
+        raise InvalidCredentials("演示身份不存在")
+    row = (
+        db.query(TenantMember, Tenant)
+        .join(Tenant, Tenant.id == TenantMember.tenant_id)
+        .filter(
+            TenantMember.user_id == user.id,
+            TenantMember.role == expected_role,
+            Tenant.is_demo.is_(True),
+            Tenant.status == "active",
+        )
+        .first()
+    )
+    if row is None:
+        raise InvalidCredentials("演示身份不存在")
+    member, tenant = row
+    access, refresh_token, _ = issue_token_pair(
+        db,
+        user_id=user.id,
+        tenant_id=tenant.id,
+        role=member.role,
+    )
+    if member.role == "agent":
+        from app.services.session_service import mark_agent_online
+
+        mark_agent_online(tenant.id, user.id)
+    log_audit(
+        db,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        action="demo_quick_login",
+        target_type="user",
+        target_id=user.id,
+        detail=f"persona={persona}",
+    )
+    db.commit()
+    return LoginResult(
+        access_token=access,
+        refresh_token=refresh_token,
+        user_id=user.id,
+        tenant_id=tenant.id,
+        role=member.role,
+        phone=user.phone,
+    )
 
 
 def refresh(db: Session, *, refresh_token: str) -> RefreshResult:

@@ -6,7 +6,7 @@ backend/app/schemas/session.py
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ────────── 会话创建 ──────────
@@ -66,6 +66,8 @@ class SendMessageResponse(BaseModel):
 # ────────── 会话列表 ──────────
 class SessionItem(BaseModel):
     """会话列表项：状态、意图、情绪、消息数、时间。"""
+    model_config = ConfigDict(from_attributes=True)
+
     session_id: int
     status: str
     intent: str | None = None
@@ -73,10 +75,6 @@ class SessionItem(BaseModel):
     message_count: int = 0
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class SessionListResponse(BaseModel):
     """会话列表分页响应。"""
@@ -89,15 +87,13 @@ class SessionListResponse(BaseModel):
 # ────────── 会话详情 ──────────
 class MessageItem(BaseModel):
     """消息项：消息 ID、角色、内容、引用来源、时间。"""
+    model_config = ConfigDict(from_attributes=True)
+
     message_id: int
     role: str
     content: str
     sources: list[SourceItem] | None = None
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class SessionDetailResponse(BaseModel):
     """会话详情响应：状态、意图、情绪、消息列表。"""

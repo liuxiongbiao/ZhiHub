@@ -21,6 +21,7 @@ backend/app/services/session_service.py
 
 import json
 import logging
+import re
 import time
 
 from sqlalchemy.orm import Session as DbSession
@@ -33,6 +34,11 @@ from app.crud import session as session_crud
 from app.models.session import Session
 
 logger = logging.getLogger(__name__)
+
+_ORDER_NO_RE = re.compile(r"\bORD-[A-Za-z0-9-]{3,26}\b", re.IGNORECASE)
+_TICKET_NO_RE = re.compile(r"\bTK-[A-Za-z0-9-]{3,26}\b", re.IGNORECASE)
+_PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+_LAST4_RE = re.compile(r"(?:后四位|尾号)\s*[:：]?\s*(\d{4})")
 
 # Redis 上下文键前缀 + TTL
 CONTEXT_KEY_PREFIX = "session:context:"
@@ -194,6 +200,49 @@ def has_online_agent(tenant_id: int) -> bool:
     return any(redis_client.ttl(key) > 0 for key in redis_client.scan_iter(prefix, count=10))
 
 
+def online_agent_count(tenant_id: int) -> int:
+    """返回仍在 TTL 内的在线坐席数；Redis 故障时保守返回 0。"""
+    try:
+        prefix = f"{ONLINE_AGENTS_PREFIX}{tenant_id}:*"
+        redis_client = get_redis()
+        return sum(1 for key in redis_client.scan_iter(prefix, count=20) if redis_client.ttl(key) > 0)
+    except Exception:
+        return 0
+
+
+def estimate_wait_minutes(db: DbSession, tenant_id: int) -> dict:
+    """根据当前队列、在线坐席和近期人工会话耗时估算等待时间。"""
+    waiting = db.query(Session).filter(
+        Session.tenant_id == tenant_id,
+        Session.status == "waiting_human",
+    ).count()
+    online = online_agent_count(tenant_id)
+    recent = (
+        db.query(Session)
+        .filter(
+            Session.tenant_id == tenant_id,
+            Session.assignee_id.is_not(None),
+            Session.status.in_(["resolved", "closed"]),
+        )
+        .order_by(Session.updated_at.desc())
+        .limit(30)
+        .all()
+    )
+    durations = [
+        max(60.0, (item.updated_at - item.created_at).total_seconds())
+        for item in recent
+        if item.updated_at and item.created_at and item.updated_at >= item.created_at
+    ]
+    average_seconds = sum(durations) / len(durations) if durations else 4 * 60
+    capacity = max(online, 1)
+    estimate = max(1, round((max(waiting, 1) / capacity) * average_seconds / 60))
+    return {
+        "estimated_wait_minutes": min(estimate, 60),
+        "queue_length": waiting,
+        "online_agents": online,
+    }
+
+
 def cleanup_expired_agent_presence() -> int:
     """兜底清除异常的无 TTL presence 及旧版 Set key；正常过期 key 由 Redis 自动删除。"""
     redis_client = get_redis()
@@ -261,6 +310,104 @@ def get_session_detail(
             }
             for m in messages
         ],
+    }
+
+
+def get_session_business_context(
+    db: DbSession,
+    *,
+    session_id: int,
+    tenant_id: int,
+) -> dict:
+    """从当前会话中提取业务编号，并返回可安全操作的订单/工单上下文。
+
+    只按会话文本里明确出现的业务编号查询，不用“最近一单”猜测客户身份；
+    手机号最多回传尾号，坐席发起资金操作时仍必须重新输入完整号码完成双因子校验。
+    """
+    from app.models.order import Order
+    from app.models.refund_approval import RefundApproval
+    from app.models.ticket import Ticket
+
+    session = session_crud.get_by_id(db, session_id, tenant_id)
+    if session is None:
+        raise SessionNotFound(f"会话不存在: {session_id}")
+    messages = session_crud.get_messages(db, session_id)
+    text = "\n".join(
+        message.content[:2000]
+        for message in messages[-40:]
+        if message.role in {"user", "assistant", "agent"}
+    )
+    order_numbers = _ORDER_NO_RE.findall(text)
+    ticket_numbers = _TICKET_NO_RE.findall(text)
+    full_phones = _PHONE_RE.findall(text)
+    last4_values = _LAST4_RE.findall(text)
+    phone_last4 = (
+        full_phones[-1][-4:]
+        if full_phones
+        else (last4_values[-1] if last4_values else None)
+    )
+
+    order = None
+    if order_numbers:
+        order = db.query(Order).filter(
+            Order.tenant_id == tenant_id,
+            Order.order_no == order_numbers[-1].upper(),
+        ).first()
+    ticket = None
+    if ticket_numbers:
+        ticket = db.query(Ticket).filter(
+            Ticket.tenant_id == tenant_id,
+            Ticket.ticket_no == ticket_numbers[-1].upper(),
+        ).first()
+    refunds = []
+    if order is not None:
+        refunds = db.query(RefundApproval).filter(
+            RefundApproval.order_id == order.id
+        ).order_by(RefundApproval.created_at.desc()).limit(5).all()
+
+    return {
+        "session_id": session_id,
+        "detected": {
+            "order_no": order_numbers[-1].upper() if order_numbers else None,
+            "ticket_no": ticket_numbers[-1].upper() if ticket_numbers else None,
+            "phone_last4": phone_last4,
+        },
+        "order": None if order is None else {
+            "id": order.id,
+            "order_no": order.order_no,
+            "amount": float(order.amount),
+            "paid_amount": float(order.paid_amount),
+            "status": order.status,
+            "tracking_no": order.tracking_no,
+            "created_by": order.created_by,
+        },
+        "ticket": None if ticket is None else {
+            "id": ticket.id,
+            "ticket_no": ticket.ticket_no,
+            "title": ticket.title,
+            "status": ticket.status,
+            "priority": ticket.priority,
+        },
+        "refunds": [
+            {
+                "id": item.id,
+                "amount": float(item.amount),
+                "reason": item.reason,
+                "status": item.status,
+                "created_at": item.created_at,
+            }
+            for item in refunds
+        ],
+        "actions": {
+            "can_create_ticket": True,
+            "can_request_refund": bool(
+                order is not None
+                and order.status in {"paid", "shipped"}
+                and not any(item.status in {"pending", "refunding"} for item in refunds)
+            ),
+            "can_ship": bool(order is not None and order.status == "paid"),
+            "requires_phone_verification": True,
+        },
     }
 
 

@@ -34,6 +34,22 @@ export function sendMessage(sessionId: number, content: string) {
   return request.post<SendMessageResponse>('/session/message', { session_id: sessionId, content })
 }
 
+export interface SessionBusinessContext {
+  session_id: number
+  detected: { order_no: string | null; ticket_no: string | null; phone_last4: string | null }
+  order: null | {
+    id: number; order_no: string; amount: number; paid_amount: number
+    status: string; tracking_no?: string | null; created_by?: string
+  }
+  ticket: null | { id: number; ticket_no: string; title: string; status: string; priority: string }
+  refunds: Array<{ id: number; amount: number; reason?: string; status: string; created_at: string }>
+  actions: { can_create_ticket: boolean; can_request_refund: boolean; can_ship: boolean; requires_phone_verification: boolean }
+}
+
+export function getSessionBusinessContext(sessionId: number) {
+  return request.get<SessionBusinessContext>(`/session/${sessionId}/business-context`)
+}
+
 /** 当前认领客服回复人工接管会话，不进入智能体链路。 */
 export function sendAgentMessage(sessionId: number, content: string) {
   return request.post<SendMessageResponse>(`/session/${sessionId}/agent-message`, { content })

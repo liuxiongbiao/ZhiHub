@@ -171,6 +171,18 @@ def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
     : 同时向终端用户会话通道广播 waiting_human 事件，让 widget.js 实时展示
     "正在为您转接人工客服"（统一 type/payload envelope，与 agent_message 同通道）。
     """
+    from app.core.database import SessionLocal
+
+    estimate = {"estimated_wait_minutes": 4, "queue_length": 1, "online_agents": 0}
+    try:
+        estimate_db = SessionLocal()
+        try:
+            estimate = session_service.estimate_wait_minutes(estimate_db, tenant_id)
+        finally:
+            estimate_db.close()
+    except Exception as exc:  # 等待时间是增强信息，失败不能吞掉转人工广播
+        logger.warning("wait estimate unavailable (non-blocking): %s", exc)
+
     try:
         manager.broadcast_to_tenant_sync(
             tenant_id,
@@ -180,6 +192,7 @@ def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
                     "session_id": session_id,
                     "status": "waiting_human",
                     "tenant_id": tenant_id,
+                    **estimate,
                 },
                 # 灰度兼容旧工作台；新客户端仅消费 payload。
                 "session_id": session_id,
@@ -194,11 +207,11 @@ def _notify_new_session(*, tenant_id: int, session_id: int) -> None:
                 "payload": {
                     "session_id": session_id,
                     "status": "waiting_human",
+                    **estimate,
                 },
             },
         )
         # 转人工写站内信（管理员可查）
-        from app.core.database import SessionLocal
         from app.services.notification_service import create_notification
         ndb = SessionLocal()
         try:

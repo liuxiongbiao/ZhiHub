@@ -155,3 +155,17 @@ def get_deep_task(task_id: str, request: Request):
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
+
+
+@router.get("/deep-tasks", dependencies=[Depends(require_role("admin", "agent"))])
+def list_deep_tasks(
+    request: Request,
+    limit: int = 20,
+):
+    """列出当前租户最近的分析任务，替代要求用户记忆任务 ID 的旧交互。"""
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=401, detail="未认证")
+    from app.core.deep_agent_store import list_tasks
+
+    return {"items": list_tasks(int(tenant_id), limit=limit)}

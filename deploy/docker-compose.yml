@@ -5,6 +5,7 @@
 
 x-backend-env: &backend-env
   APP_ENV: ${APP_ENV:?APP_ENV must be set in deploy/.env (see .env.example)}
+  DEMO_QUICK_LOGIN_ENABLED: ${DEMO_QUICK_LOGIN_ENABLED:-false}
   APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me}
   JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-30}
   DEV_ALLOW_CODE_REVEAL: ${DEV_ALLOW_CODE_REVEAL:-false}
@@ -263,7 +264,7 @@ services:
 
   celery-knowledge-worker:
     build: ../backend
-    command: ["python", "-m", "celery", "-A", "celery_worker.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "knowledge"]
+    command: ["python", "-m", "celery", "-A", "celery_worker.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--prefetch-multiplier=1", "-Ofair", "-Q", "knowledge,knowledge.0,knowledge.1,knowledge.2,knowledge.3,knowledge.4,knowledge.5,knowledge.6,knowledge.7"]
     environment: *backend-env
     restart: unless-stopped
     volumes:

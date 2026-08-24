@@ -7,7 +7,7 @@
  *   1. createApp(App)                     → 创建 Vue 应用实例
  *   2. app.use(createPinia())             → 安装 Pinia 状态管理
  *   3. app.use(router)                    → 安装 Vue Router
- *   4. app.use(ElementPlus)               → 全局注册 Element Plus 组件
+ *   4. Vite 编译期按需注册 Element Plus   → 仅加载当前页面实际使用的组件
  *   5. registerGuard(router)              → 注册 beforeEach 路由守卫（permission.ts）
  *   6. wireUnauthorized(router)           → 接线 401 回跳逻辑（permission.ts → request.ts）
  *   7. app.mount('#app')                  → 挂载到 DOM
@@ -23,8 +23,6 @@
 
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
 import './styles/global.scss'
 import router from './router'
 import App from './App.vue'
@@ -33,7 +31,6 @@ import { registerGuard, wireUnauthorized } from './permission'
 const app = createApp(App)
 app.use(createPinia())
 app.use(router)
-app.use(ElementPlus)
 
 registerGuard(router)
 wireUnauthorized(router)

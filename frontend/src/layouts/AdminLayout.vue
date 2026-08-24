@@ -1,350 +1,170 @@
-/**
- * src/layouts/AdminLayout.vue
- *
- * 职责: 企业管理后台布局 —— 左侧导航菜单、顶部用户区与内容区；
- *      菜单按角色渲染，路由切换经 vue-router，未读提醒经站内信 API 轮询。
- *
- * 依赖: userStore（当前用户/退出登录）、tenantStore（租户信息）、notification API（未读提醒）。
- */
 <template>
   <el-container class="admin-layout">
-    <el-aside width="220px" class="sidebar">
+    <el-aside width="244px" class="sidebar">
       <div class="logo">
-        <el-icon class="logo-icon"><Service /></el-icon>
-        <span class="logo-text">智枢 ZhiHub</span>
+        <span class="logo-core">枢</span>
+        <span class="logo-copy"><strong>智枢 ZhiHub</strong><small>Service OS</small></span>
       </div>
-      <el-menu
-        router
-        :default-active="$route.path"
-        class="side-menu"
-        :collapse="false"
-        unique-opened
-      >
-        <el-menu-item index="/">
-          <el-icon><Odometer /></el-icon>
-          <span>工作台</span>
-        </el-menu-item>
-        <el-menu-item index="/widget/preview">
-          <el-icon><ChatDotRound /></el-icon>
-          <span>Widget 预览</span>
-        </el-menu-item>
-        <el-menu-item v-if="userStore.role === 'admin'" index="/widget/config">
-          <el-icon><Brush /></el-icon>
-          <span>品牌定制</span>
+
+      <div class="workspace-chip">
+        <span class="workspace-dot"></span>
+        <span><small>当前企业空间</small><strong>{{ tenantStore.tenant_name || '正在载入' }}</strong></span>
+      </div>
+
+      <el-menu router :default-active="$route.path" class="side-menu" unique-opened>
+        <p class="menu-caption">总览</p>
+        <el-menu-item index="/"><el-icon><Odometer /></el-icon><span>服务驾驶舱</span></el-menu-item>
+        <el-menu-item v-if="userStore.role === 'admin'" index="/demo-center" class="demo-menu">
+          <el-icon><MagicStick /></el-icon><span>3 分钟演示中心</span><b>LIVE</b>
         </el-menu-item>
 
+        <p class="menu-caption">服务现场</p>
+        <el-sub-menu index="group-service">
+          <template #title><el-icon><ChatDotRound /></el-icon><span>客户服务</span></template>
+          <el-menu-item index="/widget/preview"><span>客户入口预览</span></el-menu-item>
+          <el-menu-item index="/agent/console"><span>坐席工作台</span></el-menu-item>
+          <el-menu-item v-if="userStore.role === 'admin'" index="/session/monitor"><span>会话监控</span></el-menu-item>
+          <el-menu-item v-if="userStore.role === 'admin'" index="/widget/config"><span>Widget 品牌与渠道</span></el-menu-item>
+        </el-sub-menu>
+
         <el-sub-menu v-if="userStore.role === 'admin'" index="group-knowledge">
-          <template #title>
-            <el-icon><Collection /></el-icon>
-            <span>知识管理</span>
-          </template>
-          <el-menu-item index="/knowledge/list">
-            <el-icon><Files /></el-icon>
-            <span>知识库</span>
-          </el-menu-item>
-          <el-menu-item index="/knowledge/search-test">
-            <el-icon><Search /></el-icon>
-            <span>检索测试台</span>
-          </el-menu-item>
+          <template #title><el-icon><Collection /></el-icon><span>可信知识</span></template>
+          <el-menu-item index="/knowledge/list"><span>文档与版本</span></el-menu-item>
+          <el-menu-item index="/knowledge/quality"><span>知识质量中心</span></el-menu-item>
+          <el-menu-item index="/knowledge/search-test"><span>回答验证台</span></el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="group-business">
-          <template #title>
-            <el-icon><Tickets /></el-icon>
-            <span>工单与订单</span>
-          </template>
-          <el-menu-item index="/ticket/list">
-            <el-icon><Document /></el-icon>
-            <span>工单看板</span>
-          </el-menu-item>
-          <el-menu-item v-if="userStore.role === 'admin'" index="/session/monitor">
-            <el-icon><ChatDotRound /></el-icon>
-            <span>会话监控</span>
-          </el-menu-item>
-          <el-menu-item index="/order/list">
-            <el-icon><List /></el-icon>
-            <span>订单列表</span>
-          </el-menu-item>
-          <el-menu-item index="/order/refunds">
-            <el-icon><Wallet /></el-icon>
-            <span>退款审批</span>
-          </el-menu-item>
+          <template #title><el-icon><Tickets /></el-icon><span>工单与订单</span></template>
+          <el-menu-item index="/ticket/list"><span>工单看板</span></el-menu-item>
+          <el-menu-item index="/order/list"><span>订单履约</span></el-menu-item>
+          <el-menu-item index="/order/refunds"><span>退款审批</span></el-menu-item>
         </el-sub-menu>
 
-        <el-sub-menu v-if="userStore.role === 'admin'" index="group-billing">
-          <template #title>
-            <el-icon><TrendCharts /></el-icon>
-            <span>计费</span>
-          </template>
-          <el-menu-item index="/billing/usage">
-            <el-icon><DataLine /></el-icon>
-            <span>用量概览</span>
-          </el-menu-item>
-          <el-menu-item index="/billing/invoices">
-            <el-icon><Money /></el-icon>
-            <span>账单列表</span>
-          </el-menu-item>
-        </el-sub-menu>
+        <template v-if="userStore.role === 'admin'">
+          <p class="menu-caption">运营与治理</p>
+          <el-menu-item index="/analytics/overview"><el-icon><DataAnalysis /></el-icon><span>运营成效</span></el-menu-item>
+          <el-menu-item index="/agent-report"><el-icon><Notebook /></el-icon><span>运营分析助手</span></el-menu-item>
+          <el-sub-menu index="group-billing">
+            <template #title><el-icon><TrendCharts /></el-icon><span>用量与账单</span></template>
+            <el-menu-item index="/billing/usage"><span>用量概览</span></el-menu-item>
+            <el-menu-item index="/billing/invoices"><span>账单列表</span></el-menu-item>
+          </el-sub-menu>
 
-        <el-menu-item v-if="userStore.role === 'admin'" index="/analytics/overview">
-          <el-icon><DataAnalysis /></el-icon>
-          <span>运营看板</span>
-        </el-menu-item>
-
-        <el-sub-menu index="group-agent">
-          <template #title>
-            <el-icon><MagicStick /></el-icon>
-            <span>智能体</span>
-          </template>
-          <el-menu-item index="/agent-report">
-            <el-icon><Notebook /></el-icon>
-            <span>DeepAgent 报告</span>
-          </el-menu-item>
-          <el-menu-item index="/agent/console">
-            <el-icon><Headset /></el-icon>
-            <span>坐席工作台</span>
-          </el-menu-item>
-        </el-sub-menu>
-
-        <el-menu-item v-if="userStore.role === 'admin'" index="/setup">
-          <el-icon><Setting /></el-icon>
-          <span>配置向导</span>
-        </el-menu-item>
-        <el-menu-item v-if="userStore.role === 'admin'" index="/settings">
-          <el-icon><Tools /></el-icon>
-          <span>规则配置</span>
-        </el-menu-item>
-        <el-menu-item v-if="userStore.role === 'admin'" index="/audit/logs">
-          <el-icon><DocumentChecked /></el-icon>
-          <span>审计日志</span>
-        </el-menu-item>
+          <p class="menu-caption">系统</p>
+          <el-sub-menu index="group-system">
+            <template #title><el-icon><Setting /></el-icon><span>配置与治理</span></template>
+            <el-menu-item index="/setup"><span>配置向导</span></el-menu-item>
+            <el-menu-item index="/onboarding/members"><span>成员邀请</span></el-menu-item>
+            <el-menu-item index="/settings"><span>规则配置</span></el-menu-item>
+            <el-menu-item index="/audit/logs"><span>审计日志</span></el-menu-item>
+            <el-menu-item index="/platform/operations"><span>平台运营入口</span></el-menu-item>
+          </el-sub-menu>
+        </template>
       </el-menu>
+
+      <div class="sidebar-footer">
+        <span class="signal-pulse"></span>
+        <span><strong>服务链路在线</strong><small>知识 · 业务 · 人工</small></span>
+      </div>
     </el-aside>
 
-    <el-container>
+    <el-container class="content-shell">
       <el-header class="admin-header">
         <div class="header-left">
-          <span class="tenant-name">{{ tenantStore.tenant_name || '加载中...' }}</span>
-          <el-tag v-if="tenantStore.plan_type" size="small" type="primary" effect="light">
-            {{ PLAN_LABEL[tenantStore.plan_type] || tenantStore.plan_type }}
-          </el-tag>
+          <span class="page-context">{{ currentPage.eyebrow }}</span>
+          <strong>{{ currentPage.title }}</strong>
         </div>
         <div class="header-right">
-          <el-popover placement="bottom-end" :width="340" trigger="click" @show="loadNotifications">
+          <el-tag v-if="tenantStore.plan_type" size="small" effect="plain">{{ PLAN_LABEL[tenantStore.plan_type] || tenantStore.plan_type }}</el-tag>
+          <el-popover placement="bottom-end" :width="360" trigger="click" @show="loadNotifications">
             <template #reference>
-              <el-badge :value="unreadCount" :hidden="unreadCount === 0" class="notif-badge">
-                <el-icon class="notif-icon"><Bell /></el-icon>
-              </el-badge>
+              <el-badge :value="unreadCount" :hidden="unreadCount === 0" class="notif-badge"><button class="icon-button" aria-label="通知"><el-icon><Bell /></el-icon></button></el-badge>
             </template>
             <div v-loading="notifLoading" class="notif-panel">
-              <div v-if="notifications.length === 0" class="notif-empty">暂无通知</div>
-              <div v-for="n in notifications" :key="n.id" class="notif-item" :class="{ unread: !n.read_at }" @click="readNotification(n)">
-                <div class="notif-title">{{ n.title }}</div>
-                <div class="notif-content">{{ n.content }}</div>
-                <div class="notif-time">{{ formatNotifTime(n.created_at) }}</div>
-              </div>
+              <div class="notif-panel-head"><strong>服务提醒</strong><small>{{ unreadCount }} 条未读</small></div>
+              <div v-if="notifications.length === 0" class="notif-empty">当前没有待处理提醒</div>
+              <button v-for="item in notifications" :key="item.id" type="button" class="notif-item" :class="{ unread: !item.read_at }" @click="readNotification(item)">
+                <span class="notif-title">{{ item.title }}</span><span class="notif-content">{{ item.content }}</span><span class="notif-time">{{ formatNotifTime(item.created_at) }}</span>
+              </button>
             </div>
           </el-popover>
           <el-dropdown @command="handleCommand">
-            <span class="user-trigger">
-              <el-icon><User /></el-icon>
-              <span>{{ userStore.phone || '管理员' }}</span>
-              <el-icon class="caret"><ArrowDown /></el-icon>
-            </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="profile">
-                  <el-icon><User /></el-icon> 个人中心
-                </el-dropdown-item>
-                <el-dropdown-item command="logout">
-                  <el-icon><SwitchButton /></el-icon> 退出登录
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
+            <span class="user-trigger"><span class="user-avatar">{{ userStore.role === 'admin' ? '管' : '席' }}</span><span class="user-copy"><strong>{{ userStore.role === 'admin' ? '管理员' : '坐席' }}</strong><small>{{ userStore.phone || '当前账号' }}</small></span><el-icon class="caret"><ArrowDown /></el-icon></span>
+            <template #dropdown><el-dropdown-menu><el-dropdown-item command="profile"><el-icon><User /></el-icon> 个人中心</el-dropdown-item><el-dropdown-item command="logout"><el-icon><SwitchButton /></el-icon> 退出登录</el-dropdown-item></el-dropdown-menu></template>
           </el-dropdown>
         </div>
       </el-header>
-      <el-main class="admin-main">
-        <router-view />
-      </el-main>
+      <el-main class="admin-main"><router-view /></el-main>
     </el-container>
   </el-container>
 </template>
 
-<!--
-  AdminLayout.vue - 后台管理布局(规格 012 前端打磨)
-
-  结构:
-    el-container
-    ├─ el-aside(浅色侧边栏 220px)
-    │   ├─ .logo(Service 图标 + 智枢 ZhiHub)
-    │   └─ el-menu router(分组 sub-menu + 图标 + unique-opened)
-    └─ el-container
-        ├─ el-header(左:租户名+套餐徽标; 右:用户下拉退出)
-        └─ el-main(浅灰背景,衬托白色卡片)
-
-  设计: 浅色侧边栏 + Element Plus 默认蓝主色,现代克制。
-  菜单分组: 工作台 / 知识管理 / 工单与订单 / 计费 / 智能体。
--->
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import {
-  Service, Odometer, Collection, Files, Search, Tickets, Document, List,
-  Wallet, TrendCharts, DataLine, Money, MagicStick, Notebook, Headset,
-  ChatDotRound, Setting, Tools, User, ArrowDown, SwitchButton, Brush, DocumentChecked, Bell,
-  DataAnalysis,
-} from '@element-plus/icons-vue'
+import { Odometer, Collection, Tickets, TrendCharts, MagicStick, Notebook, ChatDotRound, Setting, User, ArrowDown, SwitchButton, Bell, DataAnalysis } from '@element-plus/icons-vue'
 import { getNotifications, getUnreadCount, markNotificationRead, type NotificationItem } from '@/api/notification'
 import { useTenantStore } from '@/store/modules/tenant'
 import { useUserStore } from '@/store/modules/user'
 
-/** 套餐类型 → 中文标签 */
-const PLAN_LABEL: Record<string, string> = {
-  trial: '试用', basic: '基础版', pro: '专业版', enterprise: '企业版',
-}
+const PLAN_LABEL: Record<string, string> = { trial: '试用', basic: '基础版', pro: '专业版', enterprise: '企业版' }
+const PAGE_META: Array<[string, string, string]> = [
+  ['/demo-center', 'GUIDED DEMO', '3 分钟演示中心'], ['/agent/console', 'LIVE SERVICE', '坐席工作台'],
+  ['/knowledge/quality', 'KNOWLEDGE SIGNAL', '知识质量中心'], ['/knowledge', 'TRUSTED KNOWLEDGE', '可信知识'],
+  ['/analytics', 'OPERATIONS', '运营成效'], ['/agent-report', 'OPERATIONS COPILOT', '运营分析助手'],
+  ['/order', 'BUSINESS FLOW', '订单与退款'], ['/ticket', 'SERVICE RECOVERY', '工单处理'],
+  ['/widget', 'CUSTOMER CHANNEL', '客户入口'], ['/setup', 'GO LIVE', '配置向导'],
+]
 
 const tenantStore = useTenantStore()
 const userStore = useUserStore()
 const router = useRouter()
-
-onMounted(async () => {
-  try {
-    await tenantStore.fetchHome()
-  } catch (e: any) {
-    if (e?.status !== 401) {
-      ElMessage.error(e?.message || '加载租户信息失败')
-    }
-  }
+const route = useRoute()
+const currentPage = computed(() => {
+  const match = PAGE_META.find(([prefix]) => route.path.startsWith(prefix))
+  return match ? { eyebrow: match[1], title: match[2] } : { eyebrow: 'SERVICE COMMAND', title: '服务驾驶舱' }
 })
-
 
 const notifications = ref<NotificationItem[]>([])
 const unreadCount = ref(0)
 const notifLoading = ref(false)
+function formatNotifTime(iso: string) { return new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
+async function refreshUnread() { try { unreadCount.value = (await getUnreadCount()).data.count } catch { /* fail open */ } }
+async function loadNotifications() { notifLoading.value = true; try { notifications.value = (await getNotifications({ page_size: 10 })).data.items; await refreshUnread() } finally { notifLoading.value = false } }
+async function readNotification(item: NotificationItem) { if (item.read_at) return; try { await markNotificationRead(item.id); item.read_at = new Date().toISOString(); unreadCount.value = Math.max(0, unreadCount.value - 1) } catch { /* fail open */ } }
+function handleCommand(command: string) { if (command === 'logout') handleLogout(); if (command === 'profile') router.push('/profile') }
+async function handleLogout() { await userStore.logout(); router.push('/login') }
 
-function formatNotifTime(iso: string): string {
-  return new Date(iso).toLocaleString('zh-CN')
-}
-
-async function refreshUnread() {
-  try {
-    const res = await getUnreadCount()
-    unreadCount.value = res.data.count
-  } catch { /* 静默 */ }
-}
-
-async function loadNotifications() {
-  notifLoading.value = true
-  try {
-    const res = await getNotifications({ page_size: 10 })
-    notifications.value = res.data.items
-    await refreshUnread()
-  } catch { /* 静默 */ } finally { notifLoading.value = false }
-}
-
-async function readNotification(n: NotificationItem) {
-  if (n.read_at) return
-  try {
-    await markNotificationRead(n.id)
-    n.read_at = new Date().toISOString()
-    unreadCount.value = Math.max(0, unreadCount.value - 1)
-  } catch { /* 静默 */ }
-}
-
-onMounted(() => {
+onMounted(async () => {
+  try { await tenantStore.fetchHome() } catch (error: any) { if (error?.status !== 401) ElMessage.error(error?.message || '加载企业空间失败') }
   refreshUnread()
-  // 组合现有轮询节奏刷新未读（简化：初始+麃铃展开时刷新）
 })
-
-/** 下拉菜单命令分发: logout → 退出登录 */
-function handleCommand(cmd: string) {
-  if (cmd === 'logout') handleLogout()
-  if (cmd === 'profile') router.push('/profile')
-}
-
-/** 退出登录: 清除用户状态并跳转登录页 */
-async function handleLogout() {
-  await userStore.logout()
-  router.push('/login')
-}
 </script>
 
-<style scoped lang="scss">
-.admin-layout { min-height: 100vh; }
-
-/* 侧边栏:浅色基调,右侧细分隔线 */
-.sidebar {
-  background: var(--zh-bg-sidebar);
-  border-right: 1px solid var(--zh-border-light);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* Logo 区 */
-.logo {
-  height: 60px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--zh-border-light);
-  flex-shrink: 0;
-}
-.logo-icon {
-  font-size: 24px;
-  color: var(--zh-primary);
-}
-.logo-text {
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--zh-text-primary);
-  letter-spacing: 0.5px;
-}
-
-/* 菜单:去掉默认右边框(侧边栏已有分隔线),撑满高度 */
-.side-menu {
-  border-right: none;
-  flex: 1;
-  padding: 8px;
-  overflow-y: auto;
-}
-
-/* 顶栏 */
-.admin-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--zh-bg-card);
-  border-bottom: 1px solid var(--zh-border-light);
-  box-shadow: var(--zh-shadow);
-  height: 60px;
-  padding: 0 24px;
-}
-.header-left { display: flex; align-items: center; gap: 12px; }
-.tenant-name { font-size: 16px; font-weight: 600; color: var(--zh-text-primary); }
-
-/* 用户下拉 */
-.user-trigger {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  color: var(--zh-text-regular);
-  outline: none;
-  padding: 6px 10px;
-  border-radius: var(--zh-radius-sm);
-  transition: background 0.2s;
-}
-.user-trigger:hover { background: var(--zh-primary-bg); color: var(--zh-primary); }
-.caret { font-size: 12px; }
-
-/* 内容区:浅灰背景衬托卡片 */
-.admin-main {
-  background: var(--zh-bg-page);
-  padding: 0;
-  overflow-y: auto;
-}
+<style scoped>
+.admin-layout { min-height: 100vh; background: var(--zh-bg-page); }
+.sidebar { display: flex; flex-direction: column; overflow: hidden; color: #c5d3d5; background: var(--zh-bg-sidebar); border-right: 1px solid #1b333a; }
+.logo { height: 68px; display: flex; align-items: center; gap: 11px; padding: 0 19px; flex: 0 0 auto; }
+.logo-core { display: grid; place-items: center; width: 34px; height: 34px; color: #08201f; font-weight: 850; background: var(--zh-signal); border-radius: 10px 10px 10px 3px; }
+.logo-copy { display: grid; line-height: 1.2; }.logo-copy strong { color: #fff; font-size: 15px; }.logo-copy small { margin-top: 3px; color: #678187; font-size: 9px; letter-spacing: .16em; text-transform: uppercase; }
+.workspace-chip { display: flex; align-items: center; gap: 10px; margin: 2px 12px 10px; padding: 10px 11px; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.07); border-radius: 11px; }
+.workspace-dot { width: 8px; height: 8px; background: var(--zh-signal); border-radius: 50%; box-shadow: 0 0 0 5px rgba(24,183,160,.09); }
+.workspace-chip > span:last-child { display: grid; min-width: 0; }.workspace-chip small { color: #6f898e; font-size: 9px; }.workspace-chip strong { overflow: hidden; color: #dce7e8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.side-menu { flex: 1; overflow-y: auto; padding: 3px 9px 16px; background: transparent; border: 0; --el-menu-bg-color: transparent; --el-menu-text-color: #91a8ac; --el-menu-hover-bg-color: rgba(255,255,255,.055); --el-menu-active-color: #a8f2e5; --el-menu-item-height: 42px; --el-menu-sub-item-height: 38px; }
+.side-menu :deep(.el-menu-item), .side-menu :deep(.el-sub-menu__title) { margin: 2px 0; border-radius: 9px; font-size: 12px; }
+.side-menu :deep(.el-menu-item.is-active) { background: linear-gradient(90deg, rgba(24,183,160,.17), rgba(24,183,160,.06)); box-shadow: inset 2px 0 0 var(--zh-signal); }
+.menu-caption { margin: 15px 10px 6px; color: #506b70; font-size: 8px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+.demo-menu b { margin-left: auto; padding: 2px 4px; color: #0b2924; font-size: 7px; background: #72dbc9; border-radius: 4px; }
+.sidebar-footer { display: flex; align-items: center; gap: 10px; margin: 10px 12px 14px; padding: 11px; border-top: 1px solid rgba(255,255,255,.08); }
+.signal-pulse { width: 8px; height: 8px; background: #67d8a3; border-radius: 50%; box-shadow: 0 0 0 5px rgba(103,216,163,.08); animation: pulse 2.5s infinite; }.sidebar-footer > span:last-child { display: grid; }.sidebar-footer strong { color: #bdd0d3; font-size: 10px; }.sidebar-footer small { color: #5d777c; font-size: 8px; }
+.content-shell { min-width: 0; }.admin-header { height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 clamp(18px, 2.5vw, 36px); background: rgba(255,254,250,.9); border-bottom: 1px solid var(--zh-border-light); backdrop-filter: blur(14px); }
+.header-left { display: grid; }.page-context { color: var(--zh-primary); font-size: 8px; font-weight: 850; letter-spacing: .16em; }.header-left strong { margin-top: 3px; font-size: 16px; }
+.header-right { display: flex; align-items: center; gap: 14px; }.icon-button { display: grid; place-items: center; width: 34px; height: 34px; color: var(--zh-text-regular); background: #f6f8f6; border: 1px solid var(--zh-border-light); border-radius: 10px; cursor: pointer; }
+.user-trigger { display: flex; align-items: center; gap: 9px; cursor: pointer; outline: none; }.user-avatar { display: grid; place-items: center; width: 33px; height: 33px; color: #fff; font-size: 11px; font-weight: 800; background: var(--zh-ink-soft); border-radius: 10px; }.user-copy { display: grid; line-height: 1.15; }.user-copy strong { font-size: 11px; }.user-copy small { max-width: 100px; overflow: hidden; margin-top: 3px; color: var(--zh-text-secondary); font-size: 8px; text-overflow: ellipsis; }.caret { color: var(--zh-text-secondary); font-size: 10px; }
+.admin-main { overflow-y: auto; padding: 0; background: transparent; }
+.notif-panel-head { display: flex; justify-content: space-between; padding: 3px 4px 11px; border-bottom: 1px solid var(--zh-border-light); }.notif-panel-head small { color: var(--zh-text-secondary); }.notif-item { display: grid; width: 100%; padding: 11px 6px; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--zh-border-light); cursor: pointer; }.notif-item.unread { box-shadow: inset 2px 0 0 var(--zh-primary); }.notif-title { font-size: 12px; font-weight: 700; }.notif-content { margin-top: 3px; color: var(--zh-text-regular); font-size: 11px; }.notif-time { margin-top: 5px; color: var(--zh-text-placeholder); font-size: 9px; }.notif-empty { padding: 32px; color: var(--zh-text-secondary); text-align: center; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 9px rgba(103,216,163,0); } }
+@media (max-width: 850px) { .sidebar { width: 78px !important; } .logo-copy, .workspace-chip span:last-child, .side-menu span, .menu-caption, .sidebar-footer span:last-child, .demo-menu b { display: none; } .logo { padding: 0 21px; } .workspace-chip { justify-content: center; } .side-menu :deep(.el-sub-menu__icon-arrow) { display: none; } }
 </style>

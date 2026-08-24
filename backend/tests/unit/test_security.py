@@ -27,6 +27,21 @@ class TestPasswordHashing:
         h = security.hash_password("abc12345")
         assert security.verify_password("wrongpass", h) is False
 
+    def test_invalid_hash_fails_closed(self):
+        assert security.verify_password("abc12345", "not-a-bcrypt-hash") is False
+
+    def test_existing_bcrypt_hash_remains_compatible(self):
+        existing = "$2b$12$Fn40TiOzVNE8o7qZhEGT/ODdGpw0h6z1yBb/XPmVY79QJn2vegfGW"
+        assert security.verify_password("abc12345", existing) is True
+
+    def test_password_over_bcrypt_limit_is_rejected(self):
+        try:
+            security.hash_password("A1" + "x" * 71)
+        except ValueError as error:
+            assert "72 字节" in str(error)
+        else:
+            raise AssertionError("超过 bcrypt 上限的密码必须被拒绝")
+
 
 class TestJWT:
     def test_create_and_decode_roundtrip(self):

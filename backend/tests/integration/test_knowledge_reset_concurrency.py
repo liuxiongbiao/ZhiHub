@@ -64,6 +64,18 @@ class _RecordingES:
     def index(self, *a, **k):
         self._log.append(("es_index", k.get("document", {}).get("doc_id")))
 
+    def options(self, **_kwargs):
+        return self
+
+    def bulk(self, *, operations):
+        items = []
+        for offset in range(0, len(operations), 2):
+            meta = operations[offset]["index"]
+            document = operations[offset + 1]
+            self._log.append(("es_index", document.get("doc_id")))
+            items.append({"index": {"_id": meta["_id"], "status": 201}})
+        return {"errors": False, "items": items}
+
     def delete_by_query(self, *a, **k):
         body = (a[1] if len(a) > 1 else k.get("body")) or {}
         self._log.append(("es_delete", body))

@@ -19,9 +19,9 @@
  *   前端也一定清掉 localStorage，避免"已登出但本地仍有旧 token"的死锁
  */
 import { defineStore } from 'pinia'
-import { login as apiLogin, register as apiRegister, logout as apiLogout, loginSms as apiLoginSms, loginEmail as apiLoginEmail } from '@/api/auth'
+import { login as apiLogin, register as apiRegister, logout as apiLogout, loginSms as apiLoginSms, loginEmail as apiLoginEmail, loginDemo as apiLoginDemo } from '@/api/auth'
 import { AUTH_STORAGE_KEY } from '@/constants'
-import type { LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, SmsLoginRequest, EmailLoginRequest } from '@/types/auth'
+import type { LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, SmsLoginRequest, EmailLoginRequest, DemoPersona } from '@/types/auth'
 
 interface UserState {
   token: string
@@ -58,9 +58,7 @@ export const useUserStore = defineStore('user', {
   },
 
   actions: {
-    async login(payload: LoginRequest): Promise<LoginResponse> {
-      const res = await apiLogin(payload)
-      const data = res.data
+    applyLogin(data: LoginResponse): LoginResponse {
       this.token = data.access_token
       this.refresh_token = data.refresh_token
       this.user_id = data.user_id
@@ -69,6 +67,11 @@ export const useUserStore = defineStore('user', {
       this.phone = data.phone ?? null
       this.persist()
       return data
+    },
+
+    async login(payload: LoginRequest): Promise<LoginResponse> {
+      const res = await apiLogin(payload)
+      return this.applyLogin(res.data)
     },
 
     async register(payload: RegisterRequest): Promise<RegisterResponse> {
@@ -79,28 +82,17 @@ export const useUserStore = defineStore('user', {
 
     async loginSms(payload: SmsLoginRequest): Promise<LoginResponse> {
       const res = await apiLoginSms(payload)
-      const data = res.data
-      this.token = data.access_token
-      this.refresh_token = data.refresh_token
-      this.user_id = data.user_id
-      this.tenant_id = data.tenant_id
-      this.role = data.role as 'admin' | 'agent'
-      this.phone = data.phone ?? null
-      this.persist()
-      return data
+      return this.applyLogin(res.data)
     },
 
     async loginEmail(payload: EmailLoginRequest): Promise<LoginResponse> {
       const res = await apiLoginEmail(payload)
-      const data = res.data
-      this.token = data.access_token
-      this.refresh_token = data.refresh_token
-      this.user_id = data.user_id
-      this.tenant_id = data.tenant_id
-      this.role = data.role as 'admin' | 'agent'
-      this.phone = data.phone ?? null
-      this.persist()
-      return data
+      return this.applyLogin(res.data)
+    },
+
+    async loginDemo(persona: DemoPersona): Promise<LoginResponse> {
+      const res = await apiLoginDemo(persona)
+      return this.applyLogin(res.data)
     },
     async logout(): Promise<void> {
       try {

@@ -37,6 +37,20 @@
       </div>
     </section>
 
+    <section v-if="attentionItems.length" class="attention-board" aria-label="需要处理的运营事项">
+      <div class="attention-title">
+        <span class="section-code">NEXT BEST ACTION</span>
+        <h2>现在最值得处理的事</h2>
+        <p>按风险与客户影响排序，点击即可进入对应工作区。</p>
+      </div>
+      <button v-for="(item, index) in attentionItems" :key="`${item.kind}-${index}`" type="button" :class="`severity-${item.severity}`" @click="openAttention(item.path)">
+        <span class="mono-data">0{{ index + 1 }}</span>
+        <div><strong>{{ item.title }}</strong><small>{{ attentionDetail(item.kind) }}</small></div>
+        <b class="mono-data">{{ item.count }}</b>
+        <i>→</i>
+      </button>
+    </section>
+
     <template v-if="overview">
       <section class="analytics-grid">
         <article class="panel retrieval-panel">
@@ -164,10 +178,13 @@ const signals = computed(() => {
   return [
     { label: '自动解决', value: `${summary.auto_resolution_rate.toFixed(1)}%`, note: '无需人工参与' },
     { label: '回答满意度', value: summary.average_csat ? summary.average_csat.toFixed(1) : '—', note: '满分 5 分' },
-    { label: '工具成功率', value: `${summary.mcp_success_rate.toFixed(1)}%`, note: 'MCP 调用' },
-    { label: '安全拦截', value: String(summary.security_blocks), note: '规则命中次数' },
+    { label: '待人工接管', value: String(summary.waiting_human || 0), note: `${summary.active_sessions || 0} 个活跃会话` },
+    { label: '待退款审批', value: String(summary.pending_refunds || 0), note: '需要人工决策' },
+    { label: '知识待处理', value: String(summary.knowledge_issues || 0), note: '失败 / 过期 / 待复核' },
+    { label: '检索 P95', value: summary.retrieval_p95_ms ? `${Math.round(summary.retrieval_p95_ms)}ms` : '—', note: '95% 请求低于此值' },
   ]
 })
+const attentionItems = computed(() => overview.value?.attention_items?.slice(0, 4) || [])
 
 const healthLabel = computed(() => {
   const summary = overview.value?.summary
@@ -227,6 +244,15 @@ function eventDetail(event: AnalyticsOverview['recent_events'][number]) {
   if (event.event_name === 'session_resolved') return p.resolution_mode === 'human' ? '人工参与解决' : '自动解决'
   return Object.entries(p).slice(0, 2).map(([key, value]) => `${key}: ${String(value)}`).join(' · ') || '事件已记录'
 }
+function attentionDetail(kind: string) {
+  return ({
+    waiting_human: '客户正在等待坐席接手',
+    pending_refund: '资金操作需要人工复核',
+    knowledge_issue: '可能造成回答缺口',
+    quota_warning: '继续增长可能触发套餐限制',
+  } as Record<string, string>)[kind] || '进入对应工作区继续处理'
+}
+function openAttention(path: string) { if (path) window.location.assign(path) }
 
 onMounted(loadOverview)
 </script>
@@ -252,7 +278,7 @@ h1 { margin: 7px 0 6px; font: 700 36px/1.08 "Microsoft YaHei", sans-serif; lette
 .period-control .el-select { width: 116px; }
 .store-alert { margin-bottom: 18px; }
 .signal-board {
-  position: relative; display: grid; grid-template-columns: 1.15fr repeat(4, 1fr); overflow: hidden;
+  position: relative; display: grid; grid-template-columns: 1.15fr repeat(6, 1fr); overflow: hidden;
   border: 1px solid #183b52; border-radius: 14px; margin-bottom: 20px; color: white;
   background: var(--ink);
 }
@@ -265,6 +291,8 @@ h1 { margin: 7px 0 6px; font: 700 36px/1.08 "Microsoft YaHei", sans-serif; lette
 .signal-item strong { margin: 8px 0 3px; font: 700 27px/1 "Bahnschrift", sans-serif; }
 .signal-label { color: #b9cad4; font-size: 12px; }
 .signal-item small { color: #8ea6b5; }
+.attention-board { display: grid; grid-template-columns: 1.25fr repeat(4,minmax(150px,1fr)); gap: 0; overflow: hidden; margin-bottom: 20px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 8px 24px rgba(16,42,67,.045); }
+.attention-title { padding: 20px; border-right: 1px solid var(--line); }.attention-title h2 { margin: 5px 0; font-size: 18px; }.attention-title p { color: #758795; font-size: 11px; line-height: 1.5; }.attention-board button { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-content: center; padding: 18px 15px; color: var(--ink); text-align: left; background: transparent; border: 0; border-right: 1px solid var(--line); cursor: pointer; }.attention-board button:hover { background: #f3f9f7; }.attention-board button > span { color: #9aabb4; font-size: 10px; }.attention-board button > div { display: grid; }.attention-board button strong { font-size: 12px; }.attention-board button small { margin-top: 4px; color: #82939e; font-size: 10px; line-height: 1.4; }.attention-board button b { display: grid; place-items: center; min-width: 27px; height: 27px; color: #fff; background: var(--teal); border-radius: 9px; }.attention-board button i { grid-column: 2; color: var(--teal); font-size: 11px; font-style: normal; }.attention-board button.severity-high b { background: var(--coral); }.attention-board button.severity-medium b { background: #d89b37; }
 .analytics-grid { display: grid; grid-template-columns: 1.2fr .8fr; gap: 20px; }
 .panel, .event-ledger { border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 8px 24px rgba(16,42,67,.045); }
 .panel { min-height: 300px; padding: 24px; }
@@ -306,8 +334,9 @@ h1 { margin: 7px 0 6px; font: 700 36px/1.08 "Microsoft YaHei", sans-serif; lette
 .event-row span { color: #5f7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-hint { margin: 34px 0 0; color: #81919d; font-size: 13px; }
 @media (max-width: 1000px) {
-  .signal-board { grid-template-columns: repeat(2, 1fr); }
+  .signal-board { grid-template-columns: repeat(3, 1fr); }
   .signal-title { grid-column: span 2; min-height: 86px; }
+  .attention-board { grid-template-columns: repeat(2,1fr); }.attention-title { grid-column: 1/-1; border-right: 0; border-bottom: 1px solid var(--line); }
   .analytics-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
@@ -319,6 +348,7 @@ h1 { margin: 7px 0 6px; font: 700 36px/1.08 "Microsoft YaHei", sans-serif; lette
   .panel { padding: 19px; }
   .retrieval-row { grid-template-columns: 115px 1fr 38px; gap: 9px; }
   .event-row { grid-template-columns: 86px 88px 1fr; }
+  .attention-board { grid-template-columns: 1fr; }.attention-board button { border-right: 0; border-bottom: 1px solid var(--line); }
 }
 @media (prefers-reduced-motion: reduce) {
   .score-track i, .trend-bars i { transition: none; }

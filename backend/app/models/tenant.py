@@ -40,7 +40,7 @@ class Tenant(BaseModel):
     scheduled_deletion_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     # 撤销注销时恢复申请前状态（active/readonly/pending_review），避免把欠费租户误恢复为 active。
     cancellation_previous_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # 配置向导当前步骤：basic→knowledge→mcp→team→done（PRD §3.1，有序推进不可跳步）
+    # 配置向导当前步骤：basic→knowledge→mcp→team→done；channel 是上线校验项（PRD §3.1）
     wizard_step: Mapped[str] = mapped_column(String(20), nullable=False, default="basic")
     # 退款审批阈值：单笔退款金额超过此值需要人工审批（对应后续 human-in-the-loop 逻辑）
     # Numeric 列返回 Decimal，注解与列类型对齐（T-遗留1）

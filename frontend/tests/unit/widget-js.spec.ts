@@ -14,6 +14,7 @@ class FakeWebSocket {
   url: string
   readyState = 0
   closed = false
+  sent: string[] = []
   onopen: ((ev?: unknown) => void) | null = null
   onmessage: ((ev: unknown) => void) | null = null
   onclose: ((ev: unknown) => void) | null = null
@@ -28,7 +29,7 @@ class FakeWebSocket {
     this.readyState = 3
     this.closed = true
   }
-  send() { /* noop */ }
+  send(payload: string) { this.sent.push(payload) }
 }
 
 function jsonResponse(status: number, data: unknown) {
@@ -195,6 +196,62 @@ describe('widget.js sources doc field ()', () => {
     expect(logText).toContain('退款政策.pdf')
     expect(logText).toContain('引用')
     expect(fetchMock.mock.calls[1][0]).toContain('/message/stream')
+  })
+})
+
+describe('widget.js human collaboration experience', () => {
+  it('renders a timestamp for every visible message', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(201, sessionResponse()))
+      .mockResolvedValueOnce(sseResponse([{ type: 'chunk', chunk: '您好' }]))
+    vi.stubGlobal('fetch', fetchMock)
+    loadWidget()
+    await openAndSend(fetchMock)
+    const messages = document.querySelectorAll('.zhihub-widget-log > div')
+    const timestamps = document.querySelectorAll('.zhihub-widget-message-time')
+    expect(messages.length).toBeGreaterThanOrEqual(3)
+    expect(timestamps.length).toBe(messages.length)
+  })
+
+  it('sends typing state after the session WebSocket is ready', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(201, sessionResponse()))
+      .mockResolvedValueOnce(sseResponse([{ type: 'chunk', chunk: '收到' }]))
+    vi.stubGlobal('fetch', fetchMock)
+    loadWidget()
+    await openAndSend(fetchMock)
+    const input = document.querySelector<HTMLInputElement>('.zhihub-widget-box input')!
+    input.value = '我还想问'
+    input.dispatchEvent(new Event('input'))
+    const events = FakeWebSocket.instances[0].sent.map((item) => JSON.parse(item))
+    expect(events).toContainEqual({ type: 'typing', session_id: 1, is_typing: true })
+  })
+
+  it('shows an estimated queue wait and creates a leave-message ticket', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(201, sessionResponse()))
+      .mockResolvedValueOnce(sseResponse([{ type: 'chunk', chunk: '正在转人工' }]))
+      .mockResolvedValueOnce(jsonResponse(201, { ticket_no: 'TK-LEAVE-1' }))
+    vi.stubGlobal('fetch', fetchMock)
+    loadWidget()
+    await openAndSend(fetchMock)
+    FakeWebSocket.instances[0].onmessage?.({
+      data: JSON.stringify({
+        type: 'waiting_human',
+        estimated_wait_minutes: 8,
+        queue_length: 3,
+        online_agents: 0,
+      }),
+    })
+    const status = document.querySelector<HTMLElement>('.zhihub-widget-status')!
+    expect(status.textContent).toContain('前方 2 位')
+    expect(status.textContent).toContain('约 8 分钟')
+    const leave = document.querySelector<HTMLButtonElement>('.zhihub-widget-leave-message')!
+    expect(leave.style.display).toBe('block')
+    leave.click()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchMock.mock.calls[2][0]).toContain('/1/leave-message')
+    expect(status.textContent).toContain('留言已提交')
   })
 })
 

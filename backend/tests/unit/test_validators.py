@@ -46,6 +46,11 @@ class TestValidatePasswordStrength:
         with pytest.raises(ValueError):
             validate_password_strength("ab12")  # < 8 位
 
+    @pytest.mark.parametrize("pw", ["A1" + "x" * 71, "密码A1" + "界" * 22])
+    def test_more_than_72_utf8_bytes_raises(self, pw):
+        with pytest.raises(ValueError, match="72 字节"):
+            validate_password_strength(pw)
+
     def test_pure_digits_raises(self):
         with pytest.raises(ValueError):
             validate_password_strength("12345678")  # 纯数字

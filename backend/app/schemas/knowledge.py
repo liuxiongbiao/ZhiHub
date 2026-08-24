@@ -6,7 +6,7 @@ backend/app/schemas/knowledge.py
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ────────── 文档上传 ──────────
@@ -26,6 +26,8 @@ class DocumentUploadResponse(BaseModel):
 # ────────── 文档列表 ──────────
 class DocumentItem(BaseModel):
     """文档列表项：元数据 + 切片数 + 版本/最新标记。"""
+    model_config = ConfigDict(from_attributes=True)
+
     doc_id: int
     filename: str
     file_type: str
@@ -38,10 +40,6 @@ class DocumentItem(BaseModel):
     # 审计复核：生命周期与质量状态（UI 临期/复核提示依赖）
     expires_at: datetime | None = None
     quality_status: str = "ready"
-
-    class Config:
-        from_attributes = True
-
 
 class DocumentListResponse(BaseModel):
     """文档列表分页响应。"""
@@ -77,6 +75,7 @@ class SearchTestResponse(BaseModel):
     hyde_fallback: bool
     empty_knowledge: bool
     elapsed_ms: int
+    timings_ms: dict[str, int] = Field(default_factory=dict)
 
 
 # ────────── 重建索引 ──────────

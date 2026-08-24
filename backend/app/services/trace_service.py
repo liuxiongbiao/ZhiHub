@@ -118,7 +118,7 @@ async def _ensure_ttl_index(collection) -> None:
 
 
 def _build_steps(state: dict[str, Any], total_elapsed_ms: int) -> list[dict]:
-    """从 final_state 构建 4 步轨迹列表。
+    """从 final_state 构建面向业务人员可读的决策轨迹。
 
     流程:
       1. router: 意图/置信度/情绪/槽位（slots 脱敏）
@@ -133,7 +133,7 @@ def _build_steps(state: dict[str, Any], total_elapsed_ms: int) -> list[dict]:
     """
     steps = []
 
-    # Step 1: Router（意图路由）
+    # Step 1: 先用业务语言解释系统做了什么，technical_label 供专家模式查看。
     intent = state.get("intent", "")
     if intent:
         raw_slots = state.get("slots", {})
@@ -143,7 +143,8 @@ def _build_steps(state: dict[str, Any], total_elapsed_ms: int) -> list[dict]:
         }
         steps.append({
             "step": "router",
-            "label": "意图路由",
+            "label": "理解客户诉求",
+            "technical_label": "意图路由 Router",
             "intent": intent,
             "confidence": state.get("confidence", 0.0),
             "sentiment": state.get("sentiment", "normal"),
@@ -160,20 +161,41 @@ def _build_steps(state: dict[str, Any], total_elapsed_ms: int) -> list[dict]:
         raw_query = next((m.get("content", "") for m in reversed(_msgs) if m.get("role") == "user"), "")
         steps.append({
             "step": "retrieval",
-            "label": "混合检索",
+            "label": "查找可信知识依据",
+            "technical_label": "混合检索 + Rerank",
             "query": mask_pii(raw_query),  # 脱敏用户查询（可能含手机号）
             "result_count": len(retrieval),
             "top_scores": top_scores,
             "elapsed_ms": None,
         })
 
-    # Step 3: Agent 执行（current_agent 非 router 时记录）
+    # Step 3: Agent 执行（订单/工单节点代表真实业务系统调用）。
     current_agent = state.get("current_agent", "")
     if current_agent and current_agent != "router":
+        agent_labels = {
+            "knowledge_agent": "根据知识形成答复",
+            "order_agent": "查询订单业务系统",
+            "ticket_agent": "查询工单业务系统",
+            "ticket_agent_fc": "查询工单业务系统",
+            "human_handoff": "判断需要人工协助",
+        }
         steps.append({
             "step": "agent",
-            "label": f"Agent: {current_agent}",
+            "label": agent_labels.get(current_agent, "执行业务处理"),
+            "technical_label": f"Agent: {current_agent}",
             "agent_type": current_agent,
+            "elapsed_ms": None,
+        })
+
+    if state.get("should_interrupt"):
+        handoff_reason = "涉及风险操作或当前答案可信度不足，由人工继续处理。"
+        if state.get("sentiment") in {"angry", "negative"}:
+            handoff_reason = "识别到客户情绪需要优先安抚，由人工继续处理。"
+        steps.append({
+            "step": "safety",
+            "label": "执行服务安全规则",
+            "technical_label": "Guardrail + Human handoff",
+            "observation": handoff_reason,
             "elapsed_ms": None,
         })
 
@@ -183,7 +205,8 @@ def _build_steps(state: dict[str, Any], total_elapsed_ms: int) -> list[dict]:
         sources_count = len(retrieval) if retrieval else 0
         steps.append({
             "step": "generation",
-            "label": "生成回答",
+            "label": "组织并交付答复",
+            "technical_label": "LLM Generation",
             "answer_preview": mask_pii(final_response[:100]),  # 脱敏回答预览（截 100 字）
             "sources_count": sources_count,
             "elapsed_ms": total_elapsed_ms,
@@ -221,3 +244,39 @@ async def get_trace_by_message(message_id: int) -> dict | None:
     except Exception as e:
         logger.error(f"Failed to fetch trace: {e}")
         return None
+
+
+def replace_demo_traces(tenant_id: int, traces: list[dict[str, Any]]) -> int:
+    """替换演示基线 trace；仅删除带 demo_seed 标记的同租户文档。"""
+    from app.config import settings
+
+    if settings.app_env == "production":
+        return 0
+    client = None
+    try:
+        from pymongo import MongoClient
+
+        client = MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=1200)
+        collection = client["zhihub"]["agent_traces"]
+        collection.create_index("created_at", expireAfterSeconds=TRACE_TTL_SECONDS)
+        collection.delete_many({"tenant_id": int(tenant_id), "demo_seed": True})
+        safe_docs = []
+        for trace in traces:
+            doc = dict(trace)
+            doc["tenant_id"] = int(tenant_id)
+            doc["demo_seed"] = True
+            # 演示文案仍统一经过脱敏，防后续调整脚本时误写手机号。
+            for step in doc.get("steps", []):
+                for key in ("query", "answer_preview", "observation"):
+                    if isinstance(step.get(key), str):
+                        step[key] = mask_pii(step[key])
+            safe_docs.append(doc)
+        if safe_docs:
+            collection.insert_many(safe_docs, ordered=True)
+        return len(safe_docs)
+    except Exception as exc:
+        logger.warning("Demo trace replacement failed: %s", exc)
+        return 0
+    finally:
+        if client is not None:
+            client.close()

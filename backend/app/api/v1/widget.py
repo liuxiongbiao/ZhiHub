@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.schemas.session import SendMessageRequest, SendMessageResponse
+from app.schemas.session import (
+    LeaveMessageRequest,
+    LeaveMessageResponse,
+    SendMessageRequest,
+    SendMessageResponse,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -164,6 +169,40 @@ async def stream_widget_message(
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post(
+    "/{session_id}/leave-message",
+    response_model=LeaveMessageResponse,
+    status_code=201,
+)
+def widget_leave_message(
+    session_id: int,
+    body: LeaveMessageRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """匿名客户在无人坐席时留言并自动建单。"""
+    tenant_id = _get_tenant_id(request)
+    if getattr(request.state, "widget_session_id", None) != session_id:
+        raise HTTPException(status_code=403, detail="会话令牌不匹配")
+    from app.crud import session as session_crud
+    from app.services.human_service import leave_message_if_no_agent
+    from app.services.session_service import has_online_agent
+
+    widget_session = session_crud.get_by_id(db, session_id, tenant_id)
+    if widget_session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if widget_session.status != "waiting_human":
+        raise HTTPException(status_code=409, detail="当前会话无需留言")
+    if has_online_agent(tenant_id):
+        raise HTTPException(status_code=409, detail="已有坐席在线，请等待接管")
+    return leave_message_if_no_agent(
+        db,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        user_message=body.content,
+    )
 
 
 @router.post("/refunds/{approval_id}/cancel", status_code=200)

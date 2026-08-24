@@ -71,8 +71,8 @@ export interface ShipResponse {
 }
 
 /** 获取订单列表 */
-export function getOrderList(params: { page?: number; page_size?: number }) {
-  return request.get<{ items: Order[]; total: number; page: number; page_size: number }>(
+export function getOrderList(params: { page?: number; page_size?: number; status?: OrderStatus }) {
+  return request.get<{ items: Order[]; total: number; page: number; page_size: number; status_counts?: Partial<Record<OrderStatus, number>> }>(
     '/order/list', { params }
   )
 }
@@ -101,6 +101,16 @@ export function approveRefund(approvalId: number, decision: 'approved' | 'reject
 /** 撤销售后申请（PRD §3.6，仅 pending 可撤销，必须填写原因） */
 export function cancelRefund(approvalId: number, reason: string) {
   return request.post(`/order/refunds/${approvalId}/cancel`, { reason })
+}
+
+export function requestRefund(body: {
+  order_no: string
+  phone: string
+  amount: number
+  reason?: string
+  client_request_id: string
+}) {
+  return request.post('/order/refunds/request', body)
 }
 
 /** 订单发货（规格 013 US6，paid → shipped） */

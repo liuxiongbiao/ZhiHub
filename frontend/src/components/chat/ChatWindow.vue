@@ -99,6 +99,7 @@ const inputDisabled = ref(false)
 const showCsat = ref(false)
 const showLeaveMsg = ref(false)
 let sessionWs: WsClient | null = null
+let typingTimer: ReturnType<typeof setTimeout> | null = null
 const inputPlaceholder = computed(() => {
   if (props.mode === 'user' && sessionStatus.value === 'human_handling') return '人工客服处理中'
   return props.mode === 'agent' ? '输入客服回复...' : '输入您的问题...'
@@ -146,6 +147,8 @@ function connectSessionWs() {
 }
 
 onUnmounted(() => {
+  if (typingTimer) clearTimeout(typingTimer)
+  sessionWs?.send({ type: 'typing', session_id: props.sessionId, is_typing: false })
   sessionWs?.close()
   sessionWs = null
 })
@@ -165,11 +168,20 @@ function updateStatus(status: string) {
 
 // 规格 013 US5: 快捷回复预填（prefillText 变化时填入输入框）
 watch(() => props.prefillText, (v) => { if (v) input.value = v })
+watch(input, (value) => {
+  if (props.mode !== 'user' || !props.sessionId) return
+  sessionWs?.send({ type: 'typing', session_id: props.sessionId, is_typing: Boolean(value.trim()) })
+  if (typingTimer) clearTimeout(typingTimer)
+  typingTimer = setTimeout(() => {
+    sessionWs?.send({ type: 'typing', session_id: props.sessionId, is_typing: false })
+  }, 1200)
+})
 
 async function handleSend() {
   const text = input.value.trim()
   if (!text || !props.sessionId || loading.value) return
   const senderRole = props.mode === 'agent' ? 'agent' : 'user'
+  if (props.mode === 'user') sessionWs?.send({ type: 'typing', session_id: props.sessionId, is_typing: false })
   messages.value.push({ _localId: `${senderRole}-${Date.now()}`, role: senderRole, content: text, created_at: new Date().toISOString() })
   input.value = ''
   scrollToBottom()

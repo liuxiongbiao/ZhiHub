@@ -16,6 +16,7 @@
     "test:e2e:api": "node tests/e2e/e2e-api.cjs",
     "test:e2e:profile": "node tests/e2e/e2e-profile.cjs",
     "test:e2e:p01": "node tests/e2e/e2e-p01-roles.cjs",
+    "test:e2e:productization": "node tests/e2e/e2e-productization.cjs",
     "test:e2e": "node tests/e2e/e2e-auth.cjs && node tests/e2e/e2e-nav.cjs && node tests/e2e/e2e-features.cjs && node tests/e2e/e2e-kb.cjs && node tests/e2e/e2e-chat.cjs && node tests/e2e/e2e-deepagent.cjs && node tests/e2e/e2e-api.cjs"
   },
   "dependencies": {
@@ -34,6 +35,8 @@
     "playwright": "^1.55.1",
     "sass": "^1.75.0",
     "typescript": "^5.4.0",
+    "unplugin-auto-import": "^21.1.0",
+    "unplugin-vue-components": "^32.1.0",
     "vite": "^6.4.3",
     "vitest": "^3.2.6",
     "vue-tsc": "^2.0.0"

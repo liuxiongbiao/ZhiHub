@@ -129,6 +129,26 @@ def create_quick_reply(
 
 
 # ─── GET /session/{id} ───
+@router.get(
+    "/{session_id}/business-context",
+    dependencies=[Depends(require_role("admin", "agent"))],
+)
+def get_business_context(
+    session_id: int,
+    request: Request,
+    db: DbSession = Depends(get_db),
+):
+    """坐席侧业务上下文：只解析会话中明确出现的订单/工单编号。"""
+    try:
+        return session_service.get_session_business_context(
+            db,
+            session_id=session_id,
+            tenant_id=_get_tenant_id(request),
+        )
+    except session_service.SessionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/{session_id}", response_model=SessionDetailResponse)
 def get_session_detail(
     session_id: int,

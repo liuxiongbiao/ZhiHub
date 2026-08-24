@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_role
 from app.crud import ticket as ticket_crud
 
 router = APIRouter()
@@ -41,6 +41,11 @@ class CreateTicketRequest(BaseModel):
     # 可靠幂等键（可选）。同租户同键重复提交返回首次创建的工单，
     # 供 E2E/客户端对工单 POST 做防重放（与退款幂等模式一致）。
     client_request_id: str | None = None
+
+
+class TransitionTicketRequest(BaseModel):
+    """看板推进工单状态；合法路径仍由 service 状态机统一校验。"""
+    status: str
 
 
 @router.post("", status_code=201)
@@ -66,7 +71,39 @@ def list_tickets(
     return {
         "items": [{"id": t.id, "ticket_no": t.ticket_no, "title": t.title, "status": t.status, "priority": t.priority, "created_by": t.created_by, "created_at": t.created_at} for t in items],
         "total": total, "page": page, "page_size": page_size,
+        "status_counts": ticket_crud.count_by_status(db, tenant_id),
     }
+
+
+@router.post("/{ticket_id}/transition", dependencies=[Depends(require_role("admin", "agent"))])
+def transition_ticket(
+    ticket_id: int,
+    body: TransitionTicketRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """从看板推进工单，禁止越级、回滚终态和跨租户访问。"""
+    from app.services.ticket_service import (
+        TicketError,
+        TicketNotFound,
+        update_ticket_status,
+    )
+
+    tenant_id = _get_tenant_id(request)
+    ticket = ticket_crud.get_by_id(db, ticket_id, tenant_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    try:
+        return update_ticket_status(
+            db,
+            ticket_no=ticket.ticket_no,
+            tenant_id=tenant_id,
+            new_status=body.status,
+        )
+    except TicketNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TicketError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/{ticket_id}")

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_role
 from app.config import settings
-from app.services.analytics_service import get_overview
+from app.services.analytics_service import get_knowledge_quality, get_overview
 
 router = APIRouter()
 
@@ -27,6 +27,16 @@ def tenant_overview(
 ):
     """当前租户运营总览；所有事件和财务数据均限定 JWT 租户。"""
     return get_overview(db, tenant_id=_tenant_id(request), days=days)
+
+
+@router.get("/knowledge-quality", dependencies=[Depends(require_role("admin"))])
+def knowledge_quality(
+    request: Request,
+    days: int = Query(30, ge=7, le=90),
+    db: Session = Depends(get_db),
+):
+    """当前租户知识健康、检索置信与低置信问题摘要。"""
+    return get_knowledge_quality(db, tenant_id=_tenant_id(request), days=days)
 
 
 @router.get("/platform/overview", dependencies=[Depends(require_role("admin"))])
