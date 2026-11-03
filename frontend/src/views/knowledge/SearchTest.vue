@@ -6,7 +6,7 @@
 
     <div class="page-container">
       <section class="test-hero surface-card">
-        <div class="hero-copy"><p class="eyebrow">ANSWER EVIDENCE LAB</p><h1>问一个问题，看两种检索谁更靠谱</h1><p>左侧是纯语义匹配，右侧会结合关键词、语义和精排。重点看是否命中正确文档，而不只是分数高低。</p></div>
+        <div class="hero-copy"><p class="eyebrow">回答验证</p><h1>问一个问题，看两种检索谁更靠谱</h1><p>左侧是纯语义匹配，右侧会结合关键词、语义和精排。重点看是否命中正确文档，而不只是分数高低。</p></div>
         <div class="search-box">
           <el-input v-model="query" placeholder="例如：拆封后还能在七天内退货吗？" size="large" clearable aria-label="要验证的客户问题" @keyup.enter="handleSearch">
             <template #append><el-button type="primary" :loading="searching" @click="handleSearch">验证回答依据</el-button></template>
@@ -17,7 +17,7 @@
 
       <section v-if="result && !result.empty_knowledge" class="result-summary surface-card" aria-live="polite">
         <div class="verdict-icon" :class="verdictTone">{{ verdictIcon }}</div>
-        <div class="verdict-copy"><p class="eyebrow">VALIDATION RESULT</p><h2>{{ verdictTitle }}</h2><p>{{ verdictDetail }}</p></div>
+        <div class="verdict-copy"><p class="eyebrow">验证结果</p><h2>{{ verdictTitle }}</h2><p>{{ verdictDetail }}</p></div>
         <div class="score-delta"><span>最佳依据提升</span><strong class="mono-data">{{ gainLabel }}</strong><small>混合检索相对纯向量</small></div>
       </section>
 

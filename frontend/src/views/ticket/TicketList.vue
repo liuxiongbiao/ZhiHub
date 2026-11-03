@@ -26,7 +26,7 @@
       <section class="ticket-board surface-card">
         <header class="board-head">
           <div>
-            <p class="eyebrow">SERVICE WORK QUEUE</p>
+            <p class="eyebrow">待办队列</p>
             <h2>{{ activeLabel }}</h2>
             <span>{{ total }} 张工单 · 按最新创建排序</span>
           </div>

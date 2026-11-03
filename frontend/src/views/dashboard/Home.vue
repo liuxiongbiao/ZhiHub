@@ -2,7 +2,7 @@
   <div class="home-page">
     <section class="command-hero">
       <div class="hero-copy">
-        <p class="eyebrow">SERVICE COMMAND · {{ todayLabel }}</p>
+        <p class="eyebrow">今日服务 · {{ todayLabel }}</p>
         <h1>{{ greeting }}，{{ tenantStore.tenant_name || '欢迎回来' }}</h1>
         <p>先看需要行动的信号，再进入客户服务现场。智枢会把知识回答、业务办理和人工接管串成一个闭环。</p>
         <div class="hero-actions">
@@ -32,7 +32,7 @@
 
       <section class="workspace-grid">
         <div class="surface-card attention-card">
-          <div class="card-head"><div><p class="eyebrow">ACTION QUEUE</p><h2>今天需要处理</h2></div><el-button v-if="isAdmin" link type="primary" @click="loadDashboard">刷新信号</el-button></div>
+          <div class="card-head"><div><p class="eyebrow">待处理</p><h2>今天需要处理</h2></div><el-button v-if="isAdmin" link type="primary" @click="loadDashboard">刷新信号</el-button></div>
           <div v-if="actionItems.length" class="attention-list">
             <button v-for="item in actionItems" :key="item.kind" type="button" class="attention-item" @click="router.push(item.path)">
               <span class="attention-indicator" :class="item.severity"></span>
@@ -44,7 +44,7 @@
         </div>
 
         <div v-if="isAdmin" class="surface-card launch-card">
-          <div class="card-head"><div><p class="eyebrow">GO LIVE</p><h2>上线准备度</h2></div><strong class="readiness mono-data">{{ readiness }}%</strong></div>
+          <div class="card-head"><div><p class="eyebrow">上线准备</p><h2>上线准备度</h2></div><strong class="readiness mono-data">{{ readiness }}%</strong></div>
           <div class="readiness-track"><i :style="{ width: `${readiness}%` }"></i></div>
           <div class="check-grid">
             <button v-for="check in wizardChecks" :key="check.step" type="button" :class="{ ready: check.ready }" @click="router.push(check.action_path)">
@@ -56,7 +56,7 @@
       </section>
 
       <section class="quick-section">
-        <div class="section-head"><div><p class="eyebrow">WORKSPACES</p><h2>常用工作区</h2></div></div>
+        <div class="section-head"><div><p class="eyebrow">工作区</p><h2>常用工作区</h2></div></div>
         <div class="quick-grid">
           <button v-for="entry in quickEntries" :key="entry.path" type="button" class="quick-card" @click="router.push(entry.path)">
             <span class="quick-code mono-data">{{ entry.code }}</span><span><strong>{{ entry.name }}</strong><small>{{ entry.desc }}</small></span><span class="quick-arrow">↗</span>

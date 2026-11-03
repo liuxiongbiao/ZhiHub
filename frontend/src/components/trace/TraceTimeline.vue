@@ -2,7 +2,7 @@
   <div class="trace-timeline">
     <div v-if="!trace || !trace.steps?.length" class="empty-trace"><span>◎</span><div><strong>还没有可展示的决策轨迹</strong><p>客户与 AI 完成一轮对话后，这里会说明系统为什么这样回答。</p></div></div>
     <template v-else>
-      <header class="trace-head"><div><p class="eyebrow">DECISION STORY</p><strong>这次服务是怎样完成的</strong></div><div class="trace-meta"><span class="mono-data">{{ trace.total_elapsed_ms }}ms</span><el-switch v-model="expertMode" size="small" inline-prompt active-text="专家" inactive-text="业务" /></div></header>
+      <header class="trace-head"><div><p class="eyebrow">决策过程</p><strong>这次服务是怎样完成的</strong></div><div class="trace-meta"><span class="mono-data">{{ trace.total_elapsed_ms }}ms</span><el-switch v-model="expertMode" size="small" inline-prompt active-text="专家" inactive-text="业务" /></div></header>
       <div class="summary-strip"><span>{{ intentLabel(trace.intent) }}</span><span>置信度 {{ formatPercent(trace.confidence) }}</span><span v-if="trace.sentiment !== 'normal'">情绪：{{ sentimentLabel(trace.sentiment) }}</span></div>
 
       <div class="timeline">

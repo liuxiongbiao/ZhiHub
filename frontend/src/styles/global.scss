@@ -63,7 +63,7 @@ a { color: var(--zh-primary); text-decoration: none; }
 .pagination-wrap { display: flex; justify-content: flex-end; margin-top: var(--zh-gap); }
 .toolbar { display: flex; align-items: center; gap: var(--zh-gap-sm); margin-bottom: var(--zh-gap); }
 .mono-data { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; }
-.eyebrow { color: var(--zh-primary); font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.eyebrow { color: var(--zh-primary); font-size: 12px; font-weight: 700; letter-spacing: .02em; }
 .surface-card { background: var(--zh-bg-card); border: 1px solid var(--zh-border-light); border-radius: var(--zh-radius); box-shadow: var(--zh-shadow); }
 .empty-action { display: grid; place-items: center; min-height: 220px; padding: 28px; color: var(--zh-text-secondary); text-align: center; }
 

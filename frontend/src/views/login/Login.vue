@@ -3,7 +3,7 @@
     <section class="brand-panel">
       <div class="brand-mark"><span class="mark-core">枢</span><span>智枢 ZhiHub</span></div>
       <div class="brand-copy">
-        <p class="eyebrow">AI SERVICE OPERATING SYSTEM</p>
+        <p class="eyebrow">企业客服中枢</p>
         <h1>让每一次客户咨询，<br><em>走完服务闭环。</em></h1>
         <p class="brand-lead">从可信知识回答，到订单与工单处理，再到风险场景的人工接管——所有过程可见、可控、可追溯。</p>
       </div>
@@ -18,7 +18,7 @@
     <section class="login-panel">
       <div class="login-shell">
         <header class="login-head">
-          <p class="eyebrow">WELCOME BACK</p>
+          <p class="eyebrow">欢迎回来</p>
           <h2>进入服务控制台</h2>
           <p>继续处理客户问题和运营信号</p>
         </header>

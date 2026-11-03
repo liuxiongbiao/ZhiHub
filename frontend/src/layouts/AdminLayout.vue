@@ -6,7 +6,7 @@
     <el-aside width="244px" class="sidebar" :class="{ 'is-open': navOpen }">
       <div class="logo">
         <span class="logo-core">枢</span>
-        <span class="logo-copy"><strong>智枢 ZhiHub</strong><small>Service OS</small></span>
+        <span class="logo-copy"><strong>智枢 ZhiHub</strong><small>客服中枢</small></span>
       </div>
 
       <div class="workspace-chip">
@@ -18,7 +18,7 @@
         <p class="menu-caption">总览</p>
         <el-menu-item index="/"><el-icon><Odometer /></el-icon><span>服务驾驶舱</span></el-menu-item>
         <el-menu-item v-if="userStore.role === 'admin'" index="/demo-center" class="demo-menu">
-          <el-icon><MagicStick /></el-icon><span>3 分钟演示中心</span><b>LIVE</b>
+          <el-icon><MagicStick /></el-icon><span>3 分钟演示中心</span><b>演示</b>
         </el-menu-item>
 
         <p class="menu-caption">服务现场</p>
@@ -115,11 +115,11 @@ import { useUserStore } from '@/store/modules/user'
 
 const PLAN_LABEL: Record<string, string> = { trial: '试用', basic: '基础版', pro: '专业版', enterprise: '企业版' }
 const PAGE_META: Array<[string, string, string]> = [
-  ['/demo-center', 'GUIDED DEMO', '3 分钟演示中心'], ['/agent/console', 'LIVE SERVICE', '坐席工作台'],
-  ['/knowledge/quality', 'KNOWLEDGE SIGNAL', '知识质量中心'], ['/knowledge', 'TRUSTED KNOWLEDGE', '可信知识'],
-  ['/analytics', 'OPERATIONS', '运营成效'], ['/agent-report', 'OPERATIONS COPILOT', '运营分析助手'],
-  ['/order', 'BUSINESS FLOW', '订单与退款'], ['/ticket', 'SERVICE RECOVERY', '工单处理'],
-  ['/widget', 'CUSTOMER CHANNEL', '客户入口'], ['/setup', 'GO LIVE', '配置向导'],
+  ['/demo-center', '引导演示', '3 分钟演示中心'], ['/agent/console', '正在服务', '坐席工作台'],
+  ['/knowledge/quality', '知识状况', '知识质量中心'], ['/knowledge', '可信知识', '可信知识'],
+  ['/analytics', '运营', '运营成效'], ['/agent-report', '运营助手', '运营分析助手'],
+  ['/order', '订单履约', '订单与退款'], ['/ticket', '工单处理', '工单处理'],
+  ['/widget', '客户入口', '客户入口'], ['/setup', '上线准备', '配置向导'],
 ]
 
 const tenantStore = useTenantStore()
@@ -128,7 +128,7 @@ const router = useRouter()
 const route = useRoute()
 const currentPage = computed(() => {
   const match = PAGE_META.find(([prefix]) => route.path.startsWith(prefix))
-  return match ? { eyebrow: match[1], title: match[2] } : { eyebrow: 'SERVICE COMMAND', title: '服务驾驶舱' }
+  return match ? { eyebrow: match[1], title: match[2] } : { eyebrow: '今日服务', title: '服务驾驶舱' }
 })
 
 const navOpen = ref(false)
@@ -155,19 +155,19 @@ onMounted(async () => {
 .sidebar { display: flex; flex-direction: column; overflow: hidden; color: #c5d3d5; background: var(--zh-bg-sidebar); border-right: 1px solid #1b333a; }
 .logo { height: 68px; display: flex; align-items: center; gap: 11px; padding: 0 19px; flex: 0 0 auto; }
 .logo-core { display: grid; place-items: center; width: 34px; height: 34px; color: #08201f; font-weight: 850; background: var(--zh-signal); border-radius: 10px 10px 10px 3px; }
-.logo-copy { display: grid; line-height: 1.2; }.logo-copy strong { color: #fff; font-size: 15px; }.logo-copy small { margin-top: 3px; color: #678187; font-size: 9px; letter-spacing: .16em; text-transform: uppercase; }
+.logo-copy { display: grid; line-height: 1.2; }.logo-copy strong { color: #fff; font-size: 15px; }.logo-copy small { margin-top: 3px; color: #678187; font-size: 12px; letter-spacing: .04em; }
 .workspace-chip { display: flex; align-items: center; gap: 10px; margin: 2px 12px 10px; padding: 10px 11px; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.07); border-radius: 11px; }
 .workspace-dot { width: 8px; height: 8px; background: var(--zh-signal); border-radius: 50%; box-shadow: 0 0 0 5px rgba(24,183,160,.09); }
 .workspace-chip > span:last-child { display: grid; min-width: 0; }.workspace-chip small { color: #6f898e; font-size: 9px; }.workspace-chip strong { overflow: hidden; color: #dce7e8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .side-menu { flex: 1; overflow-y: auto; padding: 3px 9px 16px; background: transparent; border: 0; --el-menu-bg-color: transparent; --el-menu-text-color: #91a8ac; --el-menu-hover-bg-color: rgba(255,255,255,.055); --el-menu-active-color: #a8f2e5; --el-menu-item-height: 42px; --el-menu-sub-item-height: 38px; }
 .side-menu :deep(.el-menu-item), .side-menu :deep(.el-sub-menu__title) { margin: 2px 0; border-radius: 9px; font-size: 12px; }
 .side-menu :deep(.el-menu-item.is-active) { background: linear-gradient(90deg, rgba(24,183,160,.17), rgba(24,183,160,.06)); box-shadow: inset 2px 0 0 var(--zh-signal); }
-.menu-caption { margin: 15px 10px 6px; color: #506b70; font-size: 8px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+.menu-caption { margin: 15px 10px 6px; color: #8aa0a4; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
 .demo-menu b { margin-left: auto; padding: 2px 4px; color: #0b2924; font-size: 7px; background: #72dbc9; border-radius: 4px; }
 .sidebar-footer { display: flex; align-items: center; gap: 10px; margin: 10px 12px 14px; padding: 11px; border-top: 1px solid rgba(255,255,255,.08); }
 .signal-pulse { width: 8px; height: 8px; background: #67d8a3; border-radius: 50%; box-shadow: 0 0 0 5px rgba(103,216,163,.08); animation: pulse 2.5s infinite; }.sidebar-footer.degraded .signal-pulse { background: var(--zh-coral); box-shadow: 0 0 0 5px rgba(233,101,85,.12); }.sidebar-footer > span:last-child { display: grid; }.sidebar-footer strong { color: #bdd0d3; font-size: 10px; }.sidebar-footer small { color: #5d777c; font-size: 8px; }
 .content-shell { min-width: 0; }.admin-header { height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 clamp(18px, 2.5vw, 36px); background: rgba(255,254,250,.9); border-bottom: 1px solid var(--zh-border-light); backdrop-filter: blur(14px); }
-.header-left { display: grid; }.nav-toggle { place-items: center; width: 34px; height: 34px; margin-bottom: 6px; color: var(--zh-text-regular); background: #f6f8f6; border: 1px solid var(--zh-border-light); border-radius: 10px; cursor: pointer; }.nav-toggle:focus-visible, .icon-button:focus-visible { outline: 2px solid var(--zh-primary); outline-offset: 2px; }.page-context { color: var(--zh-primary); font-size: 8px; font-weight: 850; letter-spacing: .16em; }.header-left strong { margin-top: 3px; font-size: 16px; }
+.header-left { display: grid; }.nav-toggle { place-items: center; width: 34px; height: 34px; margin-bottom: 6px; color: var(--zh-text-regular); background: #f6f8f6; border: 1px solid var(--zh-border-light); border-radius: 10px; cursor: pointer; }.nav-toggle:focus-visible, .icon-button:focus-visible { outline: 2px solid var(--zh-primary); outline-offset: 2px; }.page-context { color: var(--zh-primary); font-size: 12px; font-weight: 700; letter-spacing: .02em; }.header-left strong { margin-top: 3px; font-size: 16px; }
 .header-right { display: flex; align-items: center; gap: 14px; }.icon-button { display: grid; place-items: center; width: 34px; height: 34px; color: var(--zh-text-regular); background: #f6f8f6; border: 1px solid var(--zh-border-light); border-radius: 10px; cursor: pointer; }
 .user-trigger { display: flex; align-items: center; gap: 9px; cursor: pointer; outline: none; }.user-avatar { display: grid; place-items: center; width: 33px; height: 33px; color: #fff; font-size: 11px; font-weight: 800; background: var(--zh-ink-soft); border-radius: 10px; }.user-copy { display: grid; line-height: 1.15; }.user-copy strong { font-size: 11px; }.user-copy small { max-width: 100px; overflow: hidden; margin-top: 3px; color: var(--zh-text-secondary); font-size: 8px; text-overflow: ellipsis; }.caret { color: var(--zh-text-secondary); font-size: 10px; }
 .admin-main { overflow-y: auto; padding: 0; background: transparent; }

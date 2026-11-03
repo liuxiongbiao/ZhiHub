@@ -2,7 +2,7 @@
   <div class="demo-page">
     <section class="demo-hero">
       <div>
-        <p class="eyebrow">GUIDED PRODUCT STORY · 约 3 分钟</p>
+        <p class="eyebrow">引导演示 · 约 3 分钟</p>
         <h1>一段对话，看清智枢的价值</h1>
         <p>可信回答、业务执行、风险转人工——沿着同一个客户问题，完整讲完服务闭环。</p>
       </div>
@@ -27,14 +27,14 @@
         </button>
 
         <div class="demo-facts">
-          <p class="eyebrow">DEMO FACTS</p>
+          <p class="eyebrow">演示说明</p>
           <dl><div><dt>订单</dt><dd class="mono-data">{{ status?.order_no || '—' }}</dd></div><div><dt>手机尾号</dt><dd class="mono-data">{{ status?.customer_phone_last4 || '—' }}</dd></div></dl>
         </div>
       </aside>
 
       <main class="conversation-stage surface-card">
         <header class="stage-head">
-          <div><p class="eyebrow">SCENE {{ activeIndex + 1 }}</p><h2>{{ currentScenario?.title }}</h2></div>
+          <div><p class="eyebrow">场景 {{ activeIndex + 1 }}</p><h2>{{ currentScenario?.title }}</h2></div>
           <el-tag :type="activeIndex === 2 ? 'warning' : 'success'" effect="light">{{ activeIndex === 0 ? '可信回答' : activeIndex === 1 ? '业务执行' : '人工兜底' }}</el-tag>
         </header>
         <ServiceFlowRail :active="activeRail" compact />
@@ -50,14 +50,14 @@
       </main>
 
       <aside class="evidence-panel surface-card">
-        <div class="evidence-head"><p class="eyebrow">WHY IT WORKED</p><h2>{{ evidenceTitle }}</h2></div>
+        <div class="evidence-head"><p class="eyebrow">为什么这样处理</p><h2>{{ evidenceTitle }}</h2></div>
         <div class="evidence-body">
           <template v-if="activeIndex === 0">
             <div class="confidence-ring"><strong class="mono-data">93%</strong><span>回答置信度</span></div>
             <div class="evidence-row"><span>知识来源</span><strong>企业政策文档</strong></div><div class="evidence-row"><span>检索方式</span><strong>混合检索 + 精排</strong></div><div class="evidence-row"><span>回答边界</span><strong>只依据已发布内容</strong></div>
           </template>
           <template v-else-if="activeIndex === 1">
-            <div class="order-proof"><span>ORD</span><div><small>查询对象</small><strong class="mono-data">{{ status?.order_no }}</strong></div></div>
+            <div class="order-proof"><span>单</span><div><small>查询对象</small><strong class="mono-data">{{ status?.order_no }}</strong></div></div>
             <div class="evidence-row"><span>身份校验</span><strong>订单号 + 手机尾号</strong></div><div class="evidence-row"><span>业务工具</span><strong>订单查询已成功</strong></div><div class="evidence-row"><span>数据结果</span><strong>金额、状态、物流</strong></div>
           </template>
           <template v-else>

@@ -6,7 +6,7 @@
 
     <div class="page-container">
       <section class="fulfillment-strip surface-card" aria-label="订单履约概览">
-        <div class="strip-title"><p class="eyebrow">FULFILLMENT FLOW</p><strong>订单履约信号</strong><small>优先处理需要人工动作的订单</small></div>
+        <div class="strip-title"><p class="eyebrow">履约进度</p><strong>订单履约信号</strong><small>优先处理需要人工动作的订单</small></div>
         <button type="button" :class="{ active: activeStatus === 'paid' }" @click="changeStatus('paid')"><span class="signal pay">¥</span><span><small>等待发货</small><strong class="mono-data">{{ countBy('paid') }}</strong></span><b>去处理 →</b></button>
         <button type="button" :class="{ active: activeStatus === 'shipped' }" @click="changeStatus('shipped')"><span class="signal ship">↗</span><span><small>运输途中</small><strong class="mono-data">{{ countBy('shipped') }}</strong></span><b>看物流 →</b></button>
         <button type="button" :class="{ active: activeStatus === 'refund_requested' }" @click="changeStatus('refund_requested')"><span class="signal refund">!</span><span><small>待退款审批</small><strong class="mono-data">{{ countBy('refund_requested') }}</strong></span><b>需关注 →</b></button>
@@ -15,7 +15,7 @@
 
       <section class="order-board surface-card">
         <header class="board-head">
-          <div><p class="eyebrow">ORDER OPERATIONS</p><h2>{{ activeLabel }}</h2><span>共 {{ total }} 条 · 金额只展示，不在列表页修改</span></div>
+          <div><p class="eyebrow">订单处理</p><h2>{{ activeLabel }}</h2><span>共 {{ total }} 条 · 金额只展示，不在列表页修改</span></div>
           <el-input v-model="keyword" clearable placeholder="搜索订单号或物流单号" aria-label="搜索订单" class="board-search" />
         </header>
 

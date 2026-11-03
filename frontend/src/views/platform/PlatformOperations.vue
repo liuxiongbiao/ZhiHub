@@ -3,7 +3,7 @@
     <PageHeader title="平台运营入口" subtitle="使用独立运营令牌查看跨租户指标和处理企业版申请" />
     <div class="page-container">
       <section v-if="!connected" class="token-gate surface-card">
-        <span class="gate-mark">OPS</span><div><p class="eyebrow">SECOND FACTOR</p><h1>验证平台运营权限</h1><p>这里跨越租户边界，因此除管理员登录态外，还需要独立的平台运营令牌。令牌只保存在当前页面内存中。</p><div class="token-row"><el-input v-model="platformToken" type="password" show-password size="large" placeholder="输入 PLATFORM_OPS_TOKEN" @keyup.enter="connect" /><el-button type="primary" size="large" :loading="loading" @click="connect">验证并进入</el-button></div></div>
+        <span class="gate-mark">运营</span><div><p class="eyebrow">二次验证</p><h1>验证平台运营权限</h1><p>这里跨越租户边界，因此除管理员登录态外，还需要独立的平台运营令牌。令牌只保存在当前页面内存中。</p><div class="token-row"><el-input v-model="platformToken" type="password" show-password size="large" placeholder="输入 PLATFORM_OPS_TOKEN" @keyup.enter="connect" /><el-button type="primary" size="large" :loading="loading" @click="connect">验证并进入</el-button></div></div>
       </section>
 
       <template v-else>
@@ -17,7 +17,7 @@
 
         <section class="ops-grid">
           <div class="surface-card pending-card">
-            <div class="card-head"><div><p class="eyebrow">ENTERPRISE QUEUE</p><h2>企业版申请</h2></div><el-button link type="primary" @click="loadData">刷新</el-button></div>
+            <div class="card-head"><div><p class="eyebrow">待审批</p><h2>企业版申请</h2></div><el-button link type="primary" @click="loadData">刷新</el-button></div>
             <el-table :data="pending" v-loading="loading" empty-text="当前没有待审批申请">
               <el-table-column prop="tenant_name" label="企业" min-width="150" />
               <el-table-column label="申请" width="110"><template #default="{ row }"><el-tag type="warning" size="small">{{ row.pending_plan === 'enterprise' ? '升级企业版' : '新企业版' }}</el-tag></template></el-table-column>
@@ -25,7 +25,7 @@
               <el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="primary" @click="approve(row)">批准</el-button></template></el-table-column>
             </el-table>
           </div>
-          <div class="surface-card plan-card"><div class="card-head"><div><p class="eyebrow">TENANT MIX</p><h2>套餐分布</h2></div></div><div class="plan-list"><div v-for="item in overview?.plan_distribution || []" :key="item.plan"><span><i :class="item.plan"></i>{{ planLabel(item.plan) }}</span><strong class="mono-data">{{ item.count }}</strong><em :style="{ width: `${planWidth(item.count)}%` }"></em></div></div><p class="ops-note">平台接口使用登录身份 + 独立运营令牌双重校验；普通租户管理员无法访问。</p></div>
+          <div class="surface-card plan-card"><div class="card-head"><div><p class="eyebrow">租户构成</p><h2>套餐分布</h2></div></div><div class="plan-list"><div v-for="item in overview?.plan_distribution || []" :key="item.plan"><span><i :class="item.plan"></i>{{ planLabel(item.plan) }}</span><strong class="mono-data">{{ item.count }}</strong><em :style="{ width: `${planWidth(item.count)}%` }"></em></div></div><p class="ops-note">平台接口使用登录身份 + 独立运营令牌双重校验；普通租户管理员无法访问。</p></div>
         </section>
       </template>
     </div>

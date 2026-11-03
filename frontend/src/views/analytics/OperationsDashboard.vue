@@ -2,7 +2,7 @@
   <main v-loading="loading" class="ops-page">
     <header class="ops-header">
       <div>
-        <p class="eyebrow">ZHIHUB / OPERATIONS PULSE</p>
+        <p class="eyebrow">运营成效</p>
         <h1>运营脉搏</h1>
         <p class="subtitle">从检索命中到人工接管，再到回款，一屏判断服务是否顺畅。</p>
       </div>
@@ -39,7 +39,7 @@
 
     <section v-if="attentionItems.length" class="attention-board" aria-label="需要处理的运营事项">
       <div class="attention-title">
-        <span class="section-code">NEXT BEST ACTION</span>
+        <span class="section-code">下一步</span>
         <h2>现在最值得处理的事</h2>
         <p>按风险与客户影响排序，点击即可进入对应工作区。</p>
       </div>
@@ -271,7 +271,7 @@ onMounted(loadOverview)
   font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 .ops-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
-.eyebrow, .section-code { color: var(--teal); font: 700 11px/1.2 "Bahnschrift", sans-serif; letter-spacing: .15em; }
+.eyebrow, .section-code { color: var(--teal); font-size: 12px; font-weight: 700; letter-spacing: .02em; }
 h1 { margin: 7px 0 6px; font: 700 36px/1.08 "Microsoft YaHei", sans-serif; letter-spacing: -.04em; }
 .subtitle { margin: 0; color: #5b7083; font-size: 14px; }
 .period-control { display: flex; align-items: center; gap: 10px; color: #6a7f90; font-size: 13px; }

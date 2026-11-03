@@ -8,7 +8,7 @@
   <div class="widget-preview-page">
     <section class="channel-hero">
       <div>
-        <p class="eyebrow">CUSTOMER CHANNEL</p>
+        <p class="eyebrow">客户入口</p>
         <h1>把服务入口放到客户面前</h1>
         <p>先用后台测试台验证回答，再用真实匿名通道检查客户看到的完整体验。两条链路边界清晰，共用同一套知识与服务流程。</p>
       </div>
@@ -55,7 +55,7 @@
             </div>
           </div>
           <aside class="validation-guide surface-card">
-            <p class="eyebrow">VALIDATION SCRIPT</p>
+            <p class="eyebrow">验证步骤</p>
             <h2>建议验证 3 件事</h2>
             <ol>
               <li><b>01</b><span><strong>答案是否明确</strong><small>询问退款条件或发货时效</small></span></li>
@@ -70,7 +70,7 @@
       <el-tab-pane label="真实 Widget 通道" name="real">
         <div data-test="real-widget-section" class="real-widget-section">
           <section class="credential-panel surface-card">
-            <p class="eyebrow">REAL CHANNEL</p>
+            <p class="eyebrow">真实通道</p>
             <h2>加载客户网站同款入口</h2>
             <p class="muted">
               <template v-if="demoKeyLoaded">已从演示中心安全载入本机演示 Key，无需复制密码或长期保存凭据。</template>
@@ -96,7 +96,7 @@
               title="已注入真实 widget.js" description="查看页面右下角的在线咨询气泡；它与外部网站使用同一脚本和匿名通道。" />
           </section>
           <aside class="channel-proof surface-card">
-            <p class="eyebrow">WHAT THIS PROVES</p>
+            <p class="eyebrow">这次能证明什么</p>
             <h2>这不是后台模拟器</h2>
             <div><b>01</b><span><strong>匿名身份</strong><small>不依赖后台登录状态</small></span></div>
             <div><b>02</b><span><strong>真实脚本</strong><small>直接注入生产 widget.js</small></span></div>

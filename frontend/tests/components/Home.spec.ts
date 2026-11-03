@@ -51,6 +51,8 @@ describe('Home.vue role-aware shortcuts', () => {
     expect(wrapper.text()).toContain('工单看板')
     expect(wrapper.text()).toContain('订单列表')
     expect(wrapper.text()).toContain('检索正常')
+    expect(wrapper.text()).toContain('今日服务')
+    expect(wrapper.text()).not.toContain('SERVICE COMMAND')
   })
 
   it('loads the admin identity before requesting live dashboard metrics', async () => {

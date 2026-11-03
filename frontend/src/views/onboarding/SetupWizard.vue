@@ -5,7 +5,7 @@
     </PageHeader>
     <div class="page-container" v-loading="loading">
       <section class="setup-hero surface-card">
-        <div><p class="eyebrow">GO LIVE READINESS</p><h1>{{ readyCount === checks.length && checks.length ? '系统已具备对外服务条件' : '把 AI 客服真正接到业务里' }}</h1><p>不是点击“下一步”就算完成。智枢会检查知识、业务工具、人工团队和客户入口是否真的可用。</p></div>
+        <div><p class="eyebrow">上线检查</p><h1>{{ readyCount === checks.length && checks.length ? '系统已具备对外服务条件' : '把 AI 客服真正接到业务里' }}</h1><p>不是点击“下一步”就算完成。智枢会检查知识、业务工具、人工团队和客户入口是否真的可用。</p></div>
         <div class="readiness-score"><strong class="mono-data">{{ readiness }}%</strong><span>{{ readyCount }} / {{ checks.length }} 项就绪</span></div>
       </section>
 
@@ -23,7 +23,7 @@
       </section>
 
       <section class="next-panel surface-card">
-        <div><p class="eyebrow">CURRENT CHECKPOINT</p><h2>{{ currentTitle }}</h2><p>{{ currentDescription }}</p><el-alert v-if="currentMissing.length" type="warning" :closable="false" :title="`还需完成：${currentMissing.map((item) => item.label).join('、')}`" /></div>
+        <div><p class="eyebrow">当前步骤</p><h2>{{ currentTitle }}</h2><p>{{ currentDescription }}</p><el-alert v-if="currentMissing.length" type="warning" :closable="false" :title="`还需完成：${currentMissing.map((item) => item.label).join('、')}`" /></div>
         <div class="next-actions"><el-button v-if="fullyCompleted" type="primary" size="large" @click="router.push('/')">返回服务驾驶舱</el-button><el-button v-else type="primary" size="large" :loading="advancing" :disabled="!currentReady" @click="handleNext">{{ allReady ? '完成上线验证' : '验证并进入下一步' }}</el-button><small v-if="!currentReady">完成上方当前步骤后，按钮会自动可用</small></div>
       </section>
 

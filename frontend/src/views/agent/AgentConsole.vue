@@ -1,13 +1,13 @@
 <template>
   <div class="agent-console">
     <header class="console-head">
-      <div><p class="eyebrow">LIVE SERVICE DESK</p><h1>坐席工作台</h1><p>接住 AI 没有把握的问题，并在同一屏完成订单、工单和退款操作。</p></div>
+      <div><p class="eyebrow">正在服务</p><h1>坐席工作台</h1><p>接住 AI 没有把握的问题，并在同一屏完成订单、工单和退款操作。</p></div>
       <div class="head-actions"><div class="online-chip"><i></i><span><strong>当前在线</strong><small>实时接收转人工会话</small></span></div><el-button v-if="isDemo" plain @click="switchToAdmin">返回管理员演示</el-button><el-button @click="loadWaiting">刷新队列</el-button></div>
     </header>
 
     <section class="console-body">
       <aside class="queue-panel surface-card">
-        <div class="panel-title"><div><p class="eyebrow">ACTION QUEUE</p><h2>待接客户</h2></div><span class="queue-count mono-data">{{ waitingSessions.length }}</span></div>
+        <div class="panel-title"><div><p class="eyebrow">待处理</p><h2>待接客户</h2></div><span class="queue-count mono-data">{{ waitingSessions.length }}</span></div>
         <div class="queue-filter"><button type="button" :class="{ active: queueFilter === 'all' }" @click="queueFilter = 'all'">全部</button><button type="button" :class="{ active: queueFilter === 'urgent' }" @click="queueFilter = 'urgent'">高风险</button></div>
         <div v-loading="loading" class="session-list">
           <div v-for="(item, index) in visibleSessions" :key="item.session_id" role="button" tabindex="0" class="session-item" :class="{ active: selectedSession?.session_id === item.session_id, urgent: item.sentiment === 'angry' || item.intent === 'sensitive_action' }" @click="selectSession(item)" @keydown.enter.prevent="selectSession(item)" @keydown.space.prevent="selectSession(item)">
@@ -34,11 +34,11 @@
           <el-tabs v-model="sideTab" class="side-tabs">
             <el-tab-pane label="业务处理" name="business">
               <div v-loading="contextLoading" class="business-context">
-                <div class="context-title"><p class="eyebrow">BUSINESS CONTEXT</p><h2>客户业务信息</h2><span>仅展示对话中明确提到的业务编号</span></div>
-                <div v-if="business?.order" class="business-card order-card"><div class="business-card-head"><span>ORD</span><div><small>订单</small><strong class="mono-data">{{ business.order.order_no }}</strong></div><el-tag size="small" :type="business.order.status === 'shipped' ? 'success' : 'info'">{{ orderStatus(business.order.status) }}</el-tag></div><dl><div><dt>订单金额</dt><dd>¥{{ business.order.amount }}</dd></div><div><dt>已付金额</dt><dd>¥{{ business.order.paid_amount }}</dd></div><div><dt>物流单号</dt><dd class="mono-data">{{ business.order.tracking_no || '尚未发货' }}</dd></div><div><dt>核验尾号</dt><dd class="mono-data">{{ business.detected.phone_last4 || '需客户提供' }}</dd></div></dl></div>
-                <div v-else class="context-empty"><span>ORD</span><strong>尚未识别订单</strong><p>请让客户提供订单号和手机号尾号，系统会自动关联。</p></div>
+                <div class="context-title"><p class="eyebrow">业务上下文</p><h2>客户业务信息</h2><span>仅展示对话中明确提到的业务编号</span></div>
+                <div v-if="business?.order" class="business-card order-card"><div class="business-card-head"><span>单</span><div><small>订单</small><strong class="mono-data">{{ business.order.order_no }}</strong></div><el-tag size="small" :type="business.order.status === 'shipped' ? 'success' : 'info'">{{ orderStatus(business.order.status) }}</el-tag></div><dl><div><dt>订单金额</dt><dd>¥{{ business.order.amount }}</dd></div><div><dt>已付金额</dt><dd>¥{{ business.order.paid_amount }}</dd></div><div><dt>物流单号</dt><dd class="mono-data">{{ business.order.tracking_no || '尚未发货' }}</dd></div><div><dt>核验尾号</dt><dd class="mono-data">{{ business.detected.phone_last4 || '需客户提供' }}</dd></div></dl></div>
+                <div v-else class="context-empty"><span>单</span><strong>尚未识别订单</strong><p>请让客户提供订单号和手机号尾号，系统会自动关联。</p></div>
 
-                <div v-if="business?.ticket" class="business-card ticket-card"><div class="business-card-head"><span>TK</span><div><small>关联工单</small><strong class="mono-data">{{ business.ticket.ticket_no }}</strong></div><el-tag size="small">{{ ticketStatus(business.ticket.status) }}</el-tag></div><p>{{ business.ticket.title }}</p></div>
+                <div v-if="business?.ticket" class="business-card ticket-card"><div class="business-card-head"><span>工</span><div><small>关联工单</small><strong class="mono-data">{{ business.ticket.ticket_no }}</strong></div><el-tag size="small">{{ ticketStatus(business.ticket.status) }}</el-tag></div><p>{{ business.ticket.title }}</p></div>
                 <div v-if="business?.refunds.length" class="refund-state"><div><strong>售后进度</strong><el-button link type="primary" @click="router.push('/agent/refunds')">查看审批</el-button></div><p v-for="refund in business.refunds" :key="refund.id"><span>{{ refund.reason || '退款申请' }}</span><el-tag size="small" :type="refund.status === 'pending' ? 'warning' : 'success'">{{ refundStatus(refund.status) }}</el-tag></p></div>
 
                 <div class="business-actions"><el-button type="primary" plain @click="openTicketDialog">创建售后工单</el-button><el-button :disabled="!business?.actions.can_request_refund" type="warning" plain @click="openRefundDialog">发起退款申请</el-button><el-button v-if="business?.actions.can_ship" plain @click="handleShip">登记发货</el-button></div>

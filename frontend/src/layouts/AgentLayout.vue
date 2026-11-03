@@ -12,7 +12,7 @@
     </el-aside>
     <el-container class="agent-shell">
       <el-header class="agent-header">
-        <div class="header-left"><span class="eyebrow">SERVICE DESK</span><strong>{{ currentTitle }}</strong></div>
+        <div class="header-left"><span class="eyebrow">坐席现场</span><strong>{{ currentTitle }}</strong></div>
         <div class="header-right">
           <span class="shift-chip"><i></i>本班次在线</span>
           <el-dropdown @command="handleCommand"><span class="user-trigger" data-test="agent-user-trigger"><span class="avatar">席</span><span><strong>当前客服</strong><small>{{ userStore.phone || '客服账号' }}</small></span><el-icon class="caret"><ArrowDown /></el-icon></span><template #dropdown><el-dropdown-menu><el-dropdown-item command="profile"><el-icon><User /></el-icon> 个人中心</el-dropdown-item><el-dropdown-item command="logout"><el-icon><SwitchButton /></el-icon> 退出登录</el-dropdown-item></el-dropdown-menu></template></el-dropdown>

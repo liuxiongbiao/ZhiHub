@@ -9,7 +9,7 @@
 
       <section class="quality-hero surface-card">
         <div class="score-ring" :style="scoreStyle"><strong class="mono-data">{{ data?.quality_score || 0 }}</strong><span>知识健康分</span></div>
-        <div class="quality-copy"><p class="eyebrow">KNOWLEDGE SIGNAL</p><h1>{{ qualityHeadline }}</h1><p>{{ qualityExplanation }}</p><div class="quality-actions"><el-button type="primary" @click="router.push('/knowledge/list')">管理知识文档</el-button><el-button plain @click="router.push('/knowledge/search-test')">运行回答验证</el-button></div></div>
+        <div class="quality-copy"><p class="eyebrow">知识状况</p><h1>{{ qualityHeadline }}</h1><p>{{ qualityExplanation }}</p><div class="quality-actions"><el-button type="primary" @click="router.push('/knowledge/list')">管理知识文档</el-button><el-button plain @click="router.push('/knowledge/search-test')">运行回答验证</el-button></div></div>
         <div class="quality-legend"><div><i class="ready"></i><span>可直接用于回答</span><strong>{{ docs.ready }}</strong></div><div><i class="review"></i><span>需要人工处理</span><strong>{{ docs.failed + docs.pending_review + docs.expired }}</strong></div><div><i class="process"></i><span>正在处理中</span><strong>{{ docs.processing }}</strong></div></div>
       </section>
 
@@ -22,12 +22,12 @@
 
       <section class="quality-grid">
         <div class="surface-card recommendation-card">
-          <div class="card-head"><div><p class="eyebrow">NEXT BEST ACTION</p><h2>建议先做这些</h2></div></div>
+          <div class="card-head"><div><p class="eyebrow">下一步</p><h2>建议先做这些</h2></div></div>
           <button v-for="(item, index) in data?.recommendations || []" :key="item.title" type="button" class="recommendation" @click="router.push(item.path)"><span class="mono-data">0{{ index + 1 }}</span><div><strong>{{ item.title }}</strong><small>{{ recommendationDetail(item.title) }}</small></div><el-tag :type="item.severity === 'high' ? 'danger' : item.severity === 'medium' ? 'warning' : 'success'" size="small" effect="light">{{ severityLabel(item.severity) }}</el-tag><b>→</b></button>
         </div>
 
         <div class="surface-card coverage-card">
-          <div class="card-head"><div><p class="eyebrow">DOCUMENT COVERAGE</p><h2>文档准备度</h2></div><strong class="mono-data">{{ readiness }}%</strong></div>
+          <div class="card-head"><div><p class="eyebrow">文档覆盖</p><h2>文档准备度</h2></div><strong class="mono-data">{{ readiness }}%</strong></div>
           <div class="coverage-track"><i class="ready" :style="{ width: `${readyWidth}%` }"></i><i class="process" :style="{ width: `${processWidth}%` }"></i><i class="risk" :style="{ width: `${riskWidth}%` }"></i></div>
           <dl class="coverage-list"><div><dt><i class="ready"></i> 已就绪</dt><dd>{{ docs.ready }}</dd></div><div><dt><i class="process"></i> 处理中</dt><dd>{{ docs.processing }}</dd></div><div><dt><i class="risk"></i> 失败 / 待复核 / 过期</dt><dd>{{ docs.failed + docs.pending_review + docs.expired }}</dd></div></dl>
           <el-collapse class="expert-box"><el-collapse-item title="专家指标说明"><p>健康分由文档就绪度（55%）与真实检索置信度（45%）组成。P95 是检索耗时的第 95 百分位，不包含回答生成时间。</p></el-collapse-item></el-collapse>
@@ -35,7 +35,7 @@
       </section>
 
       <section class="surface-card missed-card">
-        <div class="card-head"><div><p class="eyebrow">CUSTOMER LANGUAGE</p><h2>系统没把握的问题</h2><p>这些是真实检索中置信度低于阈值的问题，可直接带到回答验证台复现。</p></div><el-button link type="primary" @click="router.push('/knowledge/search-test')">打开验证台</el-button></div>
+        <div class="card-head"><div><p class="eyebrow">客户原话</p><h2>系统没把握的问题</h2><p>这些是真实检索中置信度低于阈值的问题，可直接带到回答验证台复现。</p></div><el-button link type="primary" @click="router.push('/knowledge/search-test')">打开验证台</el-button></div>
         <div v-if="data?.missed_queries.length" class="missed-list"><button v-for="item in data.missed_queries" :key="item.query + item.occurred_at" type="button" @click="retest(item.query)"><span class="question-mark">?</span><span><strong>{{ item.query }}</strong><small>{{ formatTime(item.occurred_at) }}</small></span><b class="mono-data">{{ formatPercent(item.confidence) }}</b><span>重新验证 →</span></button></div>
         <div v-else class="empty-action"><div><strong>暂无低置信问题</strong><p>继续使用示例问题抽查，保持知识质量稳定。</p><el-button type="primary" plain @click="router.push('/knowledge/search-test')">开始验证</el-button></div></div>
       </section>
