@@ -140,7 +140,8 @@ def client(db):
         def request(self, method, url, **kwargs):
             headers = dict(kwargs.get("headers") or {})
             auth = headers.get("Authorization") or ""
-            if auth.startswith("Bearer "):
+            already_set = any(key.lower() == "x-csrf-token" for key in headers)
+            if auth.startswith("Bearer ") and not already_set:
                 headers["X-CSRF-Token"] = auth[len("Bearer "):].strip()
                 kwargs["headers"] = headers
             return super().request(method, url, **kwargs)

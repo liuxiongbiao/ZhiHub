@@ -76,17 +76,24 @@ logger = logging.getLogger(__name__)
 
 
 def _redis_fail_open(func, *args, default=None):
-    """Redis 调用 fail-open（与中间件哲学一致）：故障时返回 default 并告警，不阻断登录。
+    """失败计数和清零在 Redis 故障时放行，避免计数故障把正确登录打成 500。
 
-    登录链路的 Redis 调用（锁定检查/失败计数/清零）故障时不应让 /login 500--
-    与 auth/rate_limit 中间件一样选择可用性优先（fail-open），代价是故障窗口内
-    暴力破解防护暂失（与"撤销 token 在 Redis 故障期仍可用"同级取舍）。
+    锁定状态查询不走这里。锁定查不到必须拒绝，见 _require_lock_ttl。
     """
     try:
         return func(*args)
     except Exception as e:
         logger.warning(f"Redis unavailable, {getattr(func, '__name__', 'redis_op')} fail-open: {e}")
         return default
+
+
+def _require_lock_ttl(func, *args) -> int:
+    """读取登录锁定剩余时间。Redis 故障时无法确认是否已锁定，拒绝登录。"""
+    try:
+        return int(func(*args))
+    except Exception as e:
+        logger.error(f"Redis unavailable, login lock check rejected: {e}")
+        raise AuthStoreUnavailable("登录服务暂不可用") from e
 
 
 # ────────── 业务异常（API 层映射到 HTTP 状态码）──────────
@@ -104,6 +111,10 @@ class WeakPassword(AuthError):
 
 class InvalidCredentials(AuthError):
     """手机号或密码错误 -> 401。"""
+
+
+class AuthStoreUnavailable(AuthError):
+    """登录锁定状态无法确认（Redis 不可用）-> 503。"""
 
 
 class AccountLocked(AuthError):
@@ -475,13 +486,13 @@ def login(db: Session, *, phone: str, password: str, ip: str | None = None) -> L
         AccountLocked: 账号锁定中
         InvalidCredentials: 手机号或密码错误
     """
-    # 1. 先查锁定：锁定期内直接拒绝（即使密码正确）；消息统一"尝试次数过多"防枚举
-    # Redis 故障 fail-open（跳过锁定检查），不阻断登录，与中间件一致
-    lock_ttl = _redis_fail_open(redis_module.get_lock_ttl, phone, default=0)
+    # 1. 先查锁定：锁定期内直接拒绝（即使密码正确）；消息统一"尝试次数过多"防枚举。
+    # 锁定状态查不到则拒绝登录，避免 Redis 故障时绕过已生效的锁定。
+    lock_ttl = _require_lock_ttl(redis_module.get_lock_ttl, phone)
     if lock_ttl > 0:
         raise AccountLocked(lock_ttl)
     if ip:
-        ip_ttl = _redis_fail_open(redis_module.get_lock_ttl_ip, ip, default=0)
+        ip_ttl = _require_lock_ttl(redis_module.get_lock_ttl_ip, ip)
         if ip_ttl > 0:
             raise AccountLocked(ip_ttl)
 
@@ -493,7 +504,7 @@ def login(db: Session, *, phone: str, password: str, ip: str | None = None) -> L
             _redis_fail_open(redis_module.incr_login_fail_ip, ip)
         # 本次失败恰好达阈值 → 转为锁定状态
         if count >= redis_module.MAX_FAIL_ATTEMPTS:
-            raise AccountLocked(_redis_fail_open(redis_module.get_lock_ttl, phone, default=0))
+            raise AccountLocked(_require_lock_ttl(redis_module.get_lock_ttl, phone))
         raise InvalidCredentials("手机号或密码错误")
 
     # 3. 成功：清零 phone 维度失败计数，取该用户在某租户的 admin/agent 角色签发令牌

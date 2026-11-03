@@ -34,11 +34,9 @@ backend/app/main.py
 """
 
 import logging
-import os
-import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import get_db
@@ -100,10 +98,6 @@ def _configure_logging() -> None:
 _configure_logging()
 
 
-# 空闲会话定时收尾（规格 007）: 每 5min 跑一次
-CLEANUP_INTERVAL_SECONDS = 300
-
-
 def _billing_scheduler_tick(
     now,
     state: dict,
@@ -139,71 +133,6 @@ def _billing_scheduler_tick(
     return state
 
 
-def _run_billing_scheduler() -> None:
-    """计费定时调度: 每日 02:00 UTC 聚合用量 + 每月 1 号 03:00 UTC 生成账单。
-
-    此前 billing_tasks 两个任务从未被任何调度注册（Celery beat 无配置），
-    月度账单闭环缺失。demo 用 daemon 线程 + 轮询（与 idle_cleanup 同模式），
-    生产可部署 celery_worker.py 的 beat_schedule（同款 crontab）。
-    last_* 标记防同一窗口重复触发（进程内单实例）。
-    """
-    from datetime import datetime, timezone
-
-    # 启动即视为"今日/本月已执行"（预置标记）：首 tick 不立即执行，
-    # 从下一个跨天窗口才开始触发——避免服务启动瞬间（或测试环境 TestClient
-    # lifespan）直接跑聚合写库
-    startup_now = datetime.now(timezone.utc).replace(tzinfo=None)
-    state = {
-        "last_usage_day": startup_now.strftime("%Y-%m-%d"),
-        "last_invoice_month": startup_now.strftime("%Y-%m"),
-    }
-    while True:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        for attempt in range(3):
-            try:
-                _billing_scheduler_tick(now, state)
-                break
-            except Exception as e:
-                logger.warning(f"Billing scheduler tick failed (attempt {attempt + 1}): {e}")
-                if attempt < 2:
-                    time.sleep(5)
-        time.sleep(60)
-
-
-def _run_idle_cleanup() -> None:
-    """周期性收尾: 空闲会话收尾 / 超期退款取消 / 订单超时流转 / 试用版降级只读。"""
-    from app.core.database import SessionLocal
-    from app.tasks.cleanup_tasks import (
-        cleanup_agent_presence,
-        cleanup_expired_docs,
-        cleanup_expired_orders,
-        cleanup_idle_sessions,
-        cleanup_overdue_refunds,
-        cleanup_trial_degradation,
-        remind_expiring_docs,
-    )
-
-    while True:
-        try:
-            db = SessionLocal()
-            try:
-                cleanup_idle_sessions(db)
-                cleanup_overdue_refunds(db)
-                cleanup_expired_orders(db)
-                cleanup_expired_docs(db)  # : 到期知识文档摘除（含检索库切片删除）
-                cleanup_trial_degradation(db)
-                cleanup_agent_presence()
-                remind_expiring_docs(db)  # PRD 3.2: 到期前 7 天邮件提醒
-                # 退款 Outbox 重试（外部退款失败后由后台任务补投）
-                from app.services.order_service import process_refund_outbox_batch
-                process_refund_outbox_batch(db)
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"Idle cleanup failed (non-blocking): {e}")
-        time.sleep(CLEANUP_INTERVAL_SECONDS)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """API 生命周期只管理基础资源；业务消费与周期任务统一由 Celery 承担。"""
@@ -213,7 +142,12 @@ async def lifespan(app: FastAPI):
         init_db()
         logger.info("Database tables ensured")
     except Exception as e:
+        if settings.app_env == "production":
+            logger.error(f"init_db failed in production: {e}")
+            raise
         logger.warning(f"init_db failed (non-blocking): {e}")
+
+    logger.info("Maintenance tasks are owned by celery-beat, not the API process")
 
     from app.core.ws_manager import manager
 
@@ -282,13 +216,24 @@ def health_check():
 
 
 @app.get("/metrics")
-def metrics_endpoint(db: Session = Depends(get_db)):
-    """Prometheus 文本格式指标（审查  监控探针）。
-    生产建议置于内网或加鉴权；demo 直接暴露便于抓取。"""
+def metrics_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Prometheus 文本格式指标。只接受平台运营令牌，不接受租户 JWT。"""
+    import hmac
+
+    from fastapi import HTTPException
     from sqlalchemy import func, select
     from starlette.responses import Response
     from app.core.metrics import render_metrics, ACTIVE_SESSIONS
     from app.models.session import Session as SessionModel
+
+    supplied = request.headers.get("X-Platform-Token", "")
+    expected = settings.platform_ops_token
+    if (
+        not expected
+        or not supplied
+        or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+    ):
+        raise HTTPException(status_code=401, detail="未认证")
 
     # 审计复核：抓取前刷新活跃会话 Gauge（waiting_human/human_handling/agent_handling）
     try:

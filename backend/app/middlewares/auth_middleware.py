@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # /wechat/bind 需 JWT（已登录后才允许绑定）
 _PUBLIC_PREFIXES = (
     "/health",
-    # "/metrics" 已移除公开白名单 —— 监控探针需鉴权或内网隔离（审计修复）
+    "/metrics",  # 不走租户 JWT；端点自行校验 X-Platform-Token
     "/api/v1/auth/register",
     "/api/v1/auth/login",
     "/api/v1/auth/refresh",
@@ -92,11 +92,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             try:
                 is_blocked = is_blocklisted(jti)
             except Exception as e:
-                # Redis 故障降级: 黑名单查不了 → fail-open 放行（可用性优先）。
-                # 代价: 登出的 token 在 Redis 恢复前不失效——token 本身有 TTL，
-                # 最坏多存活到令牌自然过期，可接受。
-                logger.warning(f"Redis unavailable, blocklist check skipped: {e}")
-                is_blocked = False
+                # 黑名单查不到就不能证明令牌仍有效。Redis 故障时拒绝，避免已登出令牌继续使用。
+                logger.error(f"Redis unavailable, rejecting token because blocklist cannot be checked: {e}")
+                return JSONResponse({"detail": "未认证"}, status_code=401)
             if is_blocked:
                 return JSONResponse({"detail": "未认证"}, status_code=401)
 

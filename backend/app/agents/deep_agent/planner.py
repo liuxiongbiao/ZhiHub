@@ -323,8 +323,8 @@ def _query_stats(tenant_id: int) -> dict:
         finally:
             db.close()
     except Exception as e:
-        logger.warning(f"Stats query failed (using mock): {e}")
-        return {"total_tickets": 25, "open_tickets": 8, "source": "mock"}
+        logger.warning(f"Stats query failed: {e}")
+        return {"total_tickets": None, "open_tickets": None, "source": "unavailable"}
 
 
 def _search_sop(goal: str, tenant_id: int) -> list[str]:
@@ -339,11 +339,16 @@ def _search_sop(goal: str, tenant_id: int) -> list[str]:
 
 
 def _generate_report(goal: str, stats: dict, sop_docs: list[str]) -> str:
+    unavailable = stats.get("source") == "unavailable"
+    stats_note = "统计不可用，下面没有真实工单数量。\n" if unavailable else ""
+    total = "不可用" if unavailable else stats.get("total_tickets", "N/A")
+    open_count = "不可用" if unavailable else stats.get("open_tickets", "N/A")
     prompt = (
         "你是智枢ZhiHub的运营分析助手。请根据以下数据生成一份中文分析报告。\n\n"
         f"任务目标：{goal}\n\n"
-        f"统计数据：\n  - 总工单数：{stats.get('total_tickets', 'N/A')}\n"
-        f"  - 处理中工单：{stats.get('open_tickets', 'N/A')}\n\n"
+        f"{stats_note}"
+        f"统计数据：\n  - 总工单数：{total}\n"
+        f"  - 处理中工单：{open_count}\n\n"
         f"相关知识库SOP片段：\n"
     )
     for i, doc in enumerate(sop_docs[:3], 1):
@@ -356,8 +361,11 @@ def _generate_report(goal: str, stats: dict, sop_docs: list[str]) -> str:
         return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Report generation failed: {e}")
+        unavailable = "统计不可用，以下不是真实工单数量。\n" if stats.get("source") == "unavailable" else ""
+        total = "不可用" if stats.get("source") == "unavailable" else stats.get("total_tickets", "N/A")
+        open_count = "不可用" if stats.get("source") == "unavailable" else stats.get("open_tickets", "N/A")
         return (
-            f"# {goal}\n\n## 数据概览\n- 总工单数: {stats.get('total_tickets', 'N/A')}\n"
-            f"- 处理中: {stats.get('open_tickets', 'N/A')}\n\n"
+            f"# {goal}\n\n## 数据概览\n{unavailable}- 总工单数: {total}\n"
+            f"- 处理中: {open_count}\n\n"
             f"## 说明\n（报告生成遇到技术问题，以上为模板化摘要。）\n"
         )

@@ -230,6 +230,7 @@
       method: 'POST',
       headers: headers,
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000),
     }).then(function (response) {
       if (!response.ok) {
         return response.json().then(function (data) {

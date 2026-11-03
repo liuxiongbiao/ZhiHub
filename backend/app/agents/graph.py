@@ -157,14 +157,14 @@ def _route_intent(state: AgentState) -> Literal[
     决策优先级（高到低，first-match 即返回）:
       1. sentiment=angry -> 强制转人工（不管意图是什么，愤怒用户必须人工安抚）
       2. intent=sensitive_action -> 转人工（敏感操作如退款强制 interrupt）
-      3. confidence < 0.4 -> 转人工（低置信度不做自动决策，避免误路由）
+      3. confidence < router_confidence_threshold -> 转人工（低置信度不做自动决策，避免误路由）
       4. 其余按 intent 路由到对应 agent
 
     设计决策:
       优先级顺序是业务逻辑决定的：愤怒情绪最高（用户体验优先，愤怒用户让 AI 处理可能激化矛盾），
       敏感操作次之（资金安全），低置信度再次（避免误判），最后才是正常意图路由。
       first-match 即返回确保高优先级先判，不会因为 intent 命中而跳过情绪检查。
-      confidence 阈值 0.4 与 router 的 FALLBACK_CONFIDENCE(0.3) 配合--fallback 必然转人工。
+      confidence 阈值来自 router_confidence_threshold（默认 0.4），与 router 的 FALLBACK_CONFIDENCE(0.3) 配合--fallback 必然转人工。
     """
     intent = state.get("intent", "knowledge_consult")
     sentiment = state.get("sentiment", "normal")
@@ -180,7 +180,9 @@ def _route_intent(state: AgentState) -> Literal[
         return "human_handoff"
 
     # 3. 低置信度 → 转人工（不让不确定的意图进入业务节点，避免误调工具）
-    if confidence < 0.4:
+    from app.config import settings
+    threshold = settings.router_confidence_threshold
+    if confidence < threshold:
         logger.info(f"Route: low confidence ({confidence:.2f}) -> human_handoff")
         return "human_handoff"
 

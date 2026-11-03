@@ -33,6 +33,24 @@ class TestNotifications:
         unread2 = client.get("/api/v1/notifications/unread-count", headers=headers).json()
         assert unread2["count"] == 0
 
+    def test_directed_notification_cannot_be_marked_by_another_user(self, client, db, make_token):
+        note = create_notification(
+            db, tenant_id=1, user_id=2, title="只给用户2", type="system",
+        )
+        token = make_token(user_id=1, tenant_id=1, role="admin")
+        headers = {"Authorization": f"Bearer {token}"}
+        mark = client.post(f"/api/v1/notifications/{note.id}/read", headers=headers)
+        assert mark.status_code == 404
+        db.refresh(note)
+        assert note.read_at is None
+
+        owner = make_token(user_id=2, tenant_id=1, role="agent")
+        marked = client.post(
+            f"/api/v1/notifications/{note.id}/read",
+            headers={"Authorization": f"Bearer {owner}"},
+        )
+        assert marked.status_code == 200
+
     def test_unread_filter(self, client, db, make_token):
         token = make_token(user_id=1, tenant_id=1, role="admin")
         headers = {"Authorization": f"Bearer {token}"}

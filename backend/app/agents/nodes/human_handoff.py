@@ -22,11 +22,16 @@ backend/app/agents/nodes/human_handoff.py
 触发条件（来自 router + graph.py 条件边）:
   1. sentiment=angry -> 情绪愤怒
   2. intent=sensitive_action -> 敏感操作(如退款)强制转人工
-  3. confidence<0.4 -> 路由不确定
+  3. confidence 低于 router_confidence_threshold -> 路由不确定
+
+坐席通知不在本节点发送。本节点只写入 should_interrupt；
+agent_service 读到该标记后把会话置为 waiting_human，并向在线坐席广播。
 """
 
 import logging
 from typing import Any
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +49,17 @@ def human_handoff_node(state: dict[str, Any]) -> dict[str, Any]:
       触发原因汇总而非单一原因，是因为可能多个条件同时命中（如既愤怒又低置信度），
       一次性告知用户原因更透明。should_interrupt=True 是同步标记，agent_service 读到后
       置会话 waiting_human 等坐席认领，而非 LangGraph 的 true interrupt（需 checkpoint resume）。
-      通知坐席在 demo 简化为日志，生产应发布到坐席工作台（RabbitMQ/WS）。
+      坐席广播由 agent_service 在置 waiting_human 后完成。
 
-    将触发原因汇总，更新会话状态为 waiting_human，
-    返回用户提示信息并发布通知（demo 简化：仅写日志）。
+    将触发原因汇总。agent_service 读到 should_interrupt 后更新会话状态为 waiting_human
+    并广播给在线坐席。
+    返回用户提示信息。
     """
     sentiment = state.get("sentiment", "normal")
     intent = state.get("intent", "")
     confidence = state.get("confidence", 0.0)
     session_id = state.get("session_id", 0)
+    threshold = settings.router_confidence_threshold
 
     # 确定触发原因（对齐 graph.py _route_intent 的路由条件）
     reasons = []
@@ -60,7 +67,7 @@ def human_handoff_node(state: dict[str, Any]) -> dict[str, Any]:
         reasons.append("用户情绪愤怒")
     if intent == "sensitive_action":
         reasons.append("涉及敏感操作（退款/投诉等）")
-    if confidence < 0.4:
+    if confidence < threshold:
         reasons.append(f"AI置信度不足 ({confidence:.0%})")
 
     reason_str = "、".join(reasons) if reasons else "系统判定需人工介入"

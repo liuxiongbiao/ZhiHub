@@ -46,7 +46,10 @@ def get_unread_count(request: Request, db: Session = Depends(get_db)):
 @router.post("/{notification_id}/read")
 def mark_read(notification_id: int, request: Request, db: Session = Depends(get_db)):
     from app.services.notification_service import mark_read as _mark
-    ok = _mark(db, notification_id, _get_tenant_id(request))
+    ok = _mark(
+        db, notification_id, _get_tenant_id(request),
+        user_id=getattr(request.state, "user_id", None),
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="通知不存在")
     return {"id": notification_id, "read": True}

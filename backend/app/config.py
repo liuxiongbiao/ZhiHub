@@ -89,9 +89,6 @@ class Settings(BaseSettings):
     # 避免把便捷演示入口误带到真实环境。
     demo_quick_login_enabled: bool = False
 
-    # 计费调度器运行方式（true=backend 进程内 daemon 线程，false=Celery beat 负责）
-    in_process_scheduler: bool = True
-
     # 外部能力开关：启用时由统一启动校验保证所需凭据完整。
     payment_enabled: bool = False
     sms_enabled: bool = False
@@ -172,6 +169,8 @@ class Settings(BaseSettings):
     widget_token_expire_minutes: int = 30
     # 规格 007 / PRD §3.4: 单会话最大轮次（原硬编码 50，与 PRD 规定的 15 不符）
     max_rounds_per_session: int = 15
+    # 路由置信度。低于该值转人工。这是意图置信度，不是检索精排分。
+    router_confidence_threshold: float = 0.4
     # PRD §3.11: DeepAgent 任务执行超时（秒）
     deep_agent_timeout_seconds: int = 600
     # PRD §3.11: 单个 DeepAgent 任务 token 硬预算（输入 + 输出累计）
@@ -227,6 +226,25 @@ class Settings(BaseSettings):
             return True
         return not (address.is_private or address.is_loopback or address.is_link_local)
 
+    def _production_credential_issues(self) -> list[str]:
+        """生产环境拒绝代码和 compose 里的默认口令，并要求 Mongo/ES 带认证。"""
+        issues: list[str] = []
+        if self.app_secret_key == "change-me":
+            issues.append("APP_SECRET_KEY")
+        if self.mysql_password in {"", "zhihub"}:
+            issues.append("MYSQL_PASSWORD")
+        if self.redis_password in {"", "zhihub-dev"}:
+            issues.append("REDIS_PASSWORD")
+        if "guest:guest@" in self.rabbitmq_url or "zhihub:zhihub-dev@" in self.rabbitmq_url:
+            issues.append("RABBITMQ_URL")
+        mongo = urlparse(self.mongo_uri)
+        if not mongo.username or not mongo.password:
+            issues.append("MONGO_URI (username and password required)")
+        elastic = urlparse(self.elasticsearch_url)
+        if not elastic.username or not elastic.password:
+            issues.append("ELASTICSEARCH_URL (username and password required)")
+        return issues
+
     @model_validator(mode="after")
     def _validate_enabled_features(self) -> "Settings":
         """按功能开关一次性报告全部缺失配置，避免首次调用才失败。"""
@@ -268,6 +286,8 @@ class Settings(BaseSettings):
             missing.append("EMAIL_VERIFY_LINK_BASE (external HTTPS URL)")
         if self.app_env == "production" and self.demo_quick_login_enabled:
             missing.append("DEMO_QUICK_LOGIN_ENABLED (must be false in production)")
+        if self.app_env == "production":
+            missing.extend(self._production_credential_issues())
         if missing:
             raise ValueError("enabled features have missing configuration: " + ", ".join(missing))
         return self

@@ -199,10 +199,12 @@ class TestWebSocketEnvelope:
         assert calls[0]["payload"]["session_id"] == session.id
         assert calls[0]["payload"]["agent_id"] == 101
 
-    def test_blocklist_failure_logs_and_ws_still_connects(self, client, make_token, monkeypatch):
+    def test_blocklist_failure_closes_workstation_socket(self, client, make_token, monkeypatch):
+        from starlette.websockets import WebSocketDisconnect
         from app.api.v1 import ws as ws_api
 
         monkeypatch.setattr(ws_api, "is_blocklisted", lambda jti: (_ for _ in ()).throw(RuntimeError("redis down")))
         token = make_token(user_id=10, tenant_id=1, role="agent", ws=True)
-        with client.websocket_connect(f"/api/v1/ws/agent?token={token}"):
-            pass
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(f"/api/v1/ws/agent?token={token}"):
+                pass

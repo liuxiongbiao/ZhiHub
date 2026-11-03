@@ -72,8 +72,8 @@ def _save(tool_name: str, state: dict) -> None:
     get_redis().set(_key(tool_name), json.dumps(state), ex=CIRCUIT_TTL)
 
 
-def _with_mutation_lock(tool_name: str, fn) -> None:
-    """串行化状态读改写。抢锁失败时降级直接执行（低频工具调用，可接受）。"""
+def _with_mutation_lock(tool_name: str, fn) -> bool:
+    """串行化状态读改写。抢锁失败时不改状态，避免无锁读改写互相覆盖。"""
     r = get_redis()
     token = secrets.token_hex(8)
     for _ in range(MUTATION_LOCK_RETRIES):
@@ -85,10 +85,10 @@ def _with_mutation_lock(tool_name: str, fn) -> None:
                     r.delete(_lock_key(tool_name))
                 except Exception:
                     pass
-            return
+            return True
         time.sleep(MUTATION_LOCK_RETRY_DELAY)
-    logger.warning(f"Circuit {tool_name}: mutation lock not acquired, applying without lock")
-    fn()
+    logger.error(f"Circuit {tool_name}: mutation lock not acquired, state left unchanged")
+    return False
 
 
 def is_broken(tool_name: str) -> bool:
@@ -103,14 +103,26 @@ def is_broken(tool_name: str) -> bool:
     if s["state"] == STATE_OPEN:
         opened_at = s.get("opened_at")
         if opened_at and now - opened_at > HALF_OPEN_TIMEOUT:
-            # open 超时：抢占探测权 → 转 half_open → 放行唯一探测
-            if r.set(_probe_key(tool_name), "1", nx=True, ex=HALF_OPEN_TIMEOUT):
-                s["state"] = STATE_HALF_OPEN
-                s["recover_count"] = 0
-                s["probed_at"] = now
-                _save(tool_name, s)
-                logger.info(f"Circuit {tool_name}: open -> half_open (single probe allowed)")
-                return False
+            promoted = False
+
+            def _promote() -> None:
+                nonlocal promoted
+                current = get_state(tool_name)
+                opened = current.get("opened_at")
+                if current.get("state") != STATE_OPEN or not opened or time.time() - opened <= HALF_OPEN_TIMEOUT:
+                    return
+                # 探测权仍用 SET NX，状态写入与失败/成功计数共用同一把锁。
+                if r.set(_probe_key(tool_name), "1", nx=True, ex=HALF_OPEN_TIMEOUT):
+                    current["state"] = STATE_HALF_OPEN
+                    current["recover_count"] = 0
+                    current["probed_at"] = time.time()
+                    _save(tool_name, current)
+                    promoted = True
+                    logger.info(f"Circuit {tool_name}: open -> half_open (single probe allowed)")
+
+            if not _with_mutation_lock(tool_name, _promote):
+                return True
+            return not promoted
         return True
 
     # half_open：仅持有探测权者放行（SET NX 保证单探测）

@@ -66,14 +66,21 @@ def unread_count(db: Session, tenant_id: int, *, user_id: int | None = None) -> 
     return db.execute(select(func.count()).select_from(Notification).where(*conds)).scalar() or 0
 
 
-def mark_read(db: Session, notification_id: int, tenant_id: int) -> bool:
-    """标记已读（租户隔离）；不存在返回 False。"""
+def mark_read(
+    db: Session, notification_id: int, tenant_id: int, user_id: int | None = None,
+) -> bool:
+    """标记已读。全员通知（user_id 为空）同租户可标；定向通知仅收件人可标。
+
+    不存在、跨租户、或当前用户不是收件人时都返回 False，调用方统一响应 404。
+    """
     n = db.execute(
         select(Notification).where(
             Notification.id == notification_id, Notification.tenant_id == tenant_id
         )
     ).scalar_one_or_none()
     if n is None:
+        return False
+    if n.user_id is not None and n.user_id != user_id:
         return False
     if n.read_at is None:
         n.read_at = datetime.now(timezone.utc).replace(tzinfo=None)

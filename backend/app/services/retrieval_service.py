@@ -49,14 +49,15 @@ BM25_TOP_K = 20       # BM25 召回数量
 RRF_K = 60            # RRF 融合常数，经验值（缓解高排名项过度主导）
 RERANK_TOP_K = 5      # 精排后保留数量
 RERANK_CANDIDATE_LIMIT = 20  # 交叉编码器只处理融合后的高价值候选，控制冷链路延迟
-# bge-reranker relevance_score 阈值：低于此值触发 HyDE 兜底
+# bge-reranker 精排分阈值：低于此值触发 HyDE 兜底。
+# 这是精排相关性分数，与路由意图置信度 router_confidence_threshold 不是同一个量。
 # 标定依据（2026-08-23 真实栈实验，bge-reranker-v2-m3 经硅基流动 API）：
 #   最佳匹配片段 ≈ 0.359，弱相关/无关片段 ≤ 0.013。
 # 原值 0.6 高于该模型实际分数上限，导致 100% 判低置信度、全部转人工（自动解决率 0%）。
 # 0.3 vs 0.25 对比实验（18 题端到端）：结果完全一致（自动解决率 38.9%），
 #   说明剩余漏答题的 rerank 分数已在噪声区（≤0.013），属检索召回问题而非阈值问题。
 # 定稿 0.3：与噪声地板保持安全距离，后续可基于扩充评测集进一步标定。
-CONFIDENCE_THRESHOLD = 0.3
+RERANK_SCORE_THRESHOLD = 0.3
 
 # 规格 008 降级模式告警: 检索召回失败时 Redis 标记 degradation:{tenant_id}，TTL 1h（PRD §3.4/3.8）
 DEGRADATION_KEY_PREFIX = "degradation:"
@@ -643,7 +644,7 @@ def hybrid_search(
         rerank_elapsed += int((time.perf_counter() - rerank_start) * 1000)
 
         # 6. 置信度判断：Top1 < 阈值 → HyDE 兜底
-        if hybrid_top and hybrid_top[0].score < CONFIDENCE_THRESHOLD:
+        if hybrid_top and hybrid_top[0].score < RERANK_SCORE_THRESHOLD:
             logger.info(
                 f"Low confidence (top1={hybrid_top[0].score:.3f}), triggering HyDE fallback"
             )
@@ -677,7 +678,7 @@ def hybrid_search(
             hyde_elapsed = int((time.perf_counter() - hyde_start) * 1000)
 
         # PRD §3.3：HyDE 重试后置信度仍低于阈值 → 标记低置信度，供上层 Agent 决策转人工
-        if hybrid_top and hybrid_top[0].score < CONFIDENCE_THRESHOLD:
+        if hybrid_top and hybrid_top[0].score < RERANK_SCORE_THRESHOLD:
             low_confidence = True
     timings["rerank"] = rerank_elapsed
     if hyde_fallback:

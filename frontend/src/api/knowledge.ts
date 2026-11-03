@@ -92,5 +92,5 @@ export function deleteDocument(docId: number) {
  * 检索测试
  */
 export function searchTest(query: string, history: Array<{ role: string; content: string }> = []) {
-  return request.post<SearchTestResponse>('/knowledge/test', { query, history })
+  return request.post<SearchTestResponse>('/knowledge/test', { query, history }, { timeout: 60000 })
 }

@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # 默认兜底意图（LLM 调用异常时使用）——低置信度知识咨询，让条件边据 confidence 转人工
 FALLBACK_INTENT = "knowledge_consult"
-FALLBACK_CONFIDENCE = 0.3  # 低于 0.4 阈值，会触发条件边转人工
+FALLBACK_CONFIDENCE = 0.3  # 低于 router_confidence_threshold（默认 0.4），会触发条件边转人工
 
 
 # ─── 路由结构化输出模型 ───
@@ -47,7 +47,7 @@ class RouterOutput(BaseModel):
     """路由节点结构化输出（LangChain with_structured_output 校验 LLM 返回符合此结构）。
 
     intent: 意图（knowledge_consult/ticket_query/order_query/sensitive_action）
-    confidence: 置信度 0~1，低于 0.4 触发转人工
+    confidence: 置信度 0~1，低于 router_confidence_threshold 触发转人工
     sentiment: 情绪（normal/unhappy/angry），angry 强制转人工
     slots: 槽位键值对（如 ticket_no/phone/order_no），供后续 Agent 复用
     """

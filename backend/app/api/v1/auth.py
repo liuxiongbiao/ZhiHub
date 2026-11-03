@@ -70,6 +70,7 @@ from app.schemas.auth import (
 from app.services import auth_service
 from app.services.auth_service import (
     AccountLocked,
+    AuthStoreUnavailable,
     EmailAlreadyExists,
     EmailNotVerified,
     InvalidCode,
@@ -100,8 +101,11 @@ def _enforce_ip_rate_limit(request: Request) -> str | None:
     try:
         allowed = redis_module.check_ip_rate_limit(client_ip)
     except Exception as e:
-        # Redis 故障 fail-open：限流暂失但不阻断登录（与 auth/rate_limit 中间件一致）
-        logger.warning(f"Redis unavailable, login IP rate limit skipped: {e}")
+        # 登录频率限制失败即放行，避免 Redis 抖动时无法登录。账号锁定查询仍会拒绝。
+        logger.warning(
+            "Redis unavailable, login IP rate limit skipped by design so an outage does not block sign-in: %s",
+            e,
+        )
         return client_ip
     if not allowed:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="请求过于频繁，请稍后再试")
@@ -194,6 +198,8 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
         )
     except AccountLocked as e:
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e)) from e
+    except AuthStoreUnavailable as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     except InvalidCredentials as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
     return LoginResponse(

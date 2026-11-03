@@ -55,9 +55,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         try:
             result = check_rate_limit(tenant_id, user_id)
         except Exception as e:
-            # 限流依赖 Redis；故障时 fail-open（可用性优先），告警日志。
-            # 代价: 限流保护在故障期暂失，但 Auth 中间件仍拦截未认证请求。
-            logger.warning(f"Redis unavailable, rate limit check skipped: {e}")
+            # 限流失败即放行是有意选择：Redis 抖动时不把全部写请求打成 429。
+            # 登录锁定和令牌黑名单不走这条路径，它们在 Redis 故障时拒绝。
+            logger.warning(
+                "Redis unavailable, rate limit skipped by design so an outage does not reject all writes: %s",
+                e,
+            )
             return await call_next(request)
         if not result["allowed"]:
             return JSONResponse(

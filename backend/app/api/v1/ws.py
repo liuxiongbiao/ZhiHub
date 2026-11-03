@@ -78,9 +78,9 @@ async def agent_workstation(websocket: WebSocket) -> None:
         try:
             blocked = is_blocklisted(jti)
         except Exception as e:
-            # Redis 故障与 HTTP 中间件一致 fail-open
-            logger.warning(f"Redis unavailable, WS blocklist check skipped: {e}")
-            blocked = False
+            logger.error(f"Redis unavailable, closing workstation socket because blocklist cannot be checked: {e}")
+            await websocket.close(code=1008)
+            return
         if blocked:
             await websocket.close(code=1008)
             return
@@ -174,7 +174,9 @@ async def end_user_session(websocket: WebSocket, session_id: int) -> None:
                 await websocket.close(code=1008)
                 return
         except Exception as exc:
-            logger.warning(f"Redis unavailable, WS blocklist check skipped: {exc}")
+            logger.error(f"Redis unavailable, closing session socket because blocklist cannot be checked: {exc}")
+            await websocket.close(code=1008)
+            return
 
     tenant_id = payload.get("tenant_id")
     if tenant_id is None:

@@ -312,8 +312,16 @@ def _optional_authenticated_user_id(request: Request) -> int | None:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效认证信息")
     payload = decode_access_token(authorization[7:].strip())
-    if payload is None or (payload.get("jti") and is_blocklisted(payload["jti"])):
+    if payload is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效认证信息")
+    jti = payload.get("jti")
+    if jti:
+        try:
+            blocked = is_blocklisted(jti)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证") from exc
+        if blocked:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效认证信息")
     try:
         return int(payload["sub"])
     except (KeyError, TypeError, ValueError) as exc:

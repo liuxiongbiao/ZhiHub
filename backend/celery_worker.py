@@ -23,8 +23,7 @@ import app.tasks.cleanup_tasks  # noqa: F401
 import app.tasks.knowledge_tasks  # noqa: F401
 import app.tasks.notification_tasks  # noqa: F401
 
-# 计费定时调度: 与 main.py 的 _run_billing_scheduler 同款 crontab——
-# demo 直接跑应用用线程调度；生产用 Celery Beat 部署时此配置生效
+# 计费定时调度由 Celery Beat 独占。API 进程不启动维护线程。
 celery_app.conf.beat_schedule = {
     "daily-usage-aggregation": {
         "task": "app.tasks.billing_tasks.aggregate_daily_usage",

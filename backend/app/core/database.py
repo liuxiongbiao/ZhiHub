@@ -96,5 +96,7 @@ def init_db() -> None:
     if "alembic_version" in inspect(engine).get_table_names():
         logger.info("Alembic 已管理 schema，跳过 create_all（单一迁移轨）")
         return
+    if settings.app_env == "production":
+        raise RuntimeError("生产环境必须先执行 alembic upgrade head，禁止 create_all 兜底建表")
     logger.warning("未检测到 alembic_version 表，由 create_all 兜底建表；生产环境请先执行 alembic upgrade head")
     Base.metadata.create_all(bind=engine)

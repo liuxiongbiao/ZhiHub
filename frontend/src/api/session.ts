@@ -31,7 +31,11 @@ export function getSessionDetail(sessionId: number) {
 
 /** 发送消息 */
 export function sendMessage(sessionId: number, content: string) {
-  return request.post<SendMessageResponse>('/session/message', { session_id: sessionId, content })
+  return request.post<SendMessageResponse>(
+    '/session/message',
+    { session_id: sessionId, content },
+    { timeout: 60000 },
+  )
 }
 
 export interface SessionBusinessContext {
@@ -122,6 +126,7 @@ export async function sendMessageStream(
       'X-CSRF-Token': token,
     },
     body: JSON.stringify({ session_id: sessionId, content }),
+    signal: AbortSignal.timeout(60000),
   })
   if (!resp.ok || !resp.body) {
     let message = `流式请求失败: ${resp.status}`

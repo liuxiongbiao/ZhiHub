@@ -124,8 +124,23 @@ class TestLogin:
         with pytest.raises(InvalidCredentials):
             auth_service.login(db, phone="13900000000", password="abc12345")
 
-    def test_login_fail_open_on_redis_error(self, db, monkeypatch):
-        """: Redis 故障时登录 fail-open（不抛 500），与中间件哲学一致。"""
+    def test_login_lock_check_fails_closed_when_redis_errors(self, db, monkeypatch):
+        """锁定状态查不到时拒绝登录，不把已锁定账号放进来。"""
+        from app.services import auth_service
+        from app.services.auth_service import AuthStoreUnavailable
+        from app.core import redis as redis_module
+
+        self._register(db)
+
+        def _boom(*args, **kwargs):
+            raise ConnectionError("redis down")
+
+        monkeypatch.setattr(redis_module, "get_lock_ttl", _boom)
+        with pytest.raises(AuthStoreUnavailable):
+            auth_service.login(db, phone="13800138000", password="abc12345", ip="1.1.1.1")
+
+    def test_login_counter_failure_still_allows_valid_password(self, db, monkeypatch):
+        """失败计数写不进去时，锁定查询仍成功，正确密码可以登录。"""
         from app.services import auth_service
         from app.core import redis as redis_module
 
@@ -134,15 +149,12 @@ class TestLogin:
         def _boom(*args, **kwargs):
             raise ConnectionError("redis down")
 
-        # 锁定检查 / 失败计数 / 清零 全部故障 → 应 fail-open 放行，不抛异常
-        monkeypatch.setattr(redis_module, "get_lock_ttl", _boom)
-        monkeypatch.setattr(redis_module, "get_lock_ttl_ip", _boom)
         monkeypatch.setattr(redis_module, "incr_login_fail", _boom)
         monkeypatch.setattr(redis_module, "incr_login_fail_ip", _boom)
         monkeypatch.setattr(redis_module, "clear_login_fail", _boom)
 
         result = auth_service.login(db, phone="13800138000", password="abc12345", ip="1.1.1.1")
-        assert result.access_token  # fail-open：正确密码仍能登录
+        assert result.access_token
 
     def test_ip_fail_count_not_cleared_on_success(self, db):
         """: 成功登录不清 IP 维度计数（防攻击者用自己合法账号重置 IP 锁绕过 credential stuffing）。"""
