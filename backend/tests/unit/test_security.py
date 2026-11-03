@@ -11,7 +11,7 @@ backend/tests/unit/test_security.py
 
 from datetime import timedelta
 
-from jose import jwt
+import jwt
 
 from app.config import settings
 from app.core import security

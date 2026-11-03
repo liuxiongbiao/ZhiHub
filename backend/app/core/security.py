@@ -22,7 +22,7 @@ backend/app/core/security.py
 
 依赖关系:
   - 上游: app/api/* 路由、app/core/auth_middleware（鉴权中间件调用 decode_access_token）
-  - 下游: app.config（密钥/算法/过期配置）、pyca/bcrypt、python-jose（JWT）
+  - 下游: app.config（密钥/算法/过期配置）、pyca/bcrypt、PyJWT（JWT）
 """
 
 import secrets
@@ -30,7 +30,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError
 
 from app.config import settings
 
@@ -139,7 +140,7 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
             audience="zhihub-api",
             issuer="zhihub",
         )
-    except JWTError:
+    except PyJWTError:
         return None
 
 
