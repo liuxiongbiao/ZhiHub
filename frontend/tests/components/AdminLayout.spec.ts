@@ -111,4 +111,22 @@ describe('AdminLayout.vue', () => {
     expect(text).not.toContain('运营看板')
     expect(text).toContain('工单与订单')
   })
+
+  it('shows retrieval degradation instead of a healthy chain', async () => {
+    ;(getTenantHome as any).mockResolvedValue({
+      data: {
+        tenant_id: 1,
+        tenant_name: '测试公司',
+        plan_type: 'trial',
+        status: 'active',
+        degradation_alert: true,
+        current_user: { user_id: 1, role: 'admin' },
+      },
+    })
+    const w = mountLayout()
+    await flushPromises()
+    expect(w.text()).toContain('检索降级')
+    expect(w.text()).not.toContain('服务链路在线')
+    expect(w.find('.nav-toggle').exists()).toBe(true)
+  })
 })

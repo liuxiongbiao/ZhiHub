@@ -14,6 +14,31 @@ class FakeResizeObserver {
 }
 ;(globalThis as any).ResizeObserver = FakeResizeObserver
 
+function createMemoryStorage(): Storage {
+  const data = new Map<string, string>()
+  return {
+    get length() { return data.size },
+    clear() { data.clear() },
+    getItem(key: string) { return data.has(key) ? data.get(key)! : null },
+    key(index: number) { return Array.from(data.keys())[index] ?? null },
+    removeItem(key: string) { data.delete(key) },
+    setItem(key: string, value: string) { data.set(String(key), String(value)) },
+  }
+}
+
+const memoryStorage = createMemoryStorage()
+for (const target of [globalThis, window]) {
+  try {
+    Object.defineProperty(target, 'localStorage', {
+      configurable: true,
+      writable: true,
+      value: memoryStorage,
+    })
+  } catch {
+    // Node 26 的 localStorage 可能不可重新定义；测试仍优先使用这份内存实现。
+  }
+}
+
 // Element Plus 部分组件读取 matchMedia 判断暗色模式等
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -30,5 +55,5 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 beforeEach(() => {
-  localStorage.clear()
+  memoryStorage.clear()
 })

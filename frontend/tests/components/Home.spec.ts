@@ -50,6 +50,7 @@ describe('Home.vue role-aware shortcuts', () => {
     expect(wrapper.text()).not.toContain('成员邀请')
     expect(wrapper.text()).toContain('工单看板')
     expect(wrapper.text()).toContain('订单列表')
+    expect(wrapper.text()).toContain('检索正常')
   })
 
   it('loads the admin identity before requesting live dashboard metrics', async () => {
@@ -104,5 +105,6 @@ describe('Home.vue role-aware shortcuts', () => {
     expect(wrapper.text()).toContain('等待人工2')
     expect(wrapper.text()).toContain('待审批退款2')
     expect(wrapper.text()).toContain('上线准备度100%')
+    expect(wrapper.text()).toContain('检索正常')
   })
 })

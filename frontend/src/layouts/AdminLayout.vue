@@ -1,6 +1,9 @@
 <template>
   <el-container class="admin-layout">
-    <el-aside width="244px" class="sidebar">
+    <Teleport to="body">
+      <button v-if="navOpen" type="button" class="nav-backdrop" aria-label="关闭导航" @click="navOpen = false"></button>
+    </Teleport>
+    <el-aside width="244px" class="sidebar" :class="{ 'is-open': navOpen }">
       <div class="logo">
         <span class="logo-core">枢</span>
         <span class="logo-copy"><strong>智枢 ZhiHub</strong><small>Service OS</small></span>
@@ -63,15 +66,16 @@
         </template>
       </el-menu>
 
-      <div class="sidebar-footer">
+      <div class="sidebar-footer" :class="{ degraded: tenantStore.degradation_alert }">
         <span class="signal-pulse"></span>
-        <span><strong>服务链路在线</strong><small>知识 · 业务 · 人工</small></span>
+        <span><strong>{{ tenantStore.degradation_alert ? '检索降级' : '检索正常' }}</strong><small>{{ tenantStore.degradation_alert ? '知识回答可能不完整' : '知识 · 业务 · 人工' }}</small></span>
       </div>
     </el-aside>
 
     <el-container class="content-shell">
       <el-header class="admin-header">
         <div class="header-left">
+          <button type="button" class="nav-toggle" :aria-expanded="navOpen" aria-label="打开导航" @click="navOpen = !navOpen"><el-icon><Menu /></el-icon></button>
           <span class="page-context">{{ currentPage.eyebrow }}</span>
           <strong>{{ currentPage.title }}</strong>
         </div>
@@ -101,10 +105,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Odometer, Collection, Tickets, TrendCharts, MagicStick, Notebook, ChatDotRound, Setting, User, ArrowDown, SwitchButton, Bell, DataAnalysis } from '@element-plus/icons-vue'
+import { Odometer, Collection, Tickets, TrendCharts, MagicStick, Notebook, ChatDotRound, Setting, User, ArrowDown, SwitchButton, Bell, DataAnalysis, Menu } from '@element-plus/icons-vue'
 import { getNotifications, getUnreadCount, markNotificationRead, type NotificationItem } from '@/api/notification'
 import { useTenantStore } from '@/store/modules/tenant'
 import { useUserStore } from '@/store/modules/user'
@@ -127,13 +131,15 @@ const currentPage = computed(() => {
   return match ? { eyebrow: match[1], title: match[2] } : { eyebrow: 'SERVICE COMMAND', title: '服务驾驶舱' }
 })
 
+const navOpen = ref(false)
+watch(() => route.path, () => { navOpen.value = false })
 const notifications = ref<NotificationItem[]>([])
 const unreadCount = ref(0)
 const notifLoading = ref(false)
 function formatNotifTime(iso: string) { return new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
 async function refreshUnread() { try { unreadCount.value = (await getUnreadCount()).data.count } catch { /* fail open */ } }
 async function loadNotifications() { notifLoading.value = true; try { notifications.value = (await getNotifications({ page_size: 10 })).data.items; await refreshUnread() } finally { notifLoading.value = false } }
-async function readNotification(item: NotificationItem) { if (item.read_at) return; try { await markNotificationRead(item.id); item.read_at = new Date().toISOString(); unreadCount.value = Math.max(0, unreadCount.value - 1) } catch { /* fail open */ } }
+async function readNotification(item: NotificationItem) { if (item.read_at) return; try { await markNotificationRead(item.id); item.read_at = new Date().toISOString(); unreadCount.value = Math.max(0, unreadCount.value - 1) } catch (error: any) { ElMessage.error(error?.message || '标为已读失败') } }
 function handleCommand(command: string) { if (command === 'logout') handleLogout(); if (command === 'profile') router.push('/profile') }
 async function handleLogout() { await userStore.logout(); router.push('/login') }
 
@@ -145,6 +151,7 @@ onMounted(async () => {
 
 <style scoped>
 .admin-layout { min-height: 100vh; background: var(--zh-bg-page); }
+.nav-toggle { display: none; }.nav-backdrop { position: fixed; inset: 0; z-index: 30; background: rgba(8, 18, 22, .46); border: 0; }
 .sidebar { display: flex; flex-direction: column; overflow: hidden; color: #c5d3d5; background: var(--zh-bg-sidebar); border-right: 1px solid #1b333a; }
 .logo { height: 68px; display: flex; align-items: center; gap: 11px; padding: 0 19px; flex: 0 0 auto; }
 .logo-core { display: grid; place-items: center; width: 34px; height: 34px; color: #08201f; font-weight: 850; background: var(--zh-signal); border-radius: 10px 10px 10px 3px; }
@@ -158,13 +165,20 @@ onMounted(async () => {
 .menu-caption { margin: 15px 10px 6px; color: #506b70; font-size: 8px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
 .demo-menu b { margin-left: auto; padding: 2px 4px; color: #0b2924; font-size: 7px; background: #72dbc9; border-radius: 4px; }
 .sidebar-footer { display: flex; align-items: center; gap: 10px; margin: 10px 12px 14px; padding: 11px; border-top: 1px solid rgba(255,255,255,.08); }
-.signal-pulse { width: 8px; height: 8px; background: #67d8a3; border-radius: 50%; box-shadow: 0 0 0 5px rgba(103,216,163,.08); animation: pulse 2.5s infinite; }.sidebar-footer > span:last-child { display: grid; }.sidebar-footer strong { color: #bdd0d3; font-size: 10px; }.sidebar-footer small { color: #5d777c; font-size: 8px; }
+.signal-pulse { width: 8px; height: 8px; background: #67d8a3; border-radius: 50%; box-shadow: 0 0 0 5px rgba(103,216,163,.08); animation: pulse 2.5s infinite; }.sidebar-footer.degraded .signal-pulse { background: var(--zh-coral); box-shadow: 0 0 0 5px rgba(233,101,85,.12); }.sidebar-footer > span:last-child { display: grid; }.sidebar-footer strong { color: #bdd0d3; font-size: 10px; }.sidebar-footer small { color: #5d777c; font-size: 8px; }
 .content-shell { min-width: 0; }.admin-header { height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 clamp(18px, 2.5vw, 36px); background: rgba(255,254,250,.9); border-bottom: 1px solid var(--zh-border-light); backdrop-filter: blur(14px); }
-.header-left { display: grid; }.page-context { color: var(--zh-primary); font-size: 8px; font-weight: 850; letter-spacing: .16em; }.header-left strong { margin-top: 3px; font-size: 16px; }
+.header-left { display: grid; }.nav-toggle { place-items: center; width: 34px; height: 34px; margin-bottom: 6px; color: var(--zh-text-regular); background: #f6f8f6; border: 1px solid var(--zh-border-light); border-radius: 10px; cursor: pointer; }.nav-toggle:focus-visible, .icon-button:focus-visible { outline: 2px solid var(--zh-primary); outline-offset: 2px; }.page-context { color: var(--zh-primary); font-size: 8px; font-weight: 850; letter-spacing: .16em; }.header-left strong { margin-top: 3px; font-size: 16px; }
 .header-right { display: flex; align-items: center; gap: 14px; }.icon-button { display: grid; place-items: center; width: 34px; height: 34px; color: var(--zh-text-regular); background: #f6f8f6; border: 1px solid var(--zh-border-light); border-radius: 10px; cursor: pointer; }
 .user-trigger { display: flex; align-items: center; gap: 9px; cursor: pointer; outline: none; }.user-avatar { display: grid; place-items: center; width: 33px; height: 33px; color: #fff; font-size: 11px; font-weight: 800; background: var(--zh-ink-soft); border-radius: 10px; }.user-copy { display: grid; line-height: 1.15; }.user-copy strong { font-size: 11px; }.user-copy small { max-width: 100px; overflow: hidden; margin-top: 3px; color: var(--zh-text-secondary); font-size: 8px; text-overflow: ellipsis; }.caret { color: var(--zh-text-secondary); font-size: 10px; }
 .admin-main { overflow-y: auto; padding: 0; background: transparent; }
 .notif-panel-head { display: flex; justify-content: space-between; padding: 3px 4px 11px; border-bottom: 1px solid var(--zh-border-light); }.notif-panel-head small { color: var(--zh-text-secondary); }.notif-item { display: grid; width: 100%; padding: 11px 6px; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--zh-border-light); cursor: pointer; }.notif-item.unread { box-shadow: inset 2px 0 0 var(--zh-primary); }.notif-title { font-size: 12px; font-weight: 700; }.notif-content { margin-top: 3px; color: var(--zh-text-regular); font-size: 11px; }.notif-time { margin-top: 5px; color: var(--zh-text-placeholder); font-size: 9px; }.notif-empty { padding: 32px; color: var(--zh-text-secondary); text-align: center; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 9px rgba(103,216,163,0); } }
-@media (max-width: 850px) { .sidebar { width: 78px !important; } .logo-copy, .workspace-chip span:last-child, .side-menu span, .menu-caption, .sidebar-footer span:last-child, .demo-menu b { display: none; } .logo { padding: 0 21px; } .workspace-chip { justify-content: center; } .side-menu :deep(.el-sub-menu__icon-arrow) { display: none; } }
+@media (max-width: 850px) {
+  .nav-toggle { display: grid; }
+  .header-left { grid-template-columns: auto 1fr; column-gap: 10px; align-items: center; }
+  .nav-toggle { grid-row: 1 / span 2; margin: 0; }
+  .sidebar { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; width: min(280px, 86vw) !important; transform: translateX(-105%); transition: transform .18s ease; }
+  .sidebar.is-open { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .sidebar, .signal-pulse { transition: none; animation: none; } }
 </style>
