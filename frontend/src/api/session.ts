@@ -107,6 +107,46 @@ export function submitFeedback(messageId: number, score: number, comment?: strin
 
 // ———— 规格 013 US7: SSE 流式响应 ————
 
+function applySsePayload(
+  payload: string,
+  onChunk: (chunk: string) => void,
+  onMeta?: (messageId: number) => void,
+): boolean {
+  // 结束标记返回 true，调用方停止读取。非法 JSON 行跳过，业务错误继续抛出。
+  if (payload === '[DONE]') return true
+  try {
+    const obj = JSON.parse(payload)
+    if (obj.chunk) onChunk(obj.chunk)
+    else if (obj.message_id && onMeta) onMeta(obj.message_id)
+    else if (obj.error) throw new Error(obj.error)
+  } catch (error) {
+    if (error instanceof SyntaxError) return false
+    throw error
+  }
+  return false
+}
+
+async function readSseEvents(
+  body: ReadableStream<Uint8Array>,
+  onChunk: (chunk: string) => void,
+  onMeta?: (messageId: number) => void,
+): Promise<void> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      if (applySsePayload(line.slice(6), onChunk, onMeta)) return
+    }
+  }
+}
+
 /**
  * 流式发送消息：POST /session/message/stream，逐字回调 onChunk，[DONE] 结束。
  * 用 fetch + ReadableStream 解析 SSE（非 EventSource，因需 POST）。
@@ -137,30 +177,7 @@ export async function sendMessageStream(
     if (resp.status === 401 || resp.status === 403) handleAuthFailure()
     throw new StreamRequestError(resp.status, message)
   }
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const payload = line.slice(6)
-      if (payload === '[DONE]') return
-      try {
-        const obj = JSON.parse(payload)
-        if (obj.chunk) onChunk(obj.chunk)
-        else if (obj.message_id && onMeta) onMeta(obj.message_id)
-        else if (obj.error) throw new Error(obj.error)
-      } catch (e) {
-        if (e instanceof SyntaxError) continue
-        throw e
-      }
-    }
-  }
+  await readSseEvents(resp.body, onChunk, onMeta)
 }
 
 export class StreamRequestError extends Error {

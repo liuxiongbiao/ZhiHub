@@ -168,6 +168,51 @@ def _fast_stream_route(message: str, *, has_history: bool) -> dict[str, Any] | N
     }
 
 
+def _last_user_text(messages: list[dict]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return message["content"]
+    return ""
+
+
+def _recent_dialog(messages: list[dict]) -> list[dict]:
+    return [message for message in messages[-7:] if message.get("role") in ("user", "assistant")]
+
+
+def _compose_router_prompt(recent: list[dict], last_user: str) -> str:
+    if len(recent) <= 1:
+        return last_user
+    history = "\n".join(
+        f"{'用户' if message['role'] == 'user' else '助手'}: {message['content'][:150]}"
+        for message in recent[:-1]
+    )
+    return f"对话历史（供参考上下文，判断当前消息意图）:\n{history}\n\n当前用户消息: {last_user}"
+
+
+def _structured_route(prompt: str) -> dict[str, Any]:
+    try:
+        from app.utils.asyncio_compat import run_sync_in_thread
+
+        messages = [
+            {"role": "system", "content": _load_prompt()},
+            {"role": "user", "content": prompt},
+        ]
+        output = run_sync_in_thread(_get_router_agent().invoke, messages)
+        logger.info(
+            f"Router: intent={output.intent}, confidence={output.confidence:.2f}, "
+            f"sentiment={output.sentiment}"
+        )
+        return {
+            "intent": output.intent,
+            "confidence": output.confidence,
+            "sentiment": output.sentiment,
+            "slots": output.slots,
+        }
+    except Exception as exc:
+        logger.error(f"Router structured output failed, fallback: {exc}")
+        return _fallback_result()
+
+
 @observe(name="router")
 def router_node(state: dict[str, Any]) -> dict[str, Any]:
     """LangGraph 节点：路由识别。
@@ -188,20 +233,11 @@ def router_node(state: dict[str, Any]) -> dict[str, Any]:
     if not messages:
         return _fallback_result()
 
-    # 倒序找最后一条用户消息（跳过 assistant 回复）
-    last_user = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            last_user = m["content"]
-            break
-
+    last_user = _last_user_text(messages)
     if not last_user:
         return _fallback_result()
 
-    # 构建带历史上下文的 prompt：多轮槽位补全时（如"我的手机号是..."），
-    # 单看当前消息无法判断意图，需结合上文（如"查工单"）才能正确路由。
-    # 取最近 6 条消息（3 轮）的历史拼进 prompt 供 LLM 参考。
-    recent = [m for m in messages[-7:] if m.get("role") in ("user", "assistant")]
+    recent = _recent_dialog(messages)
     if state.get("skip_generation"):
         fast_result = _fast_stream_route(last_user, has_history=len(recent) > 1)
         if fast_result is not None:
@@ -211,38 +247,4 @@ def router_node(state: dict[str, Any]) -> dict[str, Any]:
                 fast_result["confidence"],
             )
             return fast_result
-    if len(recent) > 1:
-        history = "\n".join(
-            f"{'用户' if m['role']=='user' else '助手'}: {m['content'][:150]}"
-            for m in recent[:-1]
-        )
-        prompt = f"对话历史（供参考上下文，判断当前消息意图）:\n{history}\n\n当前用户消息: {last_user}"
-    else:
-        prompt = last_user
-
-    # LangChain 结构化输出（invoke 适配 LangGraph 同步调用）
-    try:
-        # 规格 013: async 端点（/session/message/stream）内 graph.invoke 在事件循环线程执行，
-        # 用 run_sync_in_thread 保证任意上下文都走成功路径（无 loop 时直接调用，零开销）。
-        from app.utils.asyncio_compat import run_sync_in_thread
-
-        # system prompt（router.txt 的意图/情绪/槽位定义）+ 运行时 prompt（历史 + 当前消息）
-        messages = [
-            {"role": "system", "content": _load_prompt()},
-            {"role": "user", "content": prompt},
-        ]
-        output = run_sync_in_thread(_get_router_agent().invoke, messages)
-        logger.info(
-            f"Router: intent={output.intent}, confidence={output.confidence:.2f}, "
-            f"sentiment={output.sentiment}"
-        )
-        return {
-            "intent": output.intent,
-            "confidence": output.confidence,
-            "sentiment": output.sentiment,
-            "slots": output.slots,
-        }
-    except Exception as e:
-        # 降级：LLM 异常返回低置信度兜底，条件边会据此转人工
-        logger.error(f"Router structured output failed, fallback: {e}")
-        return _fallback_result()
+    return _structured_route(_compose_router_prompt(recent, last_user))

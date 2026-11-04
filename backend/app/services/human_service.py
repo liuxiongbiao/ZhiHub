@@ -45,6 +45,56 @@ class AgentMessageForbidden(HumanHandoffError): pass
 class AgentMessageStateInvalid(HumanHandoffError): pass
 
 
+def _release_claim(redis_client, lock_key: str) -> None:
+    """校验失败或写入失败时释放认领锁，避免锁一直占到过期。"""
+    redis_client.delete(lock_key)
+
+
+def _record_claim(tenant_id: int, session_id: int, agent_id: int, created_at) -> None:
+    """记录坐席接手等待时长。"""
+    from datetime import datetime, timezone
+
+    from app.services.analytics_service import track_event
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    wait_duration = max(0, (now - created_at).total_seconds()) if created_at else 0
+    track_event(
+        "human_takeover",
+        tenant_id=tenant_id,
+        properties={
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "trigger_reason": "agent_claim",
+            "wait_duration": round(wait_duration, 3),
+        },
+    )
+
+
+def _broadcast_claim(tenant_id: int, session_id: int, agent_id: int) -> None:
+    """通知同租户坐席和当前终端用户：会话已被认领。"""
+    manager.broadcast_to_tenant_sync(
+        tenant_id,
+        {
+            "type": "session_claimed",
+            "payload": {
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "tenant_id": tenant_id,
+            },
+        },
+    )
+    manager.broadcast_to_session_sync(
+        session_id,
+        {
+            "type": "human_claimed",
+            "payload": {
+                "session_id": session_id,
+                "agent_id": agent_id,
+            },
+        },
+    )
+
+
 def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int) -> dict:
     """坐席认领会话。
 
@@ -83,64 +133,24 @@ def claim_session(db: Session, *, session_id: int, agent_id: int, tenant_id: int
     # 2. 加载会话 + 校验状态
     s = session_crud.get_by_id(db, session_id, tenant_id)
     if s is None:
-        r.delete(lock_key)  # 释放锁 -- 会话不存在，不持有锁
+        _release_claim(r, lock_key)
         raise HumanHandoffError(f"会话不存在: {session_id}")
     if s.status != "waiting_human":
-        r.delete(lock_key)  # 释放锁 -- 状态不支持认领
+        _release_claim(r, lock_key)
         raise HumanHandoffError(f"会话状态 {s.status} 不支持认领")
 
-    # 3. 更新状态 —— 认领成功，写 assignee_id 并推进状态
-    # 异常时释放锁避免泄漏至 TTL，保证其他坐席可认领
     try:
         session_crud.update_status(db, s, "human_handling")
         s.assignee_id = agent_id
         db.commit()
     except Exception:
-        r.delete(lock_key)
+        _release_claim(r, lock_key)
         db.rollback()
         raise
 
     logger.info(f"Session {session_id} claimed by agent {agent_id}")
-    from datetime import datetime, timezone
-    from app.services.analytics_service import track_event
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    wait_duration = max(0, (now - s.created_at).total_seconds()) if s.created_at else 0
-    track_event(
-        "human_takeover",
-        tenant_id=tenant_id,
-        properties={
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "trigger_reason": "agent_claim",
-            "wait_duration": round(wait_duration, 3),
-        },
-    )
-
-    # PRD §3.7: 认领成功后向同租户在线坐席推送实时通知。
-    # broadcast_to_tenant_sync 是 fire-and-forget，不阻塞业务；无在线坐席时直接返回。
-    # 用途: 工作台其他坐席实时感知"该会话已被认领"，避免重复认领尝试。
-    manager.broadcast_to_tenant_sync(
-        tenant_id,
-        {
-            "type": "session_claimed",
-            "payload": {
-                "session_id": session_id,
-                "agent_id": agent_id,
-                "tenant_id": tenant_id,
-            },
-        },
-    )
-    # 向终端用户会话通道广播 human_claimed，widget.js 据此展示"客服已接入"。
-    manager.broadcast_to_session_sync(
-        session_id,
-        {
-            "type": "human_claimed",
-            "payload": {
-                "session_id": session_id,
-                "agent_id": agent_id,
-            },
-        },
-    )
+    _record_claim(tenant_id, session_id, agent_id, s.created_at)
+    _broadcast_claim(tenant_id, session_id, agent_id)
     return {"session_id": session_id, "agent_id": agent_id, "status": "human_handling"}
 
 

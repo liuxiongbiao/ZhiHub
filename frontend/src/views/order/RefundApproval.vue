@@ -59,15 +59,10 @@
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getRefundList, getRefundRules, approveRefund, cancelRefund, type RefundApproval } from '@/api/order'
+import { getRefundList, getRefundRules, approveRefund, cancelRefund, REFUND_STATUS_MAP as STATUS_MAP, type RefundApproval } from '@/api/order'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useUserStore } from '@/store/modules/user'
-
-/** 退款审批状态 → 中文标签 */
-const STATUS_MAP: Record<string, string> = {
-  pending: '待审批', approved: '已批准', rejected: '已拒绝',
-  refunding: '退款中', refunded: '已退款', cancelled: '已撤销',
-}
+import { formatDateTime as formatDate } from '@/utils/datetime'
 
 const refunds = ref<RefundApproval[]>([])
 const loading = ref(false)
@@ -96,11 +91,6 @@ async function loadRules() {
 /** 审批状态 → el-tag 配色 */
 function statusType(status: string): string {
   return { pending: 'warning', approved: 'success', rejected: 'danger', refunding: 'warning', refunded: 'success', cancelled: 'info' }[status] || 'info'
-}
-
-/** ISO 时间串 → 中文本地化时间 */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString('zh-CN')
 }
 
 /** 拉取退款审批列表（分页），失败提示 */

@@ -66,6 +66,7 @@ class ConnectionManager:
         self._redis_async: Any | None = None
         self._pubsub: Any | None = None
         self._listener_task: asyncio.Task | None = None
+        self._listener_stop: asyncio.Event | None = None
         self._owns_redis = False
         self._pubsub_started = False
 
@@ -85,18 +86,22 @@ class ConnectionManager:
         self._pubsub = self._redis_async.pubsub()
         await self._pubsub.subscribe(self._channel)
         self._pubsub_started = True
+        self._listener_stop = asyncio.Event()
         self._listener_task = asyncio.create_task(
             self._listen_pubsub(), name="zhihub-ws-pubsub",
         )
 
     async def stop_pubsub(self) -> None:
         """停止订阅并释放当前 worker 的 Pub/Sub 连接。"""
+        if self._listener_stop is not None:
+            self._listener_stop.set()
         task, self._listener_task = self._listener_task, None
         self._pubsub_started = False
-        if task is not None:
+        if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        self._listener_stop = None
         if self._pubsub is not None:
             with contextlib.suppress(Exception):
                 await self._pubsub.unsubscribe(self._channel)
@@ -109,10 +114,24 @@ class ConnectionManager:
         self._redis_async = None
 
     async def _listen_pubsub(self) -> None:
-        """消费 Redis 事件并向当前进程持有的连接发送。"""
+        """消费 Redis 事件并向当前进程持有的连接发送。
+
+        不用 PubSub.listen()：它内部以无限超时阻塞，Windows 上取消任务时
+        asyncio.wait_for 可能吞掉 CancelledError，监听协程就再也退不出来。
+        get_message 有超时，循环同时看停止事件，关闭时能返回。
+        """
         assert self._pubsub is not None
-        async for item in self._pubsub.listen():
-            if item.get("type") != "message":
+        while self._listener_stop is None or not self._listener_stop.is_set():
+            try:
+                item = await self._pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=0.05,
+                )
+            except asyncio.CancelledError:
+                break
+            if self._listener_stop is not None and self._listener_stop.is_set():
+                break
+            if not item or item.get("type") != "message":
                 continue
             try:
                 event = json.loads(item["data"])
@@ -121,6 +140,8 @@ class ConnectionManager:
                     await self._broadcast_local_tenant(target_id, event["message"])
                 elif event["target"] == "session":
                     await self._broadcast_local_session(target_id, event["message"])
+            except asyncio.CancelledError:
+                break
             except Exception as exc:
                 logger.warning(f"Invalid WS pub/sub event ignored: {exc}")
 

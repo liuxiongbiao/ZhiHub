@@ -86,6 +86,7 @@ import { sendCode, passwordReset, bindEmail, bindPhone, wechatAuth, wechatBind }
 import { useUserStore } from '@/store/modules/user'
 import { useRoute } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { startCooldown } from '@/utils/cooldown'
 
 const userStore = useUserStore()
 const route = useRoute()
@@ -100,11 +101,6 @@ const pwdForm = reactive({ phone: userStore.phone || '', code: '', newPassword: 
 const emailForm = reactive({ email: '', code: '' })
 const phoneForm = reactive({ phone: '', code: '' })
 const boundPhone = ref(userStore.phone || '')
-
-function startCooldown(target: { value: number }) {
-  target.value = 60
-  const t = setInterval(() => { target.value--; if (target.value <= 0) clearInterval(t) }, 1000)
-}
 
 async function sendPwdCode() {
   if (!/^1[3-9]\d{9}$/.test(pwdForm.phone)) { ElMessage.warning('手机号不正确'); return }

@@ -114,6 +114,69 @@ def check_kb_count(db: Session, tenant_id: int) -> dict:
     return {"plan_type": plan_type, "limit": limit, "current": current, "allowed": allowed}
 
 
+def _raise_for_invalid_file(filename: str, content: bytes) -> None:
+    """把文件校验错误映射成上传接口使用的业务异常。"""
+    try:
+        validate_file(filename, content)
+    except FileValidationError as exc:
+        message = str(exc)
+        if "格式" in message:
+            raise UnsupportedFormat(message) from exc
+        if "大小" in message:
+            raise FileTooLarge(message) from exc
+        if "空" in message:
+            raise EmptyFile(message) from exc
+        raise KnowledgeError(message) from exc
+
+
+def _next_document_version(db: Session, tenant_id: int, filename: str) -> int:
+    """同名旧文档退出检索，并返回新版本号。"""
+    existing = knowledge_crud.get_latest_by_filename(db, tenant_id, filename)
+    if existing is None:
+        return 1
+    knowledge_crud.mark_not_latest(db, existing)
+    return existing.version + 1
+
+
+def _document_expires_at(expires_days: int | None):
+    """未指定时使用系统默认有效期；0 表示永久有效。"""
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import settings
+
+    if expires_days is None:
+        return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+            days=settings.doc_validity_days
+        )
+    if expires_days > 0:
+        return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=expires_days)
+    return None
+
+
+def _store_uploaded_file(doc_id: int, filename: str, content: bytes) -> None:
+    """把原始文件写到当前上传目录，供异步处理读取。"""
+    from app.config import settings
+
+    os.makedirs(settings.upload_storage_dir, exist_ok=True)
+    upload_path = os.path.join(
+        settings.upload_storage_dir,
+        f"{doc_id}_{os.path.basename(filename)}",
+    )
+    with open(upload_path, "wb") as handle:
+        handle.write(content)
+
+
+def _enforce_upload_limits(db: Session, tenant_id: int, content_size: int) -> None:
+    """数量或存储超限时拒绝上传。"""
+    kb_check = check_kb_count(db, tenant_id)
+    if not kb_check["allowed"]:
+        raise KnowledgeLimitExceeded(
+            f"知识库数量已达套餐上限: {kb_check['current']}/{kb_check['limit']}（{kb_check['plan_type']} 套餐）"
+        )
+    if not check_storage_limit(db, tenant_id, incoming_bytes=content_size):
+        raise KnowledgeLimitExceeded("知识库存储空间已满，请升级套餐或删除部分旧文档")
+
+
 def upload(db: Session, *, file: UploadFile, tenant_id: int, expires_days: int | None = None) -> dict:
     """上传文档：校验 -> 创建记录 -> 投递异步任务。
 
@@ -142,78 +205,21 @@ def upload(db: Session, *, file: UploadFile, tenant_id: int, expires_days: int |
     content = file.file.read()
     filename = file.filename or "unknown"
 
-    # 套餐知识库数量上限校验（trial 1 / basic 3 / pro 无限），超限 → 403
-    kb_check = check_kb_count(db, tenant_id)
-    if not kb_check["allowed"]:
-        raise KnowledgeLimitExceeded(
-            f"知识库数量已达套餐上限: {kb_check['current']}/{kb_check['limit']}（{kb_check['plan_type']} 套餐）"
-        )
-
-    # 存储配额校验（按套餐 MB，计入本次上传大小）
-    if not check_storage_limit(db, tenant_id, incoming_bytes=len(content)):
-        raise KnowledgeLimitExceeded("知识库存储空间已满，请升级套餐或删除部分旧文档")
-
-    # 2. 校验 —— 映射底层 FileValidationError 为具体业务异常，便于 API 层返回精确状态码
-    try:
-        validate_file(filename, content)
-    except FileValidationError as e:
-        msg = str(e)
-        if "格式" in msg:
-            raise UnsupportedFormat(msg) from e
-        elif "大小" in msg:
-            raise FileTooLarge(msg) from e
-        elif "空" in msg:
-            raise EmptyFile(msg) from e
-        raise KnowledgeError(msg) from e
-
-    # 提取扩展名作为 file_type
+    _enforce_upload_limits(db, tenant_id, len(content))
+    _raise_for_invalid_file(filename, content)
     file_type = filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
-    file_size = len(content)
-
-    # 3. 版本管理：旧同名文件归档 —— is_latest=False，使其不再进入检索库
-    existing = knowledge_crud.get_latest_by_filename(db, tenant_id, filename)
-    new_version = 1
-    if existing:
-        # 旧版本标记为非最新 —— 检索时只查 is_latest=True，保证命中最新内容
-        knowledge_crud.mark_not_latest(db, existing)
-        new_version = existing.version + 1
-
-    # 4. 创建记录 —— status=pending，等待 Worker 处理后改为 ready/failed
-    # PRD §3.2 文档生命周期：未指定有效期时使用系统默认（doc_validity_days=90）；
-    # expires_days=0 表示永久（expires_at=None）
-    from datetime import datetime, timedelta, timezone
-    from app.config import settings
-
-    expires_at = None
-    if expires_days is None:
-        expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
-            days=settings.doc_validity_days
-        )
-    elif expires_days > 0:
-        expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=expires_days)
-
+    new_version = _next_document_version(db, tenant_id, filename)
     doc = knowledge_crud.create(
         db,
         tenant_id=tenant_id,
         filename=filename,
         file_type=file_type,
-        file_size=file_size,
+        file_size=len(content),
         version=new_version,
-        expires_at=expires_at,
+        expires_at=_document_expires_at(expires_days),
     )
     db.commit()
-
-    # 5. 保存文件到本地磁盘（供异步 Worker 读取）
-    # —— 临时目录落盘，生产应替换为对象存储
-    os.makedirs(settings.upload_storage_dir, exist_ok=True)
-    upload_path = os.path.join(
-        settings.upload_storage_dir,
-        f"{doc.id}_{os.path.basename(filename)}",
-    )
-    with open(upload_path, "wb") as f:
-        f.write(content)
-
-    # 6. 投递异步任务 —— 上传接口到此返回，解析由 Worker 异步完成
+    _store_uploaded_file(doc.id, filename, content)
     publish_knowledge_task(doc.id, tenant_id)
 
     return {

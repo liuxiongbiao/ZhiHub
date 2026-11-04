@@ -146,6 +146,39 @@ def extract_facts(user_message: str | None) -> list[dict]:
         return []
 
 
+def _upsert_memory_fact(collection, tenant_id: int, user_id: str, fact: dict) -> None:
+    """按租户、用户和事实类型覆盖一条记忆。类型不在白名单或内容为空时跳过。"""
+    if fact.get("fact_type") not in ALLOWED_FACT_TYPES:
+        logger.warning(f"Memory fact_type not in whitelist, skipped: {fact.get('fact_type')!r}")
+        return
+    from app.core.embedding_client import embed_texts
+    from app.utils.desensitize import mask_pii
+
+    content = mask_pii(fact.get("content"))
+    if not content:
+        return
+    expr = (
+        f'tenant_id == {tenant_id} and user_id == "{user_id}" '
+        f'and fact_type == "{fact["fact_type"]}"'
+    )
+    try:
+        collection.delete(expr)
+    except Exception:
+        pass
+    vectors = embed_texts([content])
+    if vectors:
+        collection.insert([
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "fact_type": fact["fact_type"],
+                "content": content,
+                "vector": vectors[0],
+                "created_at": float(time.time()),
+            }
+        ])
+
+
 def save_memory(tenant_id: int, user_id: str, facts: list[dict]) -> None:
     """embed content -> upsert Milvus memory_collection。
 
@@ -171,7 +204,6 @@ def save_memory(tenant_id: int, user_id: str, facts: list[dict]) -> None:
 
     try:
         from app.core.embedding_client import (
-            embed_texts,
             get_memory_collection,
             init_memory_collection,
         )
@@ -180,45 +212,23 @@ def save_memory(tenant_id: int, user_id: str, facts: list[dict]) -> None:
         collection = get_memory_collection()
 
         for fact in facts:
-            # 白名单校验: fact_type 来自 LLM 输出，未校验直接拼进 Milvus 删除
-            # 表达式可被诱导注入引号/or 扩大删除范围（跨租户删记忆）；白名单外跳过不落库
-            if fact.get("fact_type") not in ALLOWED_FACT_TYPES:
-                logger.warning(f"Memory fact_type not in whitelist, skipped: {fact.get('fact_type')!r}")
-                continue
-            # P1-新1: 记忆内容（可能含手机号）入库前脱敏
-            from app.utils.desensitize import mask_pii
-            content = mask_pii(fact.get("content"))
-            if not content:
-                continue
-            # upsert：先删同 tenant+user+fact_type 的旧记忆，再插新的
-            expr = (
-                f'tenant_id == {tenant_id} and user_id == "{user_id}" '
-                f'and fact_type == "{fact["fact_type"]}"'
-            )
-            try:
-                collection.delete(expr)
-            except Exception:
-                # 删旧失败不阻塞：最坏情况是同类型记忆并存两条，检索时都能召回
-                pass
-
-            vectors = embed_texts([content])
-            if vectors:
-                collection.insert([
-                    {
-                        "tenant_id": tenant_id,
-                        "user_id": user_id,
-                        "fact_type": fact["fact_type"],
-                        "content": content,
-                        "vector": vectors[0],
-                        "created_at": float(time.time()),
-                    }
-                ])
+            _upsert_memory_fact(collection, tenant_id, user_id, fact)
         # flush 把缓冲区数据落盘，保证后续检索能查到
         collection.flush()
         logger.info(f"Saved {len(facts)} memories for user {user_id}")
     except Exception as e:
         # 降级：保存失败不抛，记忆缺失不影响主对话
         logger.warning(f"save_memory failed (degraded): {e}")
+
+
+def _memory_contents(results, threshold: float) -> list[str]:
+    memories = []
+    for hit in results[0]:
+        if hit.score >= threshold:
+            content = hit.entity.get("content", "")
+            if content:
+                memories.append(content)
+    return memories
 
 
 def search_memory(
@@ -271,13 +281,7 @@ def search_memory(
             output_fields=["content"],
         )
 
-        memories = []
-        for hit in results[0]:
-            # 相似度阈值过滤：低于 0.35 的记忆不注入（避免无关记忆干扰回答）
-            if hit.score >= threshold:
-                content = hit.entity.get("content", "")
-                if content:
-                    memories.append(content)
+        memories = _memory_contents(results, threshold)
         return memories
     except Exception as e:
         # 降级：检索失败返回空，主对话无记忆注入也能继续

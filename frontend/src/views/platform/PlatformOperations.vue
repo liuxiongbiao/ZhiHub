@@ -38,6 +38,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { approveEnterpriseTenant, getPendingEnterpriseTenants, type PendingEnterpriseTenant } from '@/api/tenant'
 import { getPlatformAnalyticsOverview, type AnalyticsOverview } from '@/api/analytics'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { platformPlanLabel as planLabel } from '@/labels'
 import SignalMetric from '@/components/common/SignalMetric.vue'
 
 const platformToken = ref('')
@@ -48,7 +49,6 @@ const overview = ref<AnalyticsOverview | null>(null)
 const activeTenants = computed(() => (overview.value?.plan_distribution || []).reduce((sum, item) => sum + item.count, 0))
 const maxPlan = computed(() => Math.max(1, ...(overview.value?.plan_distribution || []).map((item) => item.count)))
 function planWidth(count: number) { return count / maxPlan.value * 100 }
-function planLabel(value: string) { return ({ trial: '试用版', basic: '基础版', pro: '专业版', enterprise: '企业版' } as Record<string,string>)[value] || value }
 function formatTime(value: string) { return new Date(value).toLocaleString('zh-CN') }
 async function loadData() { loading.value = true; try { const [tenants, analytics] = await Promise.all([getPendingEnterpriseTenants(platformToken.value), getPlatformAnalyticsOverview(30, platformToken.value)]); pending.value = tenants.data.items; overview.value = analytics.data; connected.value = true } catch (error: any) { connected.value = false; ElMessage.error(error?.message || '运营令牌验证失败') } finally { loading.value = false } }
 async function connect() { if (!platformToken.value.trim()) { ElMessage.warning('请输入平台运营令牌'); return } await loadData() }

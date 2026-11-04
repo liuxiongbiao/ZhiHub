@@ -119,6 +119,53 @@ def _generate_answer(query: str, sources_text: str, history: list[dict]) -> tupl
         return "抱歉，系统处理您的请求时遇到了问题，请稍后重试。", False
 
 
+def _latest_user_text(messages: list[dict]) -> str:
+    """取最近一条用户消息原文。没有用户消息时返回空字符串。"""
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return message["content"]
+    return ""
+
+
+def _search_knowledge(query: str, tenant_id: int, messages: list[dict]):
+    """检索知识。低置信度时返回转人工结果，检索故障时返回空列表。"""
+    from app.services.retrieval_service import hybrid_search
+
+    try:
+        result = hybrid_search(query=query, tenant_id=tenant_id, history=messages[:-1])
+    except Exception as exc:
+        logger.warning(f"Retrieval failed (may be empty KB or missing infra): {exc}")
+        return [], None
+    if result.low_confidence:
+        return [], {
+            "final_response": "当前问题未在知识库中找到足够可信的答案，已为您转接人工客服，请稍候。",
+            "retrieval_result": [],
+            "current_agent": "knowledge_agent",
+            "should_interrupt": True,
+        }
+    citations = [
+        {
+            "doc_filename": item.doc_filename or "未知文档",
+            "chunk_text": item.chunk_text,
+            "chunk_index": item.chunk_index,
+            "score": item.score,
+        }
+        for item in result.hybrid_results
+    ]
+    return citations, None
+
+
+def _compose_knowledge_answer(state: dict, last_user: str, messages: list[dict], retrieval_result: list):
+    """流式路径只返回检索结果。有结果时生成回答，没有结果时使用兜底文案。"""
+    if state.get("skip_generation"):
+        answer = "" if retrieval_result else "暂未找到相关信息，建议联系人工客服获取帮助。"
+        return answer, True
+    if retrieval_result:
+        sources_text = _build_sources_text(retrieval_result)
+        return _generate_answer(last_user, sources_text, messages[:-1])
+    return "暂未找到相关信息，建议联系人工客服获取帮助。", True
+
+
 @observe(name="knowledge_agent")
 def knowledge_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     """LangGraph 节点：知识问答处理。
@@ -147,65 +194,15 @@ def knowledge_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     if tenant_id is None:
         return {"final_response": "系统暂时无法处理您的请求，请稍后重试。", "retrieval_result": []}
 
-    # 倒序取最后一条用户消息
-    last_user = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            last_user = m["content"]
-            break
-
+    last_user = _latest_user_text(messages)
     if not last_user:
         return {"final_response": "请输入您的问题。"}
 
-    retrieval_result = []
+    retrieval_result, handoff = _search_knowledge(last_user, tenant_id, messages)
+    if handoff is not None:
+        return handoff
 
-    try:
-        from app.services.retrieval_service import hybrid_search
-
-        result = hybrid_search(
-            query=last_user,
-            tenant_id=tenant_id,
-            # 当前用户消息不是“历史”；剔除后首轮会直接跳过改写 LLM，避免无意义外部调用。
-            history=messages[:-1],
-        )
-
-        # PRD §3.3：HyDE 兜底后仍低置信度 → 强制转人工（防止硬编答案）
-        if result.low_confidence:
-            return {
-                "final_response": "当前问题未在知识库中找到足够可信的答案，已为您转接人工客服，请稍候。",
-                "retrieval_result": [],
-                "current_agent": "knowledge_agent",
-                "should_interrupt": True,
-            }
-
-        # 把 ChunkResult 转为 dict 列表供 trace 和 sources 展示
-        retrieval_result = [
-            {
-                "doc_filename": r.doc_filename or "未知文档",
-                "chunk_text": r.chunk_text,
-                "chunk_index": r.chunk_index,
-                "score": r.score,
-            }
-            for r in result.hybrid_results
-        ]
-    except Exception as e:
-        # 检索失败（可能 Milvus/ES 未启动或空库）：置空走兜底，不抛异常
-        logger.warning(f"Retrieval failed (may be empty KB or missing infra): {e}")
-        retrieval_result = []
-
-    # 2. 生成回答
-    if state.get("skip_generation"):
-        # 流式路径跳过生成（由流式端点统一生成），只返回检索结果
-        answer = "" if retrieval_result else "暂未找到相关信息，建议联系人工客服获取帮助。"
-        gen_ok = True
-    elif retrieval_result:
-        sources_text = _build_sources_text(retrieval_result)
-        # history 传入时去掉最后一条（当前 user 消息），避免重复
-        answer, gen_ok = _generate_answer(last_user, sources_text, messages[:-1])
-    else:
-        # 无检索结果 → 兜底，建议转人工
-        answer = "暂未找到相关信息，建议联系人工客服获取帮助。"
-        gen_ok = True
+    answer, gen_ok = _compose_knowledge_answer(state, last_user, messages, retrieval_result)
 
     elapsed = int((time.perf_counter() - start) * 1000)
     logger.info(f"Knowledge Agent finished in {elapsed}ms")

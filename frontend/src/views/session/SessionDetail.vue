@@ -70,6 +70,7 @@ import TraceTimeline from '@/components/trace/TraceTimeline.vue'
 import FeedbackButtons from '@/components/chat/FeedbackButtons.vue'
 import type { SessionDetail, Message } from '@/types/session'
 import type { AgentTrace } from '@/types/trace'
+import { formatDateTime as formatDate } from '@/utils/datetime'
 
 const route = useRoute()
 const session = ref<SessionDetail | null>(null)
@@ -82,11 +83,6 @@ const errorMessage = ref('')
 function roleLabel(role: string): string {
   const map: Record<string, string> = { user: '用户', assistant: 'AI', agent: '坐席', system: '系统' }
   return map[role] || role
-}
-
-/** ISO 时间串 → 中文本地化时间 */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString('zh-CN')
 }
 
 /** 用户反馈回调（: 对接 POST /session/message/{id}/feedback，此前为空壳 console.log） */

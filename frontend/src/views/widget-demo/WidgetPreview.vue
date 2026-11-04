@@ -164,33 +164,44 @@ const tenantLogo = ref('')
 let embedSrc = ''
 let manualLoadStarted = false
 
-onMounted(async () => {
-  // 从后端拿绝对地址的 widget.js 地址（生产未配置 PUBLIC_BASE_URL 时回退同源路径）
+async function loadEmbedSource() {
   try {
     const res = await getWidgetEmbedCode()
-    const m = /src="([^"]+)\/widget\.js"/.exec(res.data.embed_code || '')
-    embedSrc = m ? `${m[1]}/widget.js` : '/widget.js'
+    const match = /src="([^"]+)\/widget\.js"/.exec(res.data.embed_code || '')
+    embedSrc = match ? `${match[1]}/widget.js` : '/widget.js'
   } catch { embedSrc = '/widget.js' }
-  // : 展示租户真实主题与 Logo
+}
+
+async function loadTenantBrand() {
   try {
     const cfg = await getWidgetConfig()
     tenantTheme.value = cfg.data.theme_color || tenantTheme.value
     tenantLogo.value = cfg.data.logo_url || ''
   } catch { /* 品牌信息加载失败不阻塞预览 */ }
+}
+
+async function loadStagedWidgetKey() {
   const stagedDemoKey = sessionStorage.getItem('zhihub:demo-widget-key') || ''
   if (stagedDemoKey) {
     realApiKey.value = stagedDemoKey
     demoKeyLoaded.value = true
     sessionStorage.removeItem('zhihub:demo-widget-key')
-  } else if (!realApiKey.value.trim() && !manualLoadStarted) {
-    try {
-      const demo = await getDemoStatus()
-      if (demo.data.is_demo && demo.data.widget_api_key) {
-        realApiKey.value = demo.data.widget_api_key
-        demoKeyLoaded.value = true
-      }
-    } catch { /* 正式租户继续使用一次性 Key */ }
+    return
   }
+  if (realApiKey.value.trim() || manualLoadStarted) return
+  try {
+    const demo = await getDemoStatus()
+    if (demo.data.is_demo && demo.data.widget_api_key) {
+      realApiKey.value = demo.data.widget_api_key
+      demoKeyLoaded.value = true
+    }
+  } catch { /* 正式租户继续使用一次性 Key */ }
+}
+
+onMounted(async () => {
+  await loadEmbedSource()
+  await loadTenantBrand()
+  await loadStagedWidgetKey()
   if (activeTab.value === 'real' && realApiKey.value) loadRealWidget('auto')
 })
 
@@ -205,6 +216,18 @@ function destroyOldWidget() {
   }
 }
 
+function createWidgetScript(key: string) {
+  const script = document.createElement('script')
+  script.src = embedSrc
+  script.async = true
+  script.setAttribute('data-api-key', key)
+  const origin = new URL(embedSrc, window.location.href).origin
+  script.setAttribute('data-endpoint', `${origin}/api/v1/widget`)
+  script.setAttribute('data-ws-endpoint', `${origin.replace(/^http/, 'ws')}/api/v1/ws`)
+  script.setAttribute('data-theme-color', tenantTheme.value)
+  return script
+}
+
 /** 注入真实 widget.js（与外部网站同一脚本）。
  *  : 成功/失败以 script.onload/onerror 为准，loading 持续到二者之一。 */
 function loadRealWidget(source: 'manual' | 'auto' = 'manual') {
@@ -216,16 +239,7 @@ function loadRealWidget(source: 'manual' | 'auto' = 'manual') {
   realLoaded.value = false
   destroyOldWidget()
   document.querySelectorAll('script[data-api-key]').forEach((el) => el.remove())
-  const script = document.createElement('script')
-  script.src = embedSrc
-  script.async = true
-  script.setAttribute('data-api-key', key)
-  // endpoint/ws 地址从 script src 同源推导（widget.js 内部按 scheme 换算 ws/wss）
-  const origin = new URL(embedSrc, window.location.href).origin
-  script.setAttribute('data-endpoint', `${origin}/api/v1/widget`)
-  script.setAttribute('data-ws-endpoint', `${origin.replace(/^http/, 'ws')}/api/v1/ws`)
-  // : 注入租户真实主题色
-  script.setAttribute('data-theme-color', tenantTheme.value)
+  const script = createWidgetScript(key)
   script.onload = () => {
     realLoading.value = false
     realLoaded.value = true
@@ -234,7 +248,7 @@ function loadRealWidget(source: 'manual' | 'auto' = 'manual') {
   script.onerror = () => {
     realLoading.value = false
     realLoaded.value = false
-    script.remove() // 清理失败脚本
+    script.remove()
     destroyOldWidget()
     ElMessage.error('widget.js 加载失败，请检查 PUBLIC_BASE_URL 配置与网络')
   }

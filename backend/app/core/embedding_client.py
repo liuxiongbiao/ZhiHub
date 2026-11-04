@@ -61,6 +61,19 @@ def _get_headers() -> dict[str, str]:
 
 
 # ────────── Embedding API ──────────
+def _embedding_retry_wait(exc: Exception, attempt: int) -> float:
+    """普通失败按 1 秒、2 秒退避。限流至少等 5 秒，并尊重 Retry-After。"""
+    wait = 2**attempt
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        retry_after = exc.response.headers.get("Retry-After", "")
+        try:
+            retry_after_seconds = float(retry_after)
+        except ValueError:
+            retry_after_seconds = 0.0
+        wait = max(retry_after_seconds, 5 * (2**attempt))
+    return wait
+
+
 def embed_texts(texts: Sequence[str]) -> list[list[float]]:
     """批量调用 bge-m3 embedding API，返回与 texts 等长的向量列表。
 
@@ -110,21 +123,11 @@ def embed_texts(texts: Sequence[str]) -> list[list[float]]:
                     f"Embedding API returned {len(embeddings)} vectors, expected {len(texts)}"
                 )
             return embeddings
-        except Exception as e:
+        except Exception as exc:
             if attempt < MAX_RETRIES - 1:
-                wait = 2**attempt  # 普通网络抖动指数退避：1s -> 2s
-                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
-                    retry_after = e.response.headers.get("Retry-After", "")
-                    try:
-                        retry_after_seconds = float(retry_after)
-                    except ValueError:
-                        retry_after_seconds = 0.0
-                    # 限流需要更长冷却，且优先尊重供应商 Retry-After。
-                    wait = max(retry_after_seconds, 5 * (2**attempt))
-                time.sleep(wait)
+                time.sleep(_embedding_retry_wait(exc, attempt))
                 continue
-            # 最后一次仍失败：抛出，由调用方决定降级（如知识库任务记录失败切片）
-            raise RuntimeError(f"Embedding API failed after {MAX_RETRIES} retries: {e}") from e
+            raise RuntimeError(f"Embedding API failed after {MAX_RETRIES} retries: {exc}") from exc
 
 
 def embed_batches(texts: Sequence[str]) -> list[list[float]]:

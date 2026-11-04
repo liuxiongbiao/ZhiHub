@@ -81,6 +81,21 @@ class AgentState(TypedDict, total=False):
 
 
 # ─── 图构建 ───
+def _register_agent_nodes(builder) -> None:
+    """注册路由和四个业务节点。工单节点按配置在 MCP 与函数调用之间切换。"""
+    from app.config import settings
+
+    builder.add_node("router", router_node)
+    builder.add_node("knowledge_agent", knowledge_agent_node)
+    if settings.agent_tool_mode == "fc":
+        from app.agents.nodes.ticket_agent_fc import ticket_agent_fc_node
+        builder.add_node("ticket_agent", ticket_agent_fc_node)
+    else:
+        builder.add_node("ticket_agent", ticket_agent_node)
+    builder.add_node("order_agent", order_agent_node)
+    builder.add_node("human_handoff", human_handoff_node)
+
+
 def build_graph() -> CompiledStateGraph:
     """构建并编译 LangGraph 状态图。
 
@@ -105,21 +120,7 @@ def build_graph() -> CompiledStateGraph:
                     human_handoff 替换为 interrupt 中断点。
     """
     builder = StateGraph(AgentState)
-
-    # 注册节点
-    builder.add_node("router", router_node)
-    builder.add_node("knowledge_agent", knowledge_agent_node)
-    # 规格 009: 按 AGENT_TOOL_MODE 切换 MCP / Function Calling（默认 mcp）
-    from app.config import settings
-    if settings.agent_tool_mode == "fc":
-        # FC 模式：注册 Function Calling 版工单 Agent，对比 MCP 范式
-        from app.agents.nodes.ticket_agent_fc import ticket_agent_fc_node
-        builder.add_node("ticket_agent", ticket_agent_fc_node)
-    else:
-        # MCP 模式（默认）：注册 MCP 协议化工单 Agent
-        builder.add_node("ticket_agent", ticket_agent_node)
-    builder.add_node("order_agent", order_agent_node)
-    builder.add_node("human_handoff", human_handoff_node)
+    _register_agent_nodes(builder)
 
     # 入口: 路由节点
     builder.set_entry_point("router")

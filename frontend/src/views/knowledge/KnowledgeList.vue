@@ -133,6 +133,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload } from '@element-plus/icons-vue'
 import { getDocumentList, uploadDocument, rebuildDocument, deleteDocument, type DocumentItem } from '@/api/knowledge'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { formatDateTime } from '@/utils/datetime'
 
 /** 文档状态 → 中文标签 */
 const DOC_STATUS_MAP: Record<string, string> = {
@@ -177,8 +178,7 @@ function formatFileSize(bytes?: number): string {
 
 /** ISO 时间串 → 中文本地化时间 */
 function formatDate(iso: string): string {
-  if (!iso) return '-'
-  return new Date(iso).toLocaleString('zh-CN')
+  return formatDateTime(iso, '-')
 }
 
 /** 拉取文档列表（带状态筛选 + 分页），失败提示 */

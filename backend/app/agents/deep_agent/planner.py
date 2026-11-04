@@ -1,4 +1,4 @@
-﻿"""
+"""
 backend/app/agents/deep_agent/planner.py
 
 职责: DeepAgent 自主规划器 -- ReAct 循环（LLM 自主决策工具调用）
@@ -146,6 +146,175 @@ def _mark_limit_failure(result: DeepAgentResult, reason: str, message: str) -> N
     result.error = f"资源超限失败：{message}"
 
 
+def _elapsed_ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
+
+
+def _fail_on_timeout(result: DeepAgentResult, timeout_seconds: int) -> None:
+    _mark_limit_failure(result, "timeout", f"执行时间达到 {timeout_seconds} 秒上限")
+
+
+def _complete_with_placeholder(
+    result: DeepAgentResult, goal: str, task_id: str, start: float,
+) -> DeepAgentResult:
+    """模型密钥缺失时返回模板报告，避免请求挂起。"""
+    logger.warning("DeepSeek API key is placeholder/empty, DeepAgent falling back to template report")
+    result.report = (
+        f"# {goal}\n\n"
+        f"## 数据概览\n"
+        f"- 总工单数: N/A（LLM 未配置，未查询实时数据）\n"
+        f"- 处理中: N/A\n\n"
+        f"## 说明\n"
+        f"（DeepSeek API key 未配置，使用模板化摘要。配置真实 key 后自动启用 ReAct 自主规划。）\n"
+    )
+    result.status = "completed"
+    result.steps.append({
+        "step": 1,
+        "label": "降级模板（LLM 未配置）",
+        "thought": "LLM API key 未配置，跳过 ReAct 循环，使用模板生成报告",
+        "action": "fallback",
+        "action_input": "{}",
+        "observation": "LLM 未配置，使用降级模板",
+        "tool_calls": 1,
+        "elapsed_ms": _elapsed_ms(start),
+    })
+    result.total_elapsed_ms = _elapsed_ms(start)
+    logger.info(f"DeepAgent {task_id}: {result.status} (fallback) in {result.total_elapsed_ms}ms")
+    return result
+
+
+def _record_react_step(result: DeepAgentResult, action: str, thought: str, action_input: str, observation: str, tool_calls: int, step_start: float) -> None:
+    result.steps.append({
+        "step": len(result.steps) + 1,
+        "label": f"ReAct: {action}",
+        "thought": thought,
+        "action": action,
+        "action_input": action_input,
+        "observation": observation[:500],
+        "tool_calls": tool_calls,
+        "elapsed_ms": int((time.perf_counter() - step_start) * 1000),
+    })
+
+
+def _within_react_budget(result: DeepAgentResult, messages: list, deadline: float, effective_timeout: int) -> tuple[bool, float, int]:
+    """时间或 token 不够再调用模型时，写入失败原因并返回 False。"""
+    remaining_seconds = deadline - time.perf_counter()
+    if remaining_seconds <= 0:
+        _fail_on_timeout(result, effective_timeout)
+        return False, 0, 0
+    remaining_tokens = result.token_budget - result.token_consumed
+    prompt_tokens = count_messages_tokens(messages)
+    if remaining_tokens <= prompt_tokens:
+        _mark_limit_failure(
+            result, "token_budget", f"token 消耗达到 {result.token_budget} 上限",
+        )
+        return False, 0, 0
+    return True, remaining_seconds, remaining_tokens - prompt_tokens
+
+
+def _stop_if_budget_closed(result: DeepAgentResult, effective_timeout: int, effective_budget: int, start: float) -> bool:
+    """预算一开始就耗尽时写入失败并返回 True。调用方应立刻返回，不再请求模型。"""
+    if effective_timeout <= 0:
+        _fail_on_timeout(result, effective_timeout)
+        result.total_elapsed_ms = _elapsed_ms(start)
+        return True
+    if effective_budget <= 0:
+        _mark_limit_failure(result, "token_budget", f"token 消耗达到 {effective_budget} 上限")
+        result.total_elapsed_ms = _elapsed_ms(start)
+        return True
+    return False
+
+
+def _consume_react_model(
+    result: DeepAgentResult,
+    messages: list,
+    deadline: float,
+    effective_timeout: int,
+    remaining_seconds: float,
+    answer_tokens: int,
+) -> str | None:
+    """调用模型并记账。预算或时间已经用尽时停止本轮。"""
+    from app.core.llm_client import llm_complete
+
+    resp = llm_complete(
+        messages=messages,
+        max_tokens=min(500, max(1, answer_tokens)),
+        temperature=0.0,
+        timeout=max(0.1, min(60.0, remaining_seconds)),
+    )
+    llm_output = resp.choices[0].message.content.strip()
+    result.token_consumed += _response_token_usage(resp, messages, llm_output)
+    if result.token_consumed >= result.token_budget:
+        _mark_limit_failure(
+            result,
+            "token_budget",
+            f"token 消耗达到 {result.token_consumed}/{result.token_budget}",
+        )
+        return None
+    if time.perf_counter() >= deadline:
+        _fail_on_timeout(result, effective_timeout)
+        return None
+    return llm_output
+
+
+def _execute_react_turn(
+    result: DeepAgentResult,
+    messages: list,
+    deadline: float,
+    effective_timeout: int,
+    tool_calls: int,
+    goal: str,
+    tenant_id: int,
+) -> tuple[int, bool]:
+    """执行一轮思考和工具调用。返回新的工具次数，以及是否继续循环。"""
+    allowed, remaining_seconds, answer_tokens = _within_react_budget(
+        result, messages, deadline, effective_timeout,
+    )
+    if not allowed:
+        return tool_calls, False
+
+    step_start = time.perf_counter()
+    llm_output = _consume_react_model(
+        result, messages, deadline, effective_timeout, remaining_seconds, answer_tokens,
+    )
+    if llm_output is None:
+        return tool_calls, False
+
+    thought, action, action_input = _parse_react_response(llm_output)
+    observation = _execute_tool(action, action_input, goal, tenant_id)
+    tool_calls += 1
+    _record_react_step(
+        result, action, thought, action_input, observation, tool_calls, step_start,
+    )
+
+    if time.perf_counter() >= deadline:
+        _fail_on_timeout(result, effective_timeout)
+        return tool_calls, False
+
+    if action == "finish":
+        result.report = observation
+        result.status = "completed"
+        return tool_calls, False
+
+    messages.append({"role": "assistant", "content": llm_output})
+    messages.append({"role": "user", "content": f"Observation: {observation}"})
+    return tool_calls, True
+
+
+def _drive_react_loop(result, messages, deadline, effective_timeout, goal, tenant_id) -> None:
+    """按工具次数上限执行 ReAct。循环自然结束时标记为截断。"""
+    tool_calls = 0
+    while tool_calls < MAX_TOOL_CALLS:
+        tool_calls, keep_going = _execute_react_turn(
+            result, messages, deadline, effective_timeout, tool_calls, goal, tenant_id,
+        )
+        if not keep_going:
+            return
+    result.status = "truncated"
+    result.termination_reason = "tool_limit"
+    result.error = f"工具调用达上限({MAX_TOOL_CALLS})，任务熔断"
+
+
 def execute(
     task_id: str,
     goal: str,
@@ -169,44 +338,13 @@ def execute(
         status="running",
         token_budget=max(0, int(effective_budget)),
     )
-    tool_calls = 0
     deadline = start + max(0, effective_timeout)
 
-    if effective_timeout <= 0:
-        _mark_limit_failure(result, "timeout", f"执行时间达到 {effective_timeout} 秒上限")
-        result.total_elapsed_ms = int((time.perf_counter() - start) * 1000)
-        return result
-    if effective_budget <= 0:
-        _mark_limit_failure(result, "token_budget", f"token 消耗达到 {effective_budget} 上限")
-        result.total_elapsed_ms = int((time.perf_counter() - start) * 1000)
+    if _stop_if_budget_closed(result, effective_timeout, effective_budget, start):
         return result
 
-    # 占位 key 检测: LLM 未配置时快速降级，避免测试/开发环境挂起
     if not settings.deepseek_api_key or "placeholder" in settings.deepseek_api_key:
-        logger.warning("DeepSeek API key is placeholder/empty, DeepAgent falling back to template report")
-        # 直接生成模板报告（不调 LLM，避免占位 key 触发 60s 超时挂起）
-        result.report = (
-            f"# {goal}\n\n"
-            f"## 数据概览\n"
-            f"- 总工单数: N/A（LLM 未配置，未查询实时数据）\n"
-            f"- 处理中: N/A\n\n"
-            f"## 说明\n"
-            f"（DeepSeek API key 未配置，使用模板化摘要。配置真实 key 后自动启用 ReAct 自主规划。）\n"
-        )
-        result.status = "completed"
-        result.steps.append({
-            "step": 1,
-            "label": "降级模板（LLM 未配置）",
-            "thought": "LLM API key 未配置，跳过 ReAct 循环，使用模板生成报告",
-            "action": "fallback",
-            "action_input": "{}",
-            "observation": "LLM 未配置，使用降级模板",
-            "tool_calls": 1,
-            "elapsed_ms": int((time.perf_counter() - start) * 1000),
-        })
-        result.total_elapsed_ms = int((time.perf_counter() - start) * 1000)
-        logger.info(f"DeepAgent {task_id}: {result.status} (fallback) in {result.total_elapsed_ms}ms")
-        return result
+        return _complete_with_placeholder(result, goal, task_id, start)
 
     system_prompt = _build_react_system_prompt(goal, tenant_id)
     messages = [
@@ -215,90 +353,16 @@ def execute(
     ]
 
     try:
-        from app.core.llm_client import llm_complete
-
-        while tool_calls < MAX_TOOL_CALLS:
-            # PRD §3.11：默认 10 分钟墙钟上限；超限后不得再调用模型或工具。
-            remaining_seconds = deadline - time.perf_counter()
-            if remaining_seconds <= 0:
-                _mark_limit_failure(
-                    result, "timeout", f"执行时间达到 {effective_timeout} 秒上限"
-                )
-                break
-
-            remaining_tokens = result.token_budget - result.token_consumed
-            prompt_tokens = count_messages_tokens(messages)
-            if remaining_tokens <= prompt_tokens:
-                _mark_limit_failure(
-                    result,
-                    "token_budget",
-                    f"token 消耗达到 {result.token_budget} 上限",
-                )
-                break
-
-            step_start = time.perf_counter()
-            resp = llm_complete(
-                messages=messages,
-                max_tokens=min(500, max(1, remaining_tokens - prompt_tokens)),
-                temperature=0.0,
-                timeout=max(0.1, min(60.0, remaining_seconds)),
-            )
-            llm_output = resp.choices[0].message.content.strip()
-            result.token_consumed += _response_token_usage(resp, messages, llm_output)
-
-            if result.token_consumed >= result.token_budget:
-                _mark_limit_failure(
-                    result,
-                    "token_budget",
-                    f"token 消耗达到 {result.token_consumed}/{result.token_budget}",
-                )
-                break
-            if time.perf_counter() >= deadline:
-                _mark_limit_failure(
-                    result, "timeout", f"执行时间达到 {effective_timeout} 秒上限"
-                )
-                break
-
-            thought, action, action_input = _parse_react_response(llm_output)
-            observation = _execute_tool(action, action_input, goal, tenant_id)
-            tool_calls += 1
-
-            result.steps.append({
-                "step": len(result.steps) + 1,
-                "label": f"ReAct: {action}",
-                "thought": thought,
-                "action": action,
-                "action_input": action_input,
-                "observation": observation[:500],
-                "tool_calls": tool_calls,
-                "elapsed_ms": int((time.perf_counter() - step_start) * 1000),
-            })
-
-            if time.perf_counter() >= deadline:
-                _mark_limit_failure(
-                    result, "timeout", f"执行时间达到 {effective_timeout} 秒上限"
-                )
-                break
-
-            if action == "finish":
-                result.report = observation
-                result.status = "completed"
-                break
-
-            messages.append({"role": "assistant", "content": llm_output})
-            messages.append({"role": "user", "content": f"Observation: {observation}"})
-        else:
-            result.status = "truncated"
-            result.termination_reason = "tool_limit"
-            result.error = f"工具调用达上限({MAX_TOOL_CALLS})，任务熔断"
-
-    except Exception as e:
-        logger.exception(f"DeepAgent {task_id} failed: {e}")
+        _drive_react_loop(
+            result, messages, deadline, effective_timeout, goal, tenant_id,
+        )
+    except Exception as exc:
+        logger.exception(f"DeepAgent {task_id} failed: {exc}")
         result.status = "failed"
-        result.error = str(e)
+        result.error = str(exc)
         result.termination_reason = "execution_error"
 
-    result.total_elapsed_ms = int((time.perf_counter() - start) * 1000)
+    result.total_elapsed_ms = _elapsed_ms(start)
     logger.info(f"DeepAgent {task_id}: {result.status} in {result.total_elapsed_ms}ms")
     return result
 

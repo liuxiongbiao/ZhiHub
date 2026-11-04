@@ -249,6 +249,21 @@ def rewrite_query(history: list[dict], current_query: str) -> str:
 
 
 # ─── Milvus 向量召回 ───
+def _vector_hits(results) -> list[dict]:
+    output = []
+    if results and len(results) > 0:
+        for hit in results[0]:
+            output.append({
+                "doc_id": hit.entity.get("doc_id"),
+                "chunk_index": hit.entity.get("chunk_index"),
+                "chunk_text": hit.entity.get("chunk_text", ""),
+                "doc_filename": hit.entity.get("doc_filename", ""),
+                "score": hit.distance,
+                "source": "vector",
+            })
+    return output
+
+
 def vector_recall(query: str, tenant_id: int, top_k: int = VECTOR_TOP_K) -> list[dict]:
     """Milvus 向量相似度召回（语义匹配）。
 
@@ -293,20 +308,9 @@ def vector_recall(query: str, tenant_id: int, top_k: int = VECTOR_TOP_K) -> list
         _mark_degradation(tenant_id, "milvus")  # 规格 008: 降级标记（PRD 3.4/3.8）
         return []
 
-    # 3. 转换结果
-    output = []
-    if results and len(results) > 0:
-        for hit in results[0]:
-            output.append({
-                "doc_id": hit.entity.get("doc_id"),
-                "chunk_index": hit.entity.get("chunk_index"),
-                "chunk_text": hit.entity.get("chunk_text", ""),
-                "doc_filename": hit.entity.get("doc_filename", ""),
-                "score": hit.distance,  # IP 相似度
-                "source": "vector",
-            })
+    hits = _vector_hits(results)
     _mark_recovery(tenant_id, "milvus")
-    return output
+    return hits
 
 
 # ─── ES BM25 召回 ───
@@ -543,7 +547,152 @@ def _track_retrieval_result(tenant_id: int, result: RetrievalResult) -> None:
     )
 
 
+def _recall_both(rewritten: str, tenant_id: int) -> tuple[list, list]:
+    """向量和 BM25 各占一个线程。先取向量结果，异常顺序与原来一致。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        vector_future = executor.submit(vector_recall, rewritten, tenant_id)
+        bm25_future = executor.submit(bm25_recall, rewritten, tenant_id)
+        return vector_future.result(), bm25_future.result()
+
+
+def _chunks_from_rrf(fused: list[dict]) -> list[ChunkResult]:
+    """向量能力关闭时，直接采用融合分，不调用精排和 HyDE。"""
+    return [
+        ChunkResult(
+            doc_id=item.get("doc_id", 0),
+            doc_filename=item.get("doc_filename", ""),
+            chunk_index=item.get("chunk_index", 0),
+            chunk_text=item.get("chunk_text", ""),
+            score=item.get("rrf_score", item.get("score", 0.0)),
+            source=item.get("source", "bm25"),
+        )
+        for item in fused[:RERANK_TOP_K]
+    ]
+
+
+def _chunks_from_rerank(pool: list[dict], ranked: list[dict], source: str) -> list[ChunkResult]:
+    """按精排返回的下标回查候选，忽略越界下标。"""
+    chunks: list[ChunkResult] = []
+    for hit in ranked[:RERANK_TOP_K]:
+        index = hit["index"]
+        if index < len(pool):
+            item = pool[index]
+            chunks.append(ChunkResult(
+                doc_id=item.get("doc_id", 0),
+                doc_filename=item.get("doc_filename", ""),
+                chunk_index=item.get("chunk_index", 0),
+                chunk_text=item.get("chunk_text", ""),
+                score=hit.get("relevance_score", 0.0),
+                source=source,
+            ))
+    return chunks
+
+
+def _vector_baseline(vector_raw: list[dict]) -> list[ChunkResult]:
+    """纯向量 Top5，不经过融合和精排，只给对比基线使用。"""
+    return [
+        ChunkResult(
+            doc_id=item.get("doc_id", 0),
+            doc_filename=item.get("doc_filename", ""),
+            chunk_index=item.get("chunk_index", 0),
+            chunk_text=item.get("chunk_text", ""),
+            score=item.get("score", 0.0),
+            source="vector",
+        )
+        for item in vector_raw[:RERANK_TOP_K]
+    ]
+
+
+def _stage_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
+
+
+def _empty_knowledge_result(query: str, rewritten: str, elapsed: int, timings: dict) -> RetrievalResult:
+    return RetrievalResult(
+        query=query,
+        rewritten_query=rewritten if rewritten != query else None,
+        empty_knowledge=True,
+        elapsed_ms=elapsed,
+        timings_ms=timings,
+    )
+
+
+def _rerank_pool(pool: list[dict], rewritten: str) -> list[dict]:
+    candidates = [item["chunk_text"] for item in pool]
+    return rerank_api(query=rewritten, documents=candidates, top_n=RERANK_TOP_K)
+
+
+def _apply_hyde_fallback(
+    query: str,
+    tenant_id: int,
+    rewritten: str,
+    fused: list[dict],
+    hybrid_top: list[ChunkResult],
+) -> tuple[list[ChunkResult], bool, int, int]:
+    """低置信度时用 HyDE 再融合、再精排。二次精排耗时单独计入 rerank。"""
+    if not hybrid_top or hybrid_top[0].score >= RERANK_SCORE_THRESHOLD:
+        return hybrid_top, False, 0, 0
+    logger.info(
+        f"Low confidence (top1={hybrid_top[0].score:.3f}), triggering HyDE fallback"
+    )
+    hyde_start = time.perf_counter()
+    extra_rerank = 0
+    hyde_results = _hyde_retrieval(query, tenant_id)
+    if hyde_results:
+        re_fused = rrf_fuse(fused, hyde_results)
+        re_rerank_start = time.perf_counter()
+        re_rerank_pool = re_fused[:RERANK_CANDIDATE_LIMIT]
+        re_reranked = _rerank_pool(re_rerank_pool, rewritten)
+        extra_rerank = _stage_ms(re_rerank_start)
+        hybrid_top = _chunks_from_rerank(re_rerank_pool, re_reranked, "hyde")
+    return hybrid_top, True, extra_rerank, _stage_ms(hyde_start)
+
+
+def _rank_fused_chunks(
+    query: str,
+    tenant_id: int,
+    rewritten: str,
+    fused: list[dict],
+) -> tuple[list, bool, bool, int, int]:
+    """把融合结果转成引用。向量关闭时只取融合序；开启时精排，并在组装结果前结束 HyDE 计时。"""
+    hybrid_top: list[ChunkResult] = []
+    hyde_fallback = False
+    low_confidence = False
+    rerank_elapsed = 0
+    hyde_elapsed = 0
+    if fused and not settings.embedding_enabled:
+        hybrid_top = _chunks_from_rrf(fused)
+    if fused and settings.embedding_enabled:
+        rerank_start = time.perf_counter()
+        rerank_pool = fused[:RERANK_CANDIDATE_LIMIT]
+        reranked = _rerank_pool(rerank_pool, rewritten)
+        hybrid_top = _chunks_from_rerank(rerank_pool, reranked, "hybrid")
+        rerank_elapsed += _stage_ms(rerank_start)
+        hybrid_top, hyde_fallback, extra_rerank, hyde_elapsed = _apply_hyde_fallback(
+            query, tenant_id, rewritten, fused, hybrid_top,
+        )
+        rerank_elapsed += extra_rerank
+        if hybrid_top and hybrid_top[0].score < RERANK_SCORE_THRESHOLD:
+            low_confidence = True
+    return hybrid_top, hyde_fallback, low_confidence, rerank_elapsed, hyde_elapsed
+
+
 @observe(name="retrieval")
+def _make_retrieval_result(query, rewritten, vector_top, hybrid_top, hyde_fallback, low_confidence, elapsed, timings):
+    return RetrievalResult(
+        query=query,
+        rewritten_query=rewritten if rewritten != query else None,
+        vector_results=vector_top,
+        hybrid_results=hybrid_top,
+        hyde_fallback=hyde_fallback,
+        low_confidence=low_confidence,
+        elapsed_ms=elapsed,
+        timings_ms=timings,
+    )
+
+
 def hybrid_search(
     query: str,
     tenant_id: int,
@@ -576,137 +725,32 @@ def hybrid_search(
     # 2. 空知识库检查
     stage_start = time.perf_counter()
     if _is_knowledge_base_empty(tenant_id):
-        timings["knowledge_check"] = int((time.perf_counter() - stage_start) * 1000)
-        elapsed = int((time.perf_counter() - start) * 1000)
-        result = RetrievalResult(
-            query=query,
-            rewritten_query=rewritten if rewritten != query else None,
-            empty_knowledge=True,
-            elapsed_ms=elapsed,
-            timings_ms=timings,
-        )
+        timings["knowledge_check"] = _stage_ms(stage_start)
+        result = _empty_knowledge_result(query, rewritten, _stage_ms(start), timings)
         _track_retrieval_result(tenant_id, result)
         return result
-    timings["knowledge_check"] = int((time.perf_counter() - stage_start) * 1000)
+    timings["knowledge_check"] = _stage_ms(stage_start)
 
-    # 3. 双路召回（ThreadPoolExecutor 真正并行，避免两路延迟叠加）
-    from concurrent.futures import ThreadPoolExecutor
     stage_start = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        fv = ex.submit(vector_recall, rewritten, tenant_id)
-        fb = ex.submit(bm25_recall, rewritten, tenant_id)
-        vector_raw = fv.result()
-        bm25_raw = fb.result()
-    timings["parallel_recall"] = int((time.perf_counter() - stage_start) * 1000)
+    vector_raw, bm25_raw = _recall_both(rewritten, tenant_id)
+    timings["parallel_recall"] = _stage_ms(stage_start)
 
-    # 4. RRF 融合
     stage_start = time.perf_counter()
     fused = rrf_fuse(vector_raw, bm25_raw)
-    timings["rrf_fusion"] = int((time.perf_counter() - stage_start) * 1000)
+    timings["rrf_fusion"] = _stage_ms(stage_start)
 
-    # 5. Reranker 精排
-    hybrid_top = []
-    hyde_fallback = False
-    low_confidence = False
-    rerank_elapsed = 0
-    hyde_elapsed = 0
-    if fused and not settings.embedding_enabled:
-        # embedding/rerank 同属向量能力开关；关闭时保留 BM25+RRF 结果，
-        # 不调用外部 reranker，也不触发依赖 LLM+向量的 HyDE。
-        for item in fused[:RERANK_TOP_K]:
-            hybrid_top.append(ChunkResult(
-                doc_id=item.get("doc_id", 0),
-                doc_filename=item.get("doc_filename", ""),
-                chunk_index=item.get("chunk_index", 0),
-                chunk_text=item.get("chunk_text", ""),
-                score=item.get("rrf_score", item.get("score", 0.0)),
-                source=item.get("source", "bm25"),
-            ))
-    if fused and settings.embedding_enabled:
-        # 提取去重的候选文本，送 reranker 交叉编码精排
-        rerank_start = time.perf_counter()
-        rerank_pool = fused[:RERANK_CANDIDATE_LIMIT]
-        candidates = [c["chunk_text"] for c in rerank_pool]
-        reranked = rerank_api(query=rewritten, documents=candidates, top_n=RERANK_TOP_K)
-
-        for r in reranked[:RERANK_TOP_K]:
-            idx = r["index"]
-            if idx < len(rerank_pool):
-                item = rerank_pool[idx]
-                hybrid_top.append(ChunkResult(
-                    doc_id=item.get("doc_id", 0),
-                    doc_filename=item.get("doc_filename", ""),
-                    chunk_index=item.get("chunk_index", 0),
-                    chunk_text=item.get("chunk_text", ""),
-                    score=r.get("relevance_score", 0.0),
-                    source="hybrid",
-                ))
-        rerank_elapsed += int((time.perf_counter() - rerank_start) * 1000)
-
-        # 6. 置信度判断：Top1 < 阈值 → HyDE 兜底
-        if hybrid_top and hybrid_top[0].score < RERANK_SCORE_THRESHOLD:
-            logger.info(
-                f"Low confidence (top1={hybrid_top[0].score:.3f}), triggering HyDE fallback"
-            )
-            hyde_fallback = True
-            hyde_start = time.perf_counter()
-            hyde_results = _hyde_retrieval(query, tenant_id)
-
-            if hyde_results:
-                # 二次 RRF 融合（原融合结果 + HyDE 结果），再精排一次
-                re_fused = rrf_fuse(fused, hyde_results)
-                re_rerank_start = time.perf_counter()
-                re_rerank_pool = re_fused[:RERANK_CANDIDATE_LIMIT]
-                re_candidates = [c["chunk_text"] for c in re_rerank_pool]
-                re_reranked = rerank_api(
-                    query=rewritten, documents=re_candidates, top_n=RERANK_TOP_K
-                )
-                rerank_elapsed += int((time.perf_counter() - re_rerank_start) * 1000)
-                hybrid_top = []
-                for r in re_reranked[:RERANK_TOP_K]:
-                    idx = r["index"]
-                    if idx < len(re_rerank_pool):
-                        item = re_rerank_pool[idx]
-                        hybrid_top.append(ChunkResult(
-                            doc_id=item.get("doc_id", 0),
-                            doc_filename=item.get("doc_filename", ""),
-                            chunk_index=item.get("chunk_index", 0),
-                            chunk_text=item.get("chunk_text", ""),
-                            score=r.get("relevance_score", 0.0),
-                            source="hyde",
-                        ))
-            hyde_elapsed = int((time.perf_counter() - hyde_start) * 1000)
-
-        # PRD §3.3：HyDE 重试后置信度仍低于阈值 → 标记低置信度，供上层 Agent 决策转人工
-        if hybrid_top and hybrid_top[0].score < RERANK_SCORE_THRESHOLD:
-            low_confidence = True
+    hybrid_top, hyde_fallback, low_confidence, rerank_elapsed, hyde_elapsed = _rank_fused_chunks(
+        query, tenant_id, rewritten, fused,
+    )
     timings["rerank"] = rerank_elapsed
     if hyde_fallback:
         timings["hyde"] = hyde_elapsed
 
-    # 纯向量对比基线：取向量召回 Top5（不经 RRF/rerank），用于 A/B 对比混合检索的收益
-    vector_top = []
-    for item in vector_raw[:RERANK_TOP_K]:
-        vector_top.append(ChunkResult(
-            doc_id=item.get("doc_id", 0),
-            doc_filename=item.get("doc_filename", ""),
-            chunk_index=item.get("chunk_index", 0),
-            chunk_text=item.get("chunk_text", ""),
-            score=item.get("score", 0.0),
-            source="vector",
-        ))
+    vector_top = _vector_baseline(vector_raw)
 
     elapsed = int((time.perf_counter() - start) * 1000)
-
-    result = RetrievalResult(
-        query=query,
-        rewritten_query=rewritten if rewritten != query else None,
-        vector_results=vector_top,
-        hybrid_results=hybrid_top,
-        hyde_fallback=hyde_fallback,
-        low_confidence=low_confidence,
-        elapsed_ms=elapsed,
-        timings_ms=timings,
+    result = _make_retrieval_result(
+        query, rewritten, vector_top, hybrid_top, hyde_fallback, low_confidence, elapsed, timings,
     )
     _track_retrieval_result(tenant_id, result)
     return result

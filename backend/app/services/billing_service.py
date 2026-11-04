@@ -129,6 +129,18 @@ def _increment_usage(
                 continue
 
 
+def _arm_quota_warning(redis_client, tenant_id: int, level: str, count: float, quota: int, message: str) -> bool:
+    """同一级别只触发一次预警。并发下只有第一个写入者成功。"""
+    if not redis_client.set(
+        _warning_key(tenant_id, level), "1", ex=60 * 60 * 24 * 40, nx=True,
+    ):
+        return False
+    redis_client.set(f"{WARNING_BANNER_KEY}{tenant_id}:{level}", "1", ex=WARNING_BANNER_TTL)
+    logger.info(message)
+    _notify(tenant_id, f"{level}%", count, quota)
+    return True
+
+
 def incr_usage(
     tenant_id: int, model: str = "deepseek/deepseek-chat", quota: int | None = None,
     tokens: int = 0, *, event_key: str | None = None, equivalent: float | None = None,
@@ -168,27 +180,15 @@ def incr_usage(
     is_overage = count >= q
     warning = None
 
-    # 80% 预警（仅触发一次）—— SETNX 原子去重:
-    # 原 exists+set 两步非原子，并发结算可同时触发同一级预警重复通知；
-    # nx=True 保证只有首个写入者进入触发分支，键带 TTL 覆盖整月
-    if count >= int(q * QUOTA_WARNING_80) and r.set(
-        _warning_key(tenant_id, "80"), "1", ex=60 * 60 * 24 * 40, nx=True,
+    if count >= int(q * QUOTA_WARNING_80) and _arm_quota_warning(
+        r, tenant_id, "80", count, q, f"Tenant {tenant_id} quota 80% warning: {count}/{q}",
     ):
-        # 规格 009: 预警横幅标记（PRD §3.9），/home 读取显示红色横幅
-        r.set(f"{WARNING_BANNER_KEY}{tenant_id}:80", "1", ex=WARNING_BANNER_TTL)
         warning = "80%"
-        logger.info(f"Tenant {tenant_id} quota 80% warning: {count}/{q}")
-        _notify(tenant_id, "80%", count, q)
 
-    # 100% 预警（同 SETNX 原子去重）
-    if count >= q and r.set(
-        _warning_key(tenant_id, "100"), "1", ex=60 * 60 * 24 * 40, nx=True,
+    if count >= q and _arm_quota_warning(
+        r, tenant_id, "100", count, q, f"Tenant {tenant_id} quota EXCEEDED: {count}/{q}",
     ):
-        # 规格 009: 预警横幅标记（PRD §3.9），100% 覆盖 80%（/home 读最新 level）
-        r.set(f"{WARNING_BANNER_KEY}{tenant_id}:100", "1", ex=WARNING_BANNER_TTL)
         warning = "100%"
-        logger.info(f"Tenant {tenant_id} quota EXCEEDED: {count}/{q}")
-        _notify(tenant_id, "100%", count, q)
         from app.services.analytics_service import track_event
         track_event(
             "quota_exceeded",
@@ -341,6 +341,49 @@ def check_quota(tenant_id: int, quota: int | None = None) -> dict:
     return {"count": count, "quota": q, "remaining": max(0, q - count)}
 
 
+def _cached_invoice(db: Session, tenant_id: int, period: str) -> dict | None:
+    """同一租户同一账期已有账单时返回原账单，避免重复生成。"""
+    from app.models.billing_invoice import BillingInvoice
+    from sqlalchemy import select
+
+    existing = db.execute(
+        select(BillingInvoice).where(
+            BillingInvoice.tenant_id == tenant_id,
+            BillingInvoice.period == period,
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        return None
+    return {
+        "id": existing.id,
+        "period": period,
+        "base_fee": existing.base_fee,
+        "overage_fee": existing.overage_fee,
+        "cached": True,
+    }
+
+
+def _period_conversation_count(db: Session, tenant_id: int, period: str) -> float:
+    """优先汇总已落库的用量。该账期没有记录时，才回退到 Redis 计数。"""
+    from app.models.usage_record import UsageRecord
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    total = db.execute(
+        select(sa_func.coalesce(sa_func.sum(UsageRecord.conversation_count), 0)).where(
+            UsageRecord.tenant_id == tenant_id,
+            UsageRecord.date.like(f"{period}-%"),
+        )
+    ).scalar() or 0
+    count = float(total)
+    if count == 0:
+        count = float(get_redis().get(_quota_key(tenant_id, month=period)) or 0)
+        logger.warning(
+            f"Invoice {tenant_id}/{period}: usage_records empty, fallback to Redis counter={count}"
+        )
+    return count
+
+
 def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
     """生成月度账单（公式见 docs/specs/015-billing-accuracy/spec.md）。
 
@@ -362,49 +405,20 @@ def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
     Returns:
         dict: id / period / base_fee / overage_fee / cached
     """
-    from app.models.billing_invoice import BillingInvoice
-    from sqlalchemy import select
+    cached = _cached_invoice(db, tenant_id, period)
+    if cached is not None:
+        return cached
+
     from app.config import settings
     from app.crud import tenant as tenant_crud
-
-    # 去重：同租户同周期已有账单则返回已有（避免重复生成）
-    existing = db.execute(
-        select(BillingInvoice).where(
-            BillingInvoice.tenant_id == tenant_id,
-            BillingInvoice.period == period,
-        )
-    ).scalar_one_or_none()
-    if existing:
-        return {
-            "id": existing.id, "period": period,
-            "base_fee": existing.base_fee, "overage_fee": existing.overage_fee, "cached": True,
-        }
+    from app.models.billing_invoice import BillingInvoice
 
     tenant = tenant_crud.get_by_id(db, tenant_id)
     plan_type = tenant.plan_type if tenant else "trial"
     base_fee = _plan_base_fee(plan_type)
     quota = PLAN_QUOTA.get(plan_type, TRIAL_QUOTA)
-
-    r = get_redis()
-    # 按账期 period 取配额 key：月初生成上月账单时读上月计数（ 修复，
-    # 原来固定当前月导致月初账单超额费恒为 0）
-    # 账单优先从 usage_records 聚合（持久化数据），Redis 仅作缺失期兜底
-    from app.models.usage_record import UsageRecord
-    from sqlalchemy import func as sa_func
-    total = db.execute(
-        select(sa_func.coalesce(sa_func.sum(UsageRecord.conversation_count), 0)).where(
-            UsageRecord.tenant_id == tenant_id,
-            UsageRecord.date.like(f"{period}-%"),
-        )
-    ).scalar() or 0
-    count = float(total)
-    if count == 0:
-        count = float(r.get(_quota_key(tenant_id, month=period)) or 0)
-        logger.warning(
-            f"Invoice {tenant_id}/{period}: usage_records empty, fallback to Redis counter={count}"
-        )
+    count = _period_conversation_count(db, tenant_id, period)
     overage_count = max(0, count - quota)
-    # 公式: overage_fee = overage_cnt * OVERAGE_PRICE（默认 0.5 元/条，PRD §3.9）
     overage_fee = round(overage_count * settings.billing_overage_price, 2)
 
     invoice = BillingInvoice(
@@ -412,7 +426,7 @@ def generate_invoice(db: Session, *, tenant_id: int, period: str) -> dict:
         overage_fee=overage_fee, status="unpaid",
     )
     db.add(invoice)
-    db.flush()  # flush 拿 id，但不 commit（由调用方控制事务）
+    db.flush()
 
     logger.info(f"Invoice generated: tenant={tenant_id}, total={base_fee + overage_fee:.2f}")
     return {"id": invoice.id, "period": period, "base_fee": base_fee, "overage_fee": overage_fee}
@@ -471,6 +485,66 @@ def create_payment(db: Session, *, invoice_id: int, tenant_id: int) -> dict:
     }
 
 
+def _invoice_for_trade(db: Session, trade_no: str):
+    """按支付流水查找已经入账的账单。"""
+    from app.models.billing_invoice import BillingInvoice
+    from sqlalchemy import select
+
+    return db.execute(
+        select(BillingInvoice).where(BillingInvoice.payment_trade_no == trade_no)
+    ).scalar_one_or_none()
+
+
+def _claim_unpaid_invoice(db: Session, invoice, trade_no: str) -> bool:
+    """只有仍未支付的账单能被这一笔流水抢占。"""
+    from app.models.billing_invoice import BillingInvoice
+    from sqlalchemy import update as sa_update
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = db.execute(
+        sa_update(BillingInvoice)
+        .where(BillingInvoice.id == invoice.id, BillingInvoice.status == "unpaid")
+        .values(status="paid", payment_trade_no=trade_no, paid_at=now)
+    )
+    return result.rowcount != 0
+
+
+def _apply_verified_payment(db: Session, form_data: dict, trade_no: str) -> dict:
+    """验签通过后按流水去重、抢占未支付账单，并清除降级标记。"""
+    trade_status = form_data.get("trade_status", "")
+    existing = _invoice_for_trade(db, trade_no)
+    if existing:
+        return {"cached": True, "invoice_id": existing.id, "status": existing.status}
+    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+        return {"error": f"非成功状态: {trade_status}"}
+
+    invoice = _locate_invoice_by_out_trade_no(db, form_data.get("out_trade_no", ""))
+    if invoice is None:
+        return {"error": "未匹配到账单"}
+    if not _claim_unpaid_invoice(db, invoice, trade_no):
+        return {"error": f"账单已支付或状态已变: {invoice.id}"}
+    log_audit(
+        db, tenant_id=invoice.tenant_id, user_id=None, action="payment",
+        target_type="billing_invoice", target_id=invoice.id,
+        detail=f"trade_no={trade_no}",
+    )
+    db.commit()
+
+    from app.services.analytics_service import track_event
+    track_event(
+        "invoice_paid",
+        tenant_id=invoice.tenant_id,
+        properties={
+            "invoice_id": invoice.id,
+            "amount": float(invoice.base_fee) + float(invoice.overage_fee),
+            "payment_trade_no": trade_no,
+        },
+    )
+    _clear_degradation(invoice.tenant_id)
+    logger.info(f"Payment callback success: invoice={invoice.id}, trade_no={trade_no}")
+    return {"invoice_id": invoice.id, "status": "paid", "cached": False}
+
+
 def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | None = None) -> dict:
     """支付宝异步回调处理：验签 -> 幂等 -> 更新账单（PRD 3.10）。
 
@@ -493,8 +567,6 @@ def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | No
     Returns:
         dict: cached / invoice_id / status
     """
-    from app.models.billing_invoice import BillingInvoice
-    from sqlalchemy import select
     from app.core.alipay_client import get_alipay_client
 
     client = get_alipay_client()
@@ -502,63 +574,7 @@ def handle_payment_callback(db: Session, *, form_data: dict, tenant_id: int | No
         logger.warning(f"Alipay callback verify failed: trade_no={form_data.get('trade_no')}")
         raise PaymentError("验签失败")
 
-    trade_no = form_data.get("trade_no", "")
-    trade_status = form_data.get("trade_status", "")
-
-    # 按 trade_no 幂等去重 —— 同一支付流水重复回调不重复入账
-    existing = db.execute(
-        select(BillingInvoice).where(BillingInvoice.payment_trade_no == trade_no)
-    ).scalar_one_or_none()
-    if existing:
-        return {"cached": True, "invoice_id": existing.id, "status": existing.status}
-
-    # 仅 TRADE_SUCCESS / TRADE_FINISHED 视为支付成功
-    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
-        return {"error": f"非成功状态: {trade_status}"}
-
-    # 通过 out_trade_no（create_payment 生成的商户订单号）定位账单
-    out_trade_no = form_data.get("out_trade_no", "")
-    invoice = _locate_invoice_by_out_trade_no(db, out_trade_no)
-
-    if invoice is None:
-        return {"error": "未匹配到账单"}
-
-    # 原子条件更新防并发双 trade_no —— 两个并发回调都读到 unpaid 时，只有一个
-    # UPDATE WHERE status='unpaid' 成功（rowcount=1），另一个 rowcount=0 拒绝且不覆盖
-    # payment_trade_no。原 read-then-write（先 if status==paid 再赋值）非原子，并发双付只记一次。
-    from sqlalchemy import update as _sa_update
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    res = db.execute(
-        _sa_update(BillingInvoice)
-        .where(BillingInvoice.id == invoice.id, BillingInvoice.status == "unpaid")
-        .values(status="paid", payment_trade_no=trade_no, paid_at=now)
-    )
-    if res.rowcount == 0:
-        return {"error": f"账单已支付或状态已变: {invoice.id}"}
-    # PRD §2.1 审计日志: 支付回调成功落库（同事务）
-    log_audit(
-        db, tenant_id=invoice.tenant_id, user_id=None, action="payment",
-        target_type="billing_invoice", target_id=invoice.id,
-        detail=f"trade_no={trade_no}",
-    )
-    db.commit()
-
-    from app.services.analytics_service import track_event
-    track_event(
-        "invoice_paid",
-        tenant_id=invoice.tenant_id,
-        properties={
-            "invoice_id": invoice.id,
-            "amount": float(invoice.base_fee) + float(invoice.overage_fee),
-            "payment_trade_no": trade_no,
-        },
-    )
-
-    # 支付成功恢复降级 —— 清除租户降级标记（PRD §3.10 要求）
-    _clear_degradation(invoice.tenant_id)
-
-    logger.info(f"Payment callback success: invoice={invoice.id}, trade_no={trade_no}")
-    return {"invoice_id": invoice.id, "status": "paid", "cached": False}
+    return _apply_verified_payment(db, form_data, form_data.get("trade_no", ""))
 
 
 def _locate_invoice_by_out_trade_no(db: Session, out_trade_no: str):
@@ -619,13 +635,34 @@ def export_usage(db: Session, tenant_id: int) -> str:
     return output.getvalue()
 
 
+def _session_token_totals(db: Session, session_ids: list[int]) -> dict[int, int]:
+    """按会话汇总消息元数据里的 token。无法解析的值跳过。"""
+    from app.models.message import Message
+    from sqlalchemy import select
+
+    totals: dict[int, int] = {}
+    if not session_ids:
+        return totals
+    messages = db.execute(
+        select(Message).where(Message.session_id.in_(session_ids))
+    ).scalars().all()
+    for message in messages:
+        metadata = message.msg_metadata or {}
+        try:
+            totals[message.session_id] = totals.get(message.session_id, 0) + int(
+                float(metadata.get("tokens", 0) or 0)
+            )
+        except (TypeError, ValueError):
+            continue
+    return totals
+
+
 def export_usage_detail(db: Session, tenant_id: int) -> str:
     """导出用量与 Token 消耗明细（PRD 3.9）：按会话一行，
     字段含会话ID、发生时间、意图类型、调用模型、Token 数、是否计入超额。"""
     import csv
     import io
 
-    from app.models.message import Message
     from app.models.session import Session as SessionModel
     from app.crud import tenant as tenant_crud
     from sqlalchemy import select
@@ -638,20 +675,7 @@ def export_usage_detail(db: Session, tenant_id: int) -> str:
         select(SessionModel).where(SessionModel.tenant_id == tenant_id)
         .order_by(SessionModel.created_at.asc())
     ).scalars().all()
-    session_ids = [s.id for s in sessions]
-    tokens_by_session: dict[int, int] = {}
-    if session_ids:
-        messages = db.execute(
-            select(Message).where(Message.session_id.in_(session_ids))
-        ).scalars().all()
-        for m in messages:
-            md = m.msg_metadata or {}
-            try:
-                tokens_by_session[m.session_id] = tokens_by_session.get(m.session_id, 0) + int(
-                    float(md.get("tokens", 0) or 0)
-                )
-            except (TypeError, ValueError):
-                continue
+    tokens_by_session = _session_token_totals(db, [session.id for session in sessions])
 
     output = io.StringIO()
     writer = csv.writer(output)

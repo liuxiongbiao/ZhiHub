@@ -26,8 +26,13 @@ import logging
 import re
 from typing import Any
 
+from app.agents.nodes.slot_dialog import (
+    mcp_failure_reply,
+    missing_slot_reply,
+    tool_exception_reply,
+)
 from app.core.langfuse_client import observe
-from app.mcp_servers.base_server import ERR_CIRCUIT_BROKEN, build_request
+from app.mcp_servers.base_server import build_request
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +69,54 @@ def _is_valid_phone(phone: str) -> bool:
     return bool(phone) and phone.isdigit() and len(phone) == 11
 
 
+def extract_ticket_no(messages: list[dict], slots: dict) -> str:
+    """优先使用已有槽位，否则从最近一条用户消息提取工单号。"""
+    from app.agents.nodes.slot_dialog import last_user_content
+
+    ticket_no = slots.get("ticket_no", "").strip()
+    if ticket_no:
+        return ticket_no
+    match = re.search(r"TK-[A-Z0-9]+", last_user_content(messages), re.IGNORECASE)
+    if not match:
+        return ""
+    ticket_no = match.group(0)
+    slots["ticket_no"] = ticket_no
+    return ticket_no
+
+
+def format_ticket_reply(data: dict) -> str:
+    """把工单状态转成与原来一致的中文回复。"""
+    status_map = {"open": "待处理", "in_progress": "处理中", "resolved": "已解决", "closed": "已关闭"}
+    status_cn = status_map.get(data.get("status", ""), data.get("status", ""))
+    return (
+        f"工单 {data['ticket_no']} 的当前状态：{status_cn}\n"
+        f"标题：{data.get('title', '无')}\n"
+        f"优先级：{data.get('priority', '无')}"
+    )
+
+
+def resolve_ticket_query(messages: list[dict], slots: dict, agent_name: str):
+    """收集工单号和 11 位手机号。缺槽位时返回反问，齐全时返回编号和手机号。"""
+    ticket_no = extract_ticket_no(messages, slots)
+    if not ticket_no:
+        return missing_slot_reply(
+            agent_name,
+            slots,
+            "请提供您的工单编号（格式：TK-XXXXXXXX），以便我为您查询工单进度。",
+        ), None, None
+
+    phone = _extract_phone(messages, slots)
+    if phone:
+        slots["phone"] = phone
+    if not _is_valid_phone(phone):
+        return missing_slot_reply(
+            agent_name,
+            slots,
+            "为保护您的账户安全，查询工单需验证身份。请提供您在工单中绑定的手机号（11位）。",
+        ), None, None
+    return None, ticket_no, phone
+
+
 @observe(name="ticket_agent")
 def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     """LangGraph 节点: 工单查询/创建（MCP 模式）。
@@ -90,83 +143,30 @@ def ticket_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     slots: dict = state.get("slots", {})
     tenant_id: int | None = state.get("tenant_id")  # : 不默认租户 1，缺失则 None 让 call_tool fail-closed
 
-    # 1. 提取工单号（slots 优先，否则扫消息正则）
-    ticket_no = slots.get("ticket_no", "").strip()
-    if not ticket_no:
-        last_user = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                last_user = m["content"]
-                break
-        match = re.search(r"TK-[A-Z0-9]+", last_user, re.IGNORECASE)
-        if match:
-            ticket_no = match.group(0)
-            slots["ticket_no"] = ticket_no
+    reply, ticket_no, phone = resolve_ticket_query(messages, slots, "ticket_agent")
+    if reply is not None:
+        return reply
 
-    # 缺工单号 → 反问（不调工具）
-    if not ticket_no:
-        return {
-            "final_response": "请提供您的工单编号（格式：TK-XXXXXXXX），以便我为您查询工单进度。",
-            "slots": slots,
-            "current_agent": "ticket_agent",
-        }
-
-    # 2. 提取手机号（双因子）
-    phone = _extract_phone(messages, slots)
-    if phone:
-        slots["phone"] = phone
-
-    # 3. 缺/格式错手机号 → 反问（FR-004：不调用查询工具）
-    if not _is_valid_phone(phone):
-        return {
-            "final_response": "为保护您的账户安全，查询工单需验证身份。请提供您在工单中绑定的手机号（11位）。",
-            "slots": slots,
-            "current_agent": "ticket_agent",
-        }
-
-    # 4. 双槽齐全 → 调用 MCP（JSON-RPC 信封）
     try:
         from app.services.mcp_service import call_tool
 
-        # 构造 JSON-RPC 请求信封（tenant_id 由 call_tool 注入，这里不传）
         env = build_request(
             "get_ticket_status",
             {"ticket_no": ticket_no, "phone": phone},
         )
         resp = call_tool("agent", env, tenant_id=tenant_id)
-
-        if "error" in resp:
-            err = resp["error"]
-            # 熔断兜底（US4）：工具熔断中 → 兜底话术 + 转人工
-            if err.get("code") == ERR_CIRCUIT_BROKEN:
-                return {
-                    "final_response": err.get("message", "工单查询服务暂时不可用，已转接人工客服。"),
-                    "current_agent": "ticket_agent",
-                    "should_interrupt": True,
-                }
-            # -32602 身份校验失败/不存在 → 统一友好提示（不泄露工单是否存在，防枚举）
-            return {
-                "final_response": "未查询到匹配信息，请确认工单号和手机号是否正确。",
-                "current_agent": "ticket_agent",
-            }
-
-        # success 信封：转自然语言回复
-        data = resp["result"]
-        status_map = {"open": "待处理", "in_progress": "处理中", "resolved": "已解决", "closed": "已关闭"}
-        status_cn = status_map.get(data.get("status", ""), data.get("status", ""))
-
-        response = (
-            f"工单 {data['ticket_no']} 的当前状态：{status_cn}\n"
-            f"标题：{data.get('title', '无')}\n"
-            f"优先级：{data.get('priority', '无')}"
+        failure = mcp_failure_reply(
+            resp,
+            agent_name="ticket_agent",
+            circuit_default="工单查询服务暂时不可用，已转接人工客服。",
+            mismatch="未查询到匹配信息，请确认工单号和手机号是否正确。",
         )
-        return {"final_response": response, "current_agent": "ticket_agent"}
+        if failure is not None:
+            return failure
+
+        data = resp["result"]
+        return {"final_response": format_ticket_reply(data), "current_agent": "ticket_agent"}
 
     except Exception as e:
-        # 调用异常兜底
         logger.error(f"Ticket agent MCP call failed: {e}")
-        return {
-            "final_response": "查询工单时遇到问题，请稍后重试。",
-            "current_agent": "ticket_agent",
-            "generation_failed": True,
-        }
+        return tool_exception_reply("ticket_agent", "查询工单时遇到问题，请稍后重试。")

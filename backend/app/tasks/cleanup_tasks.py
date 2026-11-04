@@ -129,30 +129,22 @@ def cleanup_expired_tenant_cancellations(
     return {"tenants_deleted": deleted, "tenants_failed": failed}
 
 
-def _purge_expired_tenant(db: DbSession, *, tenant_id: int, now: datetime) -> bool:
-    """锁定并复核截止时间后，执行单租户跨存储物理删除。"""
-
-    from app.models.billing_event import BillingEvent
-    from app.models.knowledge_document import KnowledgeDocument
-    from app.models.order import Order
-    from app.models.session import Session
-    from app.models.tenant import Tenant
-    from app.models.tenant_member import TenantMember
-
-    tenant = (
-        db.query(Tenant)
-        .filter(Tenant.id == tenant_id)
-        .with_for_update()
-        .first()
-    )
-    if (
+def _tenant_due_for_purge(tenant, now: datetime) -> bool:
+    return not (
         tenant is None
         or tenant.status != "pending_deletion"
         or tenant.scheduled_deletion_at is None
         or tenant.scheduled_deletion_at > now
-    ):
-        db.rollback()
-        return False
+    )
+
+
+def _collect_purge_targets(db: DbSession, tenant_id: int):
+    """收集删除前需要的文档、会话、订单、成员和计费事件。"""
+    from app.models.billing_event import BillingEvent
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.order import Order
+    from app.models.session import Session
+    from app.models.tenant_member import TenantMember
 
     documents = list(
         db.execute(
@@ -176,6 +168,27 @@ def _purge_expired_tenant(db: DbSession, *, tenant_id: int, now: datetime) -> bo
         db.execute(
             select(BillingEvent.event_key).where(BillingEvent.tenant_id == tenant_id)
         ).scalars().all()
+    )
+    return documents, session_ids, order_ids, user_ids, billing_event_keys
+
+
+def _purge_expired_tenant(db: DbSession, *, tenant_id: int, now: datetime) -> bool:
+    """锁定并复核截止时间后，执行单租户跨存储物理删除。"""
+
+    from app.models.tenant import Tenant
+
+    tenant = (
+        db.query(Tenant)
+        .filter(Tenant.id == tenant_id)
+        .with_for_update()
+        .first()
+    )
+    if not _tenant_due_for_purge(tenant, now):
+        db.rollback()
+        return False
+
+    documents, session_ids, order_ids, user_ids, billing_event_keys = _collect_purge_targets(
+        db, tenant_id,
     )
 
     _purge_tenant_external_data(
@@ -206,9 +219,21 @@ def _purge_tenant_external_data(
 ) -> None:
     """删除 MongoDB、Milvus、ES、Redis 与上传源文件中的租户数据。"""
 
-    from app.config import settings
+    _delete_tenant_mongo(tenant_id)
+    _delete_tenant_vectors(tenant_id)
+    _delete_tenant_search_index(tenant_id)
 
-    # MongoDB：Agent 轨迹与 DeepAgent 任务均直接带 tenant_id。
+    _purge_tenant_redis_data(
+        tenant_id=tenant_id,
+        session_ids=session_ids,
+        order_ids=order_ids,
+        billing_event_keys=billing_event_keys,
+    )
+    _delete_tenant_upload_files(documents)
+
+
+def _delete_tenant_mongo(tenant_id: int) -> None:
+    from app.config import settings
     from pymongo import MongoClient
 
     mongo = MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=3000)
@@ -220,14 +245,10 @@ def _purge_tenant_external_data(
     finally:
         mongo.close()
 
-    # Milvus：知识切片和长期记忆都以 tenant_id 为分区键。
+
+def _delete_tenant_vectors(tenant_id: int) -> None:
     from pymilvus import Collection, utility
-    from app.core.embedding_client import (
-        COLLECTION_NAME,
-        MEMORY_COLLECTION_NAME,
-        _connect_milvus,
-        get_es_client,
-    )
+    from app.core.embedding_client import COLLECTION_NAME, MEMORY_COLLECTION_NAME, _connect_milvus
 
     _connect_milvus()
     for collection_name in (COLLECTION_NAME, MEMORY_COLLECTION_NAME):
@@ -236,7 +257,10 @@ def _purge_tenant_external_data(
             collection.delete(expr=f"tenant_id == {tenant_id}")
             collection.flush()
 
-    # Elasticsearch：知识切片按 tenant_id 删除；索引尚未创建时视为空数据。
+
+def _delete_tenant_search_index(tenant_id: int) -> None:
+    from app.core.embedding_client import get_es_client
+
     es = get_es_client()
     if es.indices.exists(index="knowledge_chunks"):
         es.delete_by_query(
@@ -245,27 +269,9 @@ def _purge_tenant_external_data(
             refresh=True,
         )
 
-    _purge_tenant_redis_data(
-        tenant_id=tenant_id,
-        session_ids=session_ids,
-        order_ids=order_ids,
-        billing_event_keys=billing_event_keys,
-    )
-    _delete_tenant_upload_files(documents)
 
-
-def _purge_tenant_redis_data(
-    *,
-    tenant_id: int,
-    session_ids: list[int],
-    order_ids: list[int],
-    billing_event_keys: list[str],
-) -> None:
-    """清理所有可归属到租户、会话或订单的 Redis 临时状态。"""
-
-    from app.core.redis import get_redis
-
-    redis_client = get_redis()
+def _tenant_redis_keys(redis_client, *, tenant_id: int, session_ids: list[int], order_ids: list[int], billing_event_keys: list[str]) -> set[str]:
+    """汇总租户、会话、订单和邀请令牌对应的 Redis 键。"""
     patterns = [
         f"billing:quota:{tenant_id}:*",
         f"billing:warning:{tenant_id}:*",
@@ -299,12 +305,9 @@ def _purge_tenant_redis_data(
             ]
         )
     exact_keys.extend(f"billing:event:{event_key}" for event_key in billing_event_keys)
-
     matched: set[str] = set(exact_keys)
     for pattern in patterns:
         matched.update(redis_client.scan_iter(match=pattern))
-
-    # 邀请 key 的 token 不含 tenant_id，需检查其 JSON value 后精确删除。
     for key in redis_client.scan_iter(match="invite:*"):
         raw = redis_client.get(key)
         try:
@@ -312,6 +315,28 @@ def _purge_tenant_redis_data(
                 matched.add(key)
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
+    return matched
+
+
+def _purge_tenant_redis_data(
+    *,
+    tenant_id: int,
+    session_ids: list[int],
+    order_ids: list[int],
+    billing_event_keys: list[str],
+) -> None:
+    """清理所有可归属到租户、会话或订单的 Redis 临时状态。"""
+
+    from app.core.redis import get_redis
+
+    redis_client = get_redis()
+    matched = _tenant_redis_keys(
+        redis_client,
+        tenant_id=tenant_id,
+        session_ids=session_ids,
+        order_ids=order_ids,
+        billing_event_keys=billing_event_keys,
+    )
     if matched:
         redis_client.delete(*matched)
 
@@ -332,37 +357,22 @@ def _delete_tenant_upload_files(documents: list) -> None:
                 path.unlink()
 
 
-def _purge_tenant_relational_data(
-    db: DbSession,
-    *,
-    tenant_id: int,
-    session_ids: list[int],
-    order_ids: list[int],
-    user_ids: list[int],
-) -> None:
-    """按外键从叶子到根删除 MySQL 数据，并保留仍属于其他租户的共享用户。"""
+def _delete_where_ids(db: DbSession, model, column, ids: list) -> None:
+    """有关联主键时才删除，避免空 IN 条件。"""
+    if ids:
+        db.execute(delete(model).where(column.in_(ids)))
 
-    from app.models.answer_feedback import AnswerFeedback
-    from app.models.audit_log import AuditLog
-    from app.models.billing_event import BillingEvent
-    from app.models.billing_invoice import BillingInvoice
-    from app.models.csat import CsatEvaluation
-    from app.models.knowledge_document import KnowledgeDocument
+
+def _delete_tenant_rows(db: DbSession, tenant_id: int, models: tuple) -> None:
+    """按给定顺序删除直接归属租户的表。"""
+    for model in models:
+        db.execute(delete(model).where(model.tenant_id == tenant_id))
+
+
+def _purge_child_ids(db: DbSession, session_ids: list[int], order_ids: list[int]) -> tuple[list, list]:
+    """先取出消息和退款审批主键，后续按这些叶子记录删除。"""
     from app.models.message import Message
-    from app.models.notification import Notification
-    from app.models.order import Order
-    from app.models.quick_reply import QuickReply
-    from app.models.refresh_token import RefreshToken
     from app.models.refund_approval import RefundApproval
-    from app.models.refund_approval_event import RefundApprovalEvent
-    from app.models.refund_outbox import RefundOutbox
-    from app.models.security_incident import SecurityIncident
-    from app.models.session import Session
-    from app.models.tenant import Tenant
-    from app.models.tenant_member import TenantMember
-    from app.models.ticket import Ticket
-    from app.models.usage_record import UsageRecord
-    from app.models.user import User
 
     message_ids = list(
         db.execute(select(Message.id).where(Message.session_id.in_(session_ids))).scalars().all()
@@ -372,51 +382,109 @@ def _purge_tenant_relational_data(
             select(RefundApproval.id).where(RefundApproval.order_id.in_(order_ids))
         ).scalars().all()
     ) if order_ids else []
+    return message_ids, approval_ids
+
+
+def _delete_session_branch(db: DbSession, session_ids: list[int], message_ids: list) -> None:
+    """按会话叶子到会话本身删除。没有会话时仍清理已收集的反馈。"""
+    from app.models.answer_feedback import AnswerFeedback
+    from app.models.billing_event import BillingEvent
+    from app.models.csat import CsatEvaluation
+    from app.models.message import Message
+    from app.models.security_incident import SecurityIncident
+    from app.models.session import Session
+
+    _delete_where_ids(db, AnswerFeedback, AnswerFeedback.message_id, message_ids)
+    if session_ids:
+        _delete_where_ids(db, CsatEvaluation, CsatEvaluation.session_id, session_ids)
+        _delete_where_ids(db, BillingEvent, BillingEvent.session_id, session_ids)
+        _delete_where_ids(db, SecurityIncident, SecurityIncident.session_id, session_ids)
+        _delete_where_ids(db, Message, Message.session_id, session_ids)
+        _delete_where_ids(db, Session, Session.id, session_ids)
+
+
+def _delete_refund_and_orders(db: DbSession, order_ids: list[int], approval_ids: list) -> None:
+    """先删退款出站、事件和审批，再删订单。"""
+    from app.models.order import Order
+    from app.models.refund_approval import RefundApproval
+    from app.models.refund_approval_event import RefundApprovalEvent
+    from app.models.refund_outbox import RefundOutbox
+
+    if approval_ids:
+        _delete_where_ids(db, RefundOutbox, RefundOutbox.approval_id, approval_ids)
+        _delete_where_ids(
+            db, RefundApprovalEvent, RefundApprovalEvent.approval_id, approval_ids,
+        )
+        _delete_where_ids(db, RefundApproval, RefundApproval.id, approval_ids)
+    _delete_where_ids(db, Order, Order.id, order_ids)
+
+
+def _delete_owned_tenant_rows(db: DbSession, tenant_id: int) -> None:
+    """删除直接带 tenant_id、且不依赖上面分支的业务表。"""
+    from app.models.audit_log import AuditLog
+    from app.models.billing_invoice import BillingInvoice
+    from app.models.knowledge_document import KnowledgeDocument
+    from app.models.notification import Notification
+    from app.models.quick_reply import QuickReply
+    from app.models.ticket import Ticket
+    from app.models.usage_record import UsageRecord
+
+    _delete_tenant_rows(
+        db,
+        tenant_id,
+        (
+            Ticket,
+            AuditLog,
+            Notification,
+            QuickReply,
+            BillingInvoice,
+            UsageRecord,
+            KnowledgeDocument,
+        ),
+    )
+
+
+def _delete_auth_then_tenant(db: DbSession, tenant_id: int, user_ids: list[int]) -> None:
+    """断开刷新令牌链后删除成员；只删除不再被其他租户引用的用户，最后删租户。"""
+    from app.models.refresh_token import RefreshToken
+    from app.models.tenant import Tenant
+    from app.models.tenant_member import TenantMember
+    from app.models.user import User
+
+    db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.tenant_id == tenant_id)
+        .values(parent_token_id=None)
+    )
+    db.execute(delete(RefreshToken).where(RefreshToken.tenant_id == tenant_id))
+    db.execute(delete(TenantMember).where(TenantMember.tenant_id == tenant_id))
+    db.flush()
+
+    for user_id in set(user_ids):
+        if not _user_has_remaining_references(db, user_id):
+            db.execute(delete(User).where(User.id == user_id))
+    db.execute(delete(Tenant).where(Tenant.id == tenant_id))
+
+
+def _purge_tenant_relational_data(
+    db: DbSession,
+    *,
+    tenant_id: int,
+    session_ids: list[int],
+    order_ids: list[int],
+    user_ids: list[int],
+) -> None:
+    """按外键从叶子到根删除 MySQL 数据，并保留仍属于其他租户的共享用户。"""
+    message_ids, approval_ids = _purge_child_ids(db, session_ids, order_ids)
 
     mysql_guard = db.bind is not None and db.bind.dialect.name == "mysql"
     if mysql_guard:
         db.execute(text("SET @zhihub_tenant_purge = 1"))
     try:
-        if message_ids:
-            db.execute(delete(AnswerFeedback).where(AnswerFeedback.message_id.in_(message_ids)))
-        if session_ids:
-            db.execute(delete(CsatEvaluation).where(CsatEvaluation.session_id.in_(session_ids)))
-            db.execute(delete(BillingEvent).where(BillingEvent.session_id.in_(session_ids)))
-            db.execute(delete(SecurityIncident).where(SecurityIncident.session_id.in_(session_ids)))
-            db.execute(delete(Message).where(Message.session_id.in_(session_ids)))
-            db.execute(delete(Session).where(Session.id.in_(session_ids)))
-        if approval_ids:
-            db.execute(delete(RefundOutbox).where(RefundOutbox.approval_id.in_(approval_ids)))
-            db.execute(
-                delete(RefundApprovalEvent).where(
-                    RefundApprovalEvent.approval_id.in_(approval_ids)
-                )
-            )
-            db.execute(delete(RefundApproval).where(RefundApproval.id.in_(approval_ids)))
-        if order_ids:
-            db.execute(delete(Order).where(Order.id.in_(order_ids)))
-
-        db.execute(delete(Ticket).where(Ticket.tenant_id == tenant_id))
-        db.execute(delete(AuditLog).where(AuditLog.tenant_id == tenant_id))
-        db.execute(delete(Notification).where(Notification.tenant_id == tenant_id))
-        db.execute(delete(QuickReply).where(QuickReply.tenant_id == tenant_id))
-        db.execute(delete(BillingInvoice).where(BillingInvoice.tenant_id == tenant_id))
-        db.execute(delete(UsageRecord).where(UsageRecord.tenant_id == tenant_id))
-        db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id))
-        # refresh_tokens 是自引用链，先断开 parent 再批量删除。
-        db.execute(
-            update(RefreshToken)
-            .where(RefreshToken.tenant_id == tenant_id)
-            .values(parent_token_id=None)
-        )
-        db.execute(delete(RefreshToken).where(RefreshToken.tenant_id == tenant_id))
-        db.execute(delete(TenantMember).where(TenantMember.tenant_id == tenant_id))
-        db.flush()
-
-        for user_id in set(user_ids):
-            if not _user_has_remaining_references(db, user_id):
-                db.execute(delete(User).where(User.id == user_id))
-        db.execute(delete(Tenant).where(Tenant.id == tenant_id))
+        _delete_session_branch(db, session_ids, message_ids)
+        _delete_refund_and_orders(db, order_ids, approval_ids)
+        _delete_owned_tenant_rows(db, tenant_id)
+        _delete_auth_then_tenant(db, tenant_id, user_ids)
     finally:
         if mysql_guard:
             db.execute(text("SET @zhihub_tenant_purge = 0"))
@@ -451,6 +519,116 @@ def cleanup_agent_presence() -> dict:
 
     removed = cleanup_expired_agent_presence()
     return {"presence_removed": removed}
+
+
+def _publish_resolved_sessions(resolved_events: dict[int, tuple[int, dict]]) -> None:
+    """会话收尾提交后记录解决事件。"""
+    from app.services.analytics_service import track_event
+
+    for _resolved_id, (event_tenant_id, properties) in resolved_events.items():
+        track_event(
+            "session_resolved",
+            tenant_id=event_tenant_id,
+            properties=properties,
+        )
+
+
+def _broadcast_sessions_ended(session_ids: list[int]) -> None:
+    """通知终端用户会话已结束。没有连接时不产生效果。"""
+    from app.core.ws_manager import manager as ws_manager
+
+    for ended_id in session_ids:
+        ws_manager.broadcast_to_session_sync(
+            ended_id,
+            {
+                "type": "session_ended",
+                "payload": {"session_id": ended_id, "status": "resolved"},
+            },
+        )
+
+
+def _idle_resolution_event(session) -> dict:
+    """区分人工收尾和自动收尾，供解决事件使用。"""
+    resolution_mode = (
+        "human"
+        if session.assignee_id or session.status in {"waiting_human", "human_handling"}
+        else "auto"
+    )
+    return {
+        "session_id": session.id,
+        "resolution_mode": resolution_mode,
+        "previous_status": session.status,
+        "intent": session.intent or "unknown",
+    }
+
+
+def _settle_idle_session(db: DbSession, session, active_threshold, billing_crud, create_event):
+    """把一条空闲会话收成已解决。返回增加的行数，以及是否需要通知终端。"""
+    event_properties = _idle_resolution_event(session)
+    if session.effective_reply and not session.billed:
+        if not billing_crud.claim_idle_session_for_billing(
+            db, session_id=session.id, active_threshold=active_threshold,
+        ):
+            return 0, False, None
+        create_event(db, session)
+        return 1, True, event_properties
+
+    transition = db.execute(
+        update(Session)
+        .where(
+            Session.id == session.id,
+            Session.status.in_(["agent_handling", "waiting_human", "human_handling"]),
+            Session.updated_at < active_threshold,
+        )
+        .values(status="resolved")
+    )
+    count = transition.rowcount or 0
+    return count, bool(count), event_properties
+
+
+def _collect_idle_resolutions(db: DbSession, candidates, active_threshold, billing_crud, create_event):
+    """逐条收尾空闲会话，并记下需要广播的会话和解决事件。"""
+    resolved_n = 0
+    ended_session_ids: list[int] = []
+    resolved_events: dict[int, tuple[int, dict]] = {}
+    for session in candidates:
+        count, ended, properties = _settle_idle_session(
+            db, session, active_threshold, billing_crud, create_event,
+        )
+        resolved_n += count
+        if ended:
+            ended_session_ids.append(session.id)
+            resolved_events[session.id] = (session.tenant_id, properties)
+    return resolved_n, ended_session_ids, resolved_events
+
+
+def _backfill_legacy_unbilled(db: DbSession, billing_crud, create_event) -> None:
+    """给旧流程留下的未计费终态会话补建计费事件。"""
+    from sqlalchemy import select
+
+    legacy_unbilled = db.execute(
+        select(Session).where(
+            Session.status.in_(["resolved", "closed"]),
+            Session.effective_reply.is_(True),
+            Session.billed.is_(False),
+        )
+    ).scalars().all()
+    for session in legacy_unbilled:
+        if billing_crud.claim_legacy_resolved_session(db, session.id):
+            create_event(db, session)
+
+
+def _close_stale_resolved(db: DbSession, resolved_threshold) -> int:
+    """把停留超过阈值的已解决会话改为关闭。"""
+    closed = db.execute(
+        update(Session)
+        .where(
+            Session.status == "resolved",
+            Session.updated_at < resolved_threshold,
+        )
+        .values(status="closed")
+    )
+    return closed.rowcount or 0
 
 
 def cleanup_idle_sessions(db: DbSession) -> dict:
@@ -493,95 +671,86 @@ def cleanup_idle_sessions(db: DbSession) -> dict:
         create_session_billing_event,
     )
 
-    resolved_n = 0
-    # 记录本轮回收到 RESOLVED 的会话 id，事务提交后向终端用户广播 session_ended
-    # （widget.js 据此展示"会话已结束"并停止重连；fire-and-forget，不阻塞清理）。
-    ended_session_ids: list[int] = []
-    resolved_events: dict[int, tuple[int, dict]] = {}
-    for s in candidates:
-        resolution_mode = "human" if s.assignee_id or s.status in {"waiting_human", "human_handling"} else "auto"
-        event_properties = {
-            "session_id": s.id,
-            "resolution_mode": resolution_mode,
-            "previous_status": s.status,
-            "intent": s.intent or "unknown",
-        }
-        # 有效回复：状态跃迁与 billed=false 领取合并为一条条件 UPDATE。
-        if s.effective_reply and not s.billed:
-            if billing_crud.claim_idle_session_for_billing(
-                db,
-                session_id=s.id,
-                active_threshold=active_threshold,
-            ):
-                create_session_billing_event(db, s)
-                resolved_n += 1
-                ended_session_ids.append(s.id)
-                resolved_events[s.id] = (s.tenant_id, event_properties)
-            continue
-
-        # 无有效回复或已经有事件的会话只做原子状态跃迁，不创建计费事件。
-        transition = db.execute(
-            update(Session)
-            .where(
-                Session.id == s.id,
-                Session.status.in_(["agent_handling", "waiting_human", "human_handling"]),
-                Session.updated_at < active_threshold,
-            )
-            .values(status="resolved")
-        )
-        resolved_n += transition.rowcount or 0
-        if transition.rowcount:
-            ended_session_ids.append(s.id)
-            resolved_events[s.id] = (s.tenant_id, event_properties)
-
+    resolved_n, ended_session_ids, resolved_events = _collect_idle_resolutions(
+        db, candidates, active_threshold, billing_crud, create_session_billing_event,
+    )
     # 升级兼容：旧流程 Redis 失败后可能留下 resolved/closed + billed=false，
     # 不再依赖 resolved 扫描执行计费，而是为其补建事件后交给统一消费者。
-    legacy_unbilled = db.execute(
-        select(Session).where(
-            Session.status.in_(["resolved", "closed"]),
-            Session.effective_reply.is_(True),
-            Session.billed.is_(False),
-        )
-    ).scalars().all()
-    for s in legacy_unbilled:
-        if billing_crud.claim_legacy_resolved_session(db, s.id):
-            create_session_billing_event(db, s)
+    _backfill_legacy_unbilled(db, billing_crud, create_session_billing_event)
 
     # 阶段2: RESOLVED → CLOSED（updated_at < 60min 前，= 活动 30min + RESOLVED 30min）
-    r2 = db.execute(
-        update(Session)
-        .where(
-            Session.status == "resolved",
-            Session.updated_at < resolved_threshold,
-        )
-        .values(status="closed")
-    )
+    closed_n = _close_stale_resolved(db, resolved_threshold)
 
     db.commit()
-    from app.services.analytics_service import track_event
-    for _resolved_id, (event_tenant_id, properties) in resolved_events.items():
-        track_event(
-            "session_resolved",
-            tenant_id=event_tenant_id,
-            properties=properties,
-        )
-    # 事件提交后再投影 Redis；失败事件保持 pending，下轮与会话状态无关地重试。
+    _publish_resolved_sessions(resolved_events)
     consume_pending_billing_events(db)
-    # 向终端用户广播会话结束（事务已提交，状态跃迁生效；无连接时 no-op）
-    from app.core.ws_manager import manager as _ws_manager
-
-    for ended_id in ended_session_ids:
-        _ws_manager.broadcast_to_session_sync(
-            ended_id,
-            {
-                "type": "session_ended",
-                "payload": {"session_id": ended_id, "status": "resolved"},
-            },
-        )
-    closed_n = r2.rowcount or 0
+    _broadcast_sessions_ended(ended_session_ids)
     if resolved_n or closed_n:
         logger.info(f"Cleanup: {resolved_n} -> resolved, {closed_n} -> closed")
     return {"resolved": resolved_n, "closed": closed_n}
+
+
+def _tenant_admin_emails(db: DbSession, tenant_id: int) -> list:
+    """取出该租户已填写邮箱的管理员地址。"""
+    from app.models.tenant_member import TenantMember
+    from app.models.user import User
+    from sqlalchemy import select
+
+    return [
+        email for email in db.execute(
+            select(User.email)
+            .join(TenantMember, TenantMember.user_id == User.id)
+            .where(
+                TenantMember.tenant_id == tenant_id,
+                TenantMember.role == "admin",
+                User.email.isnot(None),
+            )
+        ).scalars().all() if email
+    ]
+
+
+def _send_expiry_emails(doc, emails: list) -> bool:
+    """向全部管理员发送到期提醒。任一失败都视为本轮未成功。"""
+    from app.core.email_client import EmailSendError, send_email
+
+    sent_ok = True
+    for email in emails:
+        try:
+            send_email(
+                to=email,
+                subject="知识库文档即将到期提醒",
+                text=(
+                    f"知识库文档「{doc.filename}」将于 {doc.expires_at:%Y-%m-%d %H:%M} 到期，"
+                    "到期后将自动从检索库摘除，不再参与回答。"
+                    "请登录运营后台确认是否延期或更新该文档。"
+                ),
+            )
+        except EmailSendError as exc:
+            logger.warning(f"Expiry remind email failed (doc={doc.id}, to={email}): {exc}")
+            sent_ok = False
+    return sent_ok
+
+
+def _remind_one_expiring_doc(db: DbSession, redis_client, doc) -> bool:
+    """提醒一份文档。已提醒、没有邮箱或发送失败时写入对应冷却时间。"""
+    key = f"doc_expiry_remind:{doc.id}"
+    if redis_client.exists(key):
+        return False
+
+    emails = _tenant_admin_emails(db, doc.tenant_id)
+    if not emails:
+        # 管理员暂无邮箱：短冷却后重试（补邮箱后仍可触达）
+        redis_client.set(key, "1", ex=6 * 3600)
+        return False
+
+    if _send_expiry_emails(doc, emails):
+        redis_client.set(key, "1", ex=8 * 24 * 3600)
+        logger.info(f"Doc expiry remind sent (doc={doc.id}, emails={len(emails)})")
+        return True
+
+    # 发送失败：短冷却后重试，避免每轮循环反复尝试
+    redis_client.set(key, "1", ex=6 * 3600)
+    return False
 
 
 def remind_expiring_docs(db: DbSession) -> dict:
@@ -591,8 +760,6 @@ def remind_expiring_docs(db: DbSession) -> dict:
     每文档成功提醒一次（Redis 去重键，TTL 8 天），发送失败/无管理员邮箱时短冷却后重试。
     """
     from app.models.knowledge_document import KnowledgeDocument
-    from app.models.tenant_member import TenantMember
-    from app.models.user import User
     from sqlalchemy import select
 
     from app.core.redis import get_redis
@@ -608,55 +775,8 @@ def remind_expiring_docs(db: DbSession) -> dict:
         )
     ).scalars().all()
 
-    reminded = 0
-    r = get_redis()
-    for doc in docs:
-        key = f"doc_expiry_remind:{doc.id}"
-        if r.exists(key):
-            continue
-
-        emails = [
-            e for e in db.execute(
-                select(User.email)
-                .join(TenantMember, TenantMember.user_id == User.id)
-                .where(
-                    TenantMember.tenant_id == doc.tenant_id,
-                    TenantMember.role == "admin",
-                    User.email.isnot(None),
-                )
-            ).scalars().all() if e
-        ]
-        if not emails:
-            # 管理员暂无邮箱：短冷却后重试（补邮箱后仍可触达）
-            r.set(key, "1", ex=6 * 3600)
-            continue
-
-        from app.core.email_client import EmailSendError, send_email
-
-        sent_ok = True
-        for email in emails:
-            try:
-                send_email(
-                    to=email,
-                    subject="知识库文档即将到期提醒",
-                    text=(
-                        f"知识库文档「{doc.filename}」将于 {doc.expires_at:%Y-%m-%d %H:%M} 到期，"
-                        "到期后将自动从检索库摘除，不再参与回答。"
-                        "请登录运营后台确认是否延期或更新该文档。"
-                    ),
-                )
-            except EmailSendError as e:
-                logger.warning(f"Expiry remind email failed (doc={doc.id}, to={email}): {e}")
-                sent_ok = False
-
-        if sent_ok:
-            r.set(key, "1", ex=8 * 24 * 3600)
-            reminded += 1
-            logger.info(f"Doc expiry remind sent (doc={doc.id}, emails={len(emails)})")
-        else:
-            # 发送失败：短冷却后重试，避免每轮循环反复尝试
-            r.set(key, "1", ex=6 * 3600)
-
+    redis_client = get_redis()
+    reminded = sum(1 for doc in docs if _remind_one_expiring_doc(db, redis_client, doc))
     return {"docs_reminded": reminded}
 
 

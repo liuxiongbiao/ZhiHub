@@ -27,13 +27,13 @@ backend/app/agents/nodes/ticket_agent_fc.py
 """
 
 import logging
-import re
 from typing import Any
 
 from app.core.langfuse_client import observe
 
 # 复用 MCP 版的 phone 提取逻辑（DRY，双因子校验一致）
-from app.agents.nodes.ticket_agent import _extract_phone, _is_valid_phone
+from app.agents.nodes.slot_dialog import mcp_failure_reply
+from app.agents.nodes.ticket_agent import format_ticket_reply, resolve_ticket_query
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,72 @@ def _build_tools() -> list[dict]:
     ]
 
 
+def _ticket_tool_reply(ticket_no: str, phone: str, tenant_id: int | None) -> dict[str, Any]:
+    """执行模型选出的工单工具。协议、权限和熔断仍走 MCP 信封。"""
+    from app.mcp_servers.base_server import ERR_CIRCUIT_BROKEN, build_request
+    from app.services.mcp_service import call_tool
+
+    env = build_request(
+        "get_ticket_status", {"ticket_no": ticket_no, "phone": phone}
+    )
+    result = call_tool("agent", env, tenant_id=tenant_id)
+
+    if "error" in result:
+        failure = mcp_failure_reply(
+            result,
+            agent_name="ticket_agent_fc",
+            circuit_default="工单查询服务暂时不可用，已转接人工客服。",
+            mismatch="未查询到匹配信息，请确认工单号和手机号是否正确。",
+        )
+        if failure is not None:
+            return failure
+
+    return {
+        "final_response": format_ticket_reply(result["result"]),
+        "current_agent": "ticket_agent_fc",
+    }
+
+
+def _query_ticket_by_function_call(ticket_no: str, phone: str, tenant_id: int | None) -> dict[str, Any]:
+    """让模型决定是否调用工单工具，再按原有文案返回结果或兜底。"""
+    try:
+        import litellm
+
+        resp = litellm.completion(
+            model="deepseek/deepseek-chat",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"你是工单查询助手。用户要查工单 {ticket_no}，手机号 {phone}。"
+                        "请调用 get_ticket_status 工具查询工单状态。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"查工单 {ticket_no}，手机号 {phone}",
+                },
+            ],
+            tools=_build_tools(),
+            tool_choice="auto",  # 让 LLM 自主决定是否调工具
+            max_tokens=200,
+            temperature=0.0,
+        )
+        msg = resp.choices[0].message
+        if msg.tool_calls:
+            return _ticket_tool_reply(ticket_no, phone, tenant_id)
+        return {
+            "final_response": "查询工单时遇到问题，请稍后重试。",
+            "current_agent": "ticket_agent_fc",
+        }
+    except Exception as e:
+        logger.error(f"FC agent failed: {e}")
+        return {
+            "final_response": "查询工单时遇到问题，请稍后重试。",
+            "current_agent": "ticket_agent_fc",
+        }
+
+
 @observe(name="ticket_agent_fc")
 def ticket_agent_fc_node(state: dict[str, Any]) -> dict[str, Any]:
     """LangGraph 节点: Function Calling 版工单查询。
@@ -97,116 +163,7 @@ def ticket_agent_fc_node(state: dict[str, Any]) -> dict[str, Any]:
     slots: dict = state.get("slots", {})
     tenant_id: int | None = state.get("tenant_id")  # : 不默认租户 1，缺失则 None 让 call_tool fail-closed
 
-    # 1. 提取工单号（与 MCP 版逻辑一致）
-    ticket_no = slots.get("ticket_no", "").strip()
-    if not ticket_no:
-        last_user = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                last_user = m["content"]
-                break
-        match = re.search(r"TK-[A-Z0-9]+", last_user, re.IGNORECASE)
-        if match:
-            ticket_no = match.group(0)
-            slots["ticket_no"] = ticket_no
-
-    if not ticket_no:
-        return {
-            "final_response": "请提供您的工单编号（格式：TK-XXXXXXXX），以便我为您查询工单进度。",
-            "slots": slots,
-            "current_agent": "ticket_agent_fc",
-        }
-
-    # 2. 提取手机号（复用 MCP 版 helper，双因子校验一致）
-    phone = _extract_phone(messages, slots)
-    if phone:
-        slots["phone"] = phone
-
-    if not _is_valid_phone(phone):
-        return {
-            "final_response": "为保护您的账户安全，查询工单需验证身份。请提供您在工单中绑定的手机号（11位）。",
-            "slots": slots,
-            "current_agent": "ticket_agent_fc",
-        }
-
-    # 3. LLM Function Calling（FC 核心：LLM 决定调工具，而非 Agent 直接调）
-    try:
-        import litellm
-
-        resp = litellm.completion(
-            model="deepseek/deepseek-chat",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        f"你是工单查询助手。用户要查工单 {ticket_no}，手机号 {phone}。"
-                        "请调用 get_ticket_status 工具查询工单状态。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"查工单 {ticket_no}，手机号 {phone}",
-                },
-            ],
-            tools=_build_tools(),
-            tool_choice="auto",  # 让 LLM 自主决定是否调工具
-            max_tokens=200,
-            temperature=0.0,
-        )
-        msg = resp.choices[0].message
-
-        if msg.tool_calls:
-            # 4. 执行工具调用（复用 规格 006 信封入口 + 双因子/权限/熔断）
-            # 注意：FC 版工具执行仍走 call_tool，与 MCP 版安全等价
-            from app.mcp_servers.base_server import ERR_CIRCUIT_BROKEN, build_request
-            from app.services.mcp_service import call_tool
-
-            env = build_request(
-                "get_ticket_status", {"ticket_no": ticket_no, "phone": phone}
-            )
-            result = call_tool("agent", env, tenant_id=tenant_id)
-
-            if "error" in result:
-                err = result["error"]
-                if err.get("code") == ERR_CIRCUIT_BROKEN:
-                    return {
-                        "final_response": err.get(
-                            "message", "工单查询服务暂时不可用，已转接人工客服。"
-                        ),
-                        "current_agent": "ticket_agent_fc",
-                        "should_interrupt": True,
-                    }
-                # 身份校验失败统一提示，防枚举
-                return {
-                    "final_response": "未查询到匹配信息，请确认工单号和手机号是否正确。",
-                    "current_agent": "ticket_agent_fc",
-                }
-
-            data = result["result"]
-            status_map = {
-                "open": "待处理",
-                "in_progress": "处理中",
-                "resolved": "已解决",
-                "closed": "已关闭",
-            }
-            status_cn = status_map.get(data.get("status", ""), data.get("status", ""))
-
-            response = (
-                f"工单 {data['ticket_no']} 的当前状态：{status_cn}\n"
-                f"标题：{data.get('title', '无')}\n"
-                f"优先级：{data.get('priority', '无')}"
-            )
-            return {"final_response": response, "current_agent": "ticket_agent_fc"}
-        else:
-            # LLM 没返回 tool_call → 兜底（理论上预填了槽位 LLM 应该会调）
-            return {
-                "final_response": "查询工单时遇到问题，请稍后重试。",
-                "current_agent": "ticket_agent_fc",
-            }
-
-    except Exception as e:
-        logger.error(f"FC agent failed: {e}")
-        return {
-            "final_response": "查询工单时遇到问题，请稍后重试。",
-            "current_agent": "ticket_agent_fc",
-        }
+    reply, ticket_no, phone = resolve_ticket_query(messages, slots, "ticket_agent_fc")
+    if reply is not None:
+        return reply
+    return _query_ticket_by_function_call(ticket_no, phone, tenant_id)

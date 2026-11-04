@@ -158,8 +158,7 @@ def require_message_allowed_tenant(db: Session, tenant_id: int):
     return tenant
 
 
-def _wizard_checks(db: Session, tenant: Tenant) -> list[dict]:
-    """按真实数据计算每一步就绪状态，不以“点击过下一步”代替配置完成。"""
+def _wizard_readiness(db: Session, tenant: Tenant) -> tuple[dict, dict]:
     from app.models.knowledge_document import KnowledgeDocument
     from app.models.tenant_member import TenantMember
 
@@ -189,6 +188,12 @@ def _wizard_checks(db: Session, tenant: Tenant) -> list[dict]:
         "channel": "Widget 通道已生成" if ready["channel"] else "尚未生成 Widget API Key",
         "done": "系统已具备对外服务条件" if ready["done"] else "仍有步骤需要完成",
     }
+    return ready, details
+
+
+def _wizard_checks(db: Session, tenant: Tenant) -> list[dict]:
+    """按真实数据计算每一步就绪状态，不以“点击过下一步”代替配置完成。"""
+    ready, details = _wizard_readiness(db, tenant)
     checks = []
     for step in WIZARD_CHECK_STEPS:
         label, description, action_path = WIZARD_META[step]
@@ -330,6 +335,81 @@ def invite_member(db: Session, tenant_id: int, phone: str) -> dict:
     }
 
 
+def _load_invite(invite_token: str) -> dict:
+    """读取一次性邀请。无效、过期或损坏的令牌使用同一条错误。"""
+    raw = redis_module.get_redis().get(_invite_key(invite_token))
+    if not raw:
+        raise InvalidInviteToken("邀请链接无效或已过期")
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        raise InvalidInviteToken("邀请链接无效或已过期")
+    if data.get("tenant_id") is None:
+        raise InvalidInviteToken("邀请链接无效或已过期")
+    return data
+
+
+def _invite_identity(
+    db: Session,
+    data: dict,
+    phone: str | None,
+    password: str | None,
+    current_user_id: int | None,
+):
+    """确认接受人就是邀请绑定的手机号。已登录用户直接复用账号。"""
+    if current_user_id is not None:
+        user = user_crud.get_by_id(db, current_user_id)
+        if user is None or data.get("phone") != user.phone:
+            raise InvalidInviteToken("邀请链接无效或已过期")
+        return user, user.phone
+    if not phone or not password or data.get("phone") != phone:
+        raise InvalidInviteToken("邀请链接无效或已过期")
+    try:
+        validate_phone(phone)
+        validate_password_strength(password)
+    except ValueError as exc:
+        raise TenantError(str(exc)) from exc
+    return None, phone
+
+
+def _ensure_invite_capacity(db: Session, tenant_id: int) -> None:
+    """接受时再次检查席位，避免并发加入超过上限。"""
+    tenant = tenant_crud.get_by_id(db, tenant_id)
+    if tenant is None:
+        raise InvalidInviteToken("邀请链接无效或已过期")
+    if tenant_crud.count_members(db, tenant_id) >= tenant.seat_limit:
+        raise SeatLimitExceeded(f"已达座席上限（{tenant.seat_limit}），无法加入")
+
+
+def _join_invited_member(
+    db: Session,
+    known_user,
+    current_user_id: int | None,
+    phone: str,
+    password: str | None,
+    tenant_id: int,
+):
+    """在单个事务里复用或创建用户，并加入租户。失败整体回滚。"""
+    try:
+        user = known_user if current_user_id is not None else user_crud.get_by_phone(db, phone)
+        if user is None and password is not None:
+            user = user_crud.create(
+                db, phone=phone, password_hash=hash_password(password), role_default="agent"
+            )
+        existing = tenant_crud.get_member(db, tenant_id=tenant_id, user_id=user.id)
+        if existing is not None:
+            raise InvalidInviteToken("该用户已加入此租户")
+        tenant_crud.add_member(db, tenant_id=tenant_id, user_id=user.id, role="agent")
+        db.commit()
+        return user
+    except InvalidInviteToken:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+
 def accept_invite(
     db: Session,
     invite_token: str,
@@ -362,59 +442,11 @@ def accept_invite(
         InvalidInviteToken: token 无效/过期/手机号不匹配
         TenantError: 密码强度不足
     """
-    raw = redis_module.get_redis().get(_invite_key(invite_token))
-    if not raw:
-        raise InvalidInviteToken("邀请链接无效或已过期")
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        raise InvalidInviteToken("邀请链接无效或已过期")
-
-    if data.get("tenant_id") is None:
-        raise InvalidInviteToken("邀请链接无效或已过期")
-
-    if current_user_id is not None:
-        user = user_crud.get_by_id(db, current_user_id)
-        if user is None or data.get("phone") != user.phone:
-            raise InvalidInviteToken("邀请链接无效或已过期")
-        phone = user.phone
-    else:
-        if not phone or not password or data.get("phone") != phone:
-            raise InvalidInviteToken("邀请链接无效或已过期")
-        try:
-            validate_phone(phone)
-            validate_password_strength(password)
-        except ValueError as e:
-            raise TenantError(str(e)) from e
-
+    data = _load_invite(invite_token)
+    known_user, phone = _invite_identity(db, data, phone, password, current_user_id)
     tenant_id = int(data["tenant_id"])
-
-    # 重新校验 seat_limit（防并发 accept 超限；invite 时校验不能覆盖 accept 并发）
-    tenant = tenant_crud.get_by_id(db, tenant_id)
-    if tenant is None:
-        raise InvalidInviteToken("邀请链接无效或已过期")
-    if tenant_crud.count_members(db, tenant_id) >= tenant.seat_limit:
-        raise SeatLimitExceeded(f"已达座席上限（{tenant.seat_limit}），无法加入")
-
-    try:
-        # user 已存在（跨租户）则复用，否则新建
-        user = user_crud.get_by_phone(db, phone) if current_user_id is None else user
-        if user is None and password is not None:
-            user = user_crud.create(
-                db, phone=phone, password_hash=hash_password(password), role_default="agent"
-            )
-        # 防重复加入（同租户已存在 member → 视为已接受过）
-        existing = tenant_crud.get_member(db, tenant_id=tenant_id, user_id=user.id)
-        if existing is not None:
-            raise InvalidInviteToken("该用户已加入此租户")
-        tenant_crud.add_member(db, tenant_id=tenant_id, user_id=user.id, role="agent")
-        db.commit()
-    except InvalidInviteToken:
-        db.rollback()
-        raise
-    except Exception:
-        db.rollback()
-        raise
+    _ensure_invite_capacity(db, tenant_id)
+    user = _join_invited_member(db, known_user, current_user_id, phone, password, tenant_id)
 
     # 接受成功 → 一次性失效
     redis_module.get_redis().delete(_invite_key(invite_token))
@@ -453,6 +485,30 @@ def get_plan_catalog(db: Session, tenant_id: int) -> dict:
     }
 
 
+def _validated_upgrade(tenant, target_plan: str) -> tuple[str, str]:
+    """确认这是一次高于当前等级、且没有待处理申请的升级。"""
+    target = target_plan.strip().lower()
+    if target not in PLAN_CATALOG or target == "trial":
+        raise InvalidPlanChange("目标套餐无效，仅支持升级至基础版、专业版或企业版")
+    current = tenant.plan_type if tenant.plan_type in PLAN_CATALOG else "trial"
+    if tenant.pending_plan_type:
+        raise InvalidPlanChange("已有套餐变更申请正在处理中")
+    if PLAN_CATALOG[target]["rank"] <= PLAN_CATALOG[current]["rank"]:
+        raise InvalidPlanChange("仅支持升级到高于当前等级的套餐")
+    return target, current
+
+
+def _plan_change_payload(tenant, current: str, pending, status: str, quota) -> dict:
+    return {
+        "tenant_id": tenant.id,
+        "current_plan": current,
+        "pending_plan": pending,
+        "change_status": status,
+        "seat_limit": tenant.seat_limit,
+        "conversation_quota": quota,
+    }
+
+
 def change_plan(db: Session, tenant_id: int, target_plan: str, *, user_id: int) -> dict:
     """升级租户套餐并联动席位与月配额（PRD §3.9）。
 
@@ -463,14 +519,7 @@ def change_plan(db: Session, tenant_id: int, target_plan: str, *, user_id: int) 
     tenant = tenant_crud.get_by_id(db, tenant_id)
     if tenant is None:
         raise TenantNotFound("租户不存在")
-    target = target_plan.strip().lower()
-    if target not in PLAN_CATALOG or target == "trial":
-        raise InvalidPlanChange("目标套餐无效，仅支持升级至基础版、专业版或企业版")
-    current = tenant.plan_type if tenant.plan_type in PLAN_CATALOG else "trial"
-    if tenant.pending_plan_type:
-        raise InvalidPlanChange("已有套餐变更申请正在处理中")
-    if PLAN_CATALOG[target]["rank"] <= PLAN_CATALOG[current]["rank"]:
-        raise InvalidPlanChange("仅支持升级到高于当前等级的套餐")
+    target, current = _validated_upgrade(tenant, target_plan)
 
     if target == "enterprise":
         tenant.pending_plan_type = target
@@ -480,42 +529,30 @@ def change_plan(db: Session, tenant_id: int, target_plan: str, *, user_id: int) 
             detail=f"from={current};target=enterprise;status=pending_negotiation",
         )
         db.commit()
-        return {
-            "tenant_id": tenant.id,
-            "current_plan": current,
-            "pending_plan": target,
-            "change_status": "pending_negotiation",
-            "seat_limit": tenant.seat_limit,
-            "conversation_quota": tenant.quota_conversations_per_month
-            or PLAN_CATALOG[current]["conversation_quota"],
-        }
+        return _plan_change_payload(
+            tenant, current, target, "pending_negotiation",
+            tenant.quota_conversations_per_month or PLAN_CATALOG[current]["conversation_quota"],
+        )
 
     definition = PLAN_CATALOG[target]
-    previous = current
     tenant.plan_type = target
     tenant.pending_plan_type = None
     tenant.seat_limit = definition["seat_limit"]
     tenant.quota_conversations_per_month = definition["conversation_quota"]
-    # 套餐升级立即恢复可写服务；历史欠费仍由账单任务重新判定（PRD §3.9）。
     tenant.status = "active"
     redis_module.get_redis().delete(f"billing:degraded:{tenant_id}")
     log_audit(
         db, tenant_id=tenant_id, user_id=user_id, action="plan_upgraded",
         target_type="tenant", target_id=tenant_id,
         detail=(
-            f"from={previous};to={target};seat_limit={definition['seat_limit']};"
+            f"from={current};to={target};seat_limit={definition['seat_limit']};"
             f"conversation_quota={definition['conversation_quota']}"
         ),
     )
     db.commit()
-    return {
-        "tenant_id": tenant.id,
-        "current_plan": tenant.plan_type,
-        "pending_plan": None,
-        "change_status": "effective",
-        "seat_limit": tenant.seat_limit,
-        "conversation_quota": tenant.quota_conversations_per_month,
-    }
+    return _plan_change_payload(
+        tenant, tenant.plan_type, None, "effective", tenant.quota_conversations_per_month,
+    )
 
 
 # ────────── 企业版审批（PRD §3.1、§3.9）──────────
@@ -778,40 +815,30 @@ def revoke_tenant_cancellation(
     return _cancellation_status_payload(tenant, now=current)
 
 
-def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
-    """导出租户核心业务数据（CSV 打包为 ZIP）。
-
-    覆盖: 知识库文档、会话、消息、工单、订单、退款审批、账单、用量记录。
-    管理员可在正常服务期或注销后的 30 天等待期内下载该归档。
-    """
+def _csv_text(header: list[str], rows: list[list]) -> str:
+    """用和 csv.writer 默认一致的换行写出表头和数据。"""
     import csv
     import io
-    import zipfile
-    from datetime import datetime, timezone
 
-    from app.models.billing_invoice import BillingInvoice
-    from app.models.knowledge_document import KnowledgeDocument
-    from app.models.message import Message
-    from app.models.order import Order
-    from app.models.refund_approval import RefundApproval
-    from app.models.session import Session as SessionModel
-    from app.models.ticket import Ticket
-    from app.models.usage_record import UsageRecord
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(header)
+    writer.writerows(rows)
+    return buffer.getvalue()
+
+
+def _tenant_rows(db: Session, model, tenant_id: int) -> list:
+    """读取某个业务表中属于该租户的全部记录。"""
     from sqlalchemy import select
 
-    buf = io.BytesIO()
-    zf = zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED)
+    return db.execute(select(model).where(model.tenant_id == tenant_id)).scalars().all()
 
-    def add_csv(name: str, header: list[str], rows: list[list]) -> None:
-        sio = io.StringIO()
-        writer = csv.writer(sio)
-        writer.writerow(header)
-        writer.writerows(rows)
-        zf.writestr(name, sio.getvalue())
 
-    docs = db.execute(
-        select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id)
-    ).scalars().all()
+def _add_documents_csv(add_csv, db: Session, tenant_id: int) -> None:
+    """写入知识库文档表。"""
+    from app.models.knowledge_document import KnowledgeDocument
+
+    docs = _tenant_rows(db, KnowledgeDocument, tenant_id)
     add_csv(
         "knowledge_documents.csv",
         ["doc_id", "filename", "file_type", "file_size", "status", "version",
@@ -820,15 +847,25 @@ def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
           d.is_latest, d.chunk_count, d.expires_at, d.quality_status, d.created_at] for d in docs],
     )
 
-    sessions = db.execute(
-        select(SessionModel).where(SessionModel.tenant_id == tenant_id)
-    ).scalars().all()
+
+def _add_sessions_csv(add_csv, db: Session, tenant_id: int) -> list:
+    """写入会话表，并返回会话记录供消息导出使用。"""
+    from app.models.session import Session as SessionModel
+
+    sessions = _tenant_rows(db, SessionModel, tenant_id)
     add_csv(
         "sessions.csv",
         ["session_id", "status", "intent", "confidence", "sentiment", "end_user_id", "created_at", "updated_at"],
         [[s.id, s.status, s.intent, s.confidence, s.sentiment, s.end_user_id, s.created_at, s.updated_at]
          for s in sessions],
     )
+    return sessions
+
+
+def _add_messages_csv(add_csv, db: Session, sessions: list) -> None:
+    """按创建时间写入这些会话下的消息。没有会话时不查询。"""
+    from app.models.message import Message
+    from sqlalchemy import select
 
     session_ids = [s.id for s in sessions]
     messages = (
@@ -843,9 +880,12 @@ def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
         [[m.id, m.session_id, m.role, m.content, m.created_at] for m in messages],
     )
 
-    tickets = db.execute(
-        select(Ticket).where(Ticket.tenant_id == tenant_id)
-    ).scalars().all()
+
+def _add_tickets_csv(add_csv, db: Session, tenant_id: int) -> None:
+    """写入工单表。"""
+    from app.models.ticket import Ticket
+
+    tickets = _tenant_rows(db, Ticket, tenant_id)
     add_csv(
         "tickets.csv",
         ["ticket_id", "ticket_no", "title", "status", "priority", "assignee_id", "category", "created_at"],
@@ -853,15 +893,25 @@ def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
          for t in tickets],
     )
 
-    orders = db.execute(
-        select(Order).where(Order.tenant_id == tenant_id)
-    ).scalars().all()
+
+def _add_orders_csv(add_csv, db: Session, tenant_id: int) -> None:
+    """写入订单表。"""
+    from app.models.order import Order
+
+    orders = _tenant_rows(db, Order, tenant_id)
     add_csv(
         "orders.csv",
         ["order_id", "order_no", "amount", "paid_amount", "status", "tracking_no", "created_at", "updated_at"],
         [[o.id, o.order_no, o.amount, o.paid_amount, o.status, o.tracking_no, o.created_at, o.updated_at]
          for o in orders],
     )
+
+
+def _add_refunds_csv(add_csv, db: Session, tenant_id: int) -> None:
+    """写入属于该租户订单的退款审批。"""
+    from app.models.order import Order
+    from app.models.refund_approval import RefundApproval
+    from sqlalchemy import select
 
     approvals = db.execute(
         select(RefundApproval)
@@ -875,9 +925,12 @@ def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
          for a in approvals],
     )
 
-    invoices = db.execute(
-        select(BillingInvoice).where(BillingInvoice.tenant_id == tenant_id)
-    ).scalars().all()
+
+def _add_invoices_csv(add_csv, db: Session, tenant_id: int) -> None:
+    """写入账单表。"""
+    from app.models.billing_invoice import BillingInvoice
+
+    invoices = _tenant_rows(db, BillingInvoice, tenant_id)
     add_csv(
         "billing_invoices.csv",
         ["invoice_id", "period", "base_fee", "overage_fee", "status", "payment_trade_no", "paid_at", "created_at"],
@@ -885,14 +938,43 @@ def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
          for i in invoices],
     )
 
-    usage = db.execute(
-        select(UsageRecord).where(UsageRecord.tenant_id == tenant_id)
-    ).scalars().all()
+
+def _add_usage_csv(add_csv, db: Session, tenant_id: int) -> None:
+    """写入用量记录表。"""
+    from app.models.usage_record import UsageRecord
+
+    usage = _tenant_rows(db, UsageRecord, tenant_id)
     add_csv(
         "usage_records.csv",
         ["record_id", "date", "conversation_count", "is_overage", "created_at"],
         [[u.id, u.date, u.conversation_count, u.is_overage, u.created_at] for u in usage],
     )
+
+
+def export_tenant_data(db: Session, tenant_id: int) -> tuple[bytes, str]:
+    """导出租户核心业务数据（CSV 打包为 ZIP）。
+
+    覆盖: 知识库文档、会话、消息、工单、订单、退款审批、账单、用量记录。
+    管理员可在正常服务期或注销后的 30 天等待期内下载该归档。
+    """
+    import io
+    import zipfile
+    from datetime import datetime, timezone
+
+    buf = io.BytesIO()
+    zf = zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED)
+
+    def add_csv(name: str, header: list[str], rows: list[list]) -> None:
+        zf.writestr(name, _csv_text(header, rows))
+
+    _add_documents_csv(add_csv, db, tenant_id)
+    sessions = _add_sessions_csv(add_csv, db, tenant_id)
+    _add_messages_csv(add_csv, db, sessions)
+    _add_tickets_csv(add_csv, db, tenant_id)
+    _add_orders_csv(add_csv, db, tenant_id)
+    _add_refunds_csv(add_csv, db, tenant_id)
+    _add_invoices_csv(add_csv, db, tenant_id)
+    _add_usage_csv(add_csv, db, tenant_id)
 
     zf.close()
     filename = f"zhihub-tenant-{tenant_id}-export-{datetime.now(timezone.utc):%Y%m%d}.zip"

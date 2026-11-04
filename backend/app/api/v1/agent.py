@@ -88,6 +88,41 @@ class DeepTaskRequest(BaseModel):
     goal: str = Field(..., min_length=1, max_length=500, description="任务目标，如'生成本周工单积压分析报告'")
 
 
+def _pending_deep_task(task_id: str, goal: str, tenant_id: int, now) -> dict:
+    return {
+        "task_id": task_id, "goal": goal, "status": "pending",
+        "tenant_id": tenant_id, "created_at": now,
+        "token_consumed": 0,
+        "token_budget": settings.deep_agent_token_budget,
+        "termination_reason": "",
+    }
+
+
+def _submit_deep_task(task_id: str, goal: str, tenant_id: int, now) -> dict:
+    """优先交给 Celery。消息队列不可用时同步执行并返回结果。"""
+    from app.tasks.deep_agent_tasks import _run_and_save
+
+    try:
+        from celery_worker import celery_app
+        celery_app.connection().ensure_connection(max_retries=0, timeout=1)
+        from app.tasks.deep_agent_tasks import run_deep_agent_task
+        run_deep_agent_task.delay(task_id=task_id, goal=goal, tenant_id=tenant_id)
+        logger.info(f"DeepAgent task {task_id} submitted to Celery")
+        return _pending_deep_task(task_id, goal, tenant_id, now) | {
+            "steps": [],
+            "report": "",
+            "error": "",
+            "total_elapsed_ms": 0,
+        }
+    except Exception as exc:
+        logger.warning(f"Celery unavailable ({exc}), running DeepAgent synchronously")
+        return _run_and_save(
+            task_id=task_id, goal=goal, tenant_id=tenant_id, created_at=now,
+            timeout_seconds=settings.deep_agent_timeout_seconds,
+            token_budget=settings.deep_agent_token_budget,
+        )
+
+
 @router.post("/deep-task", dependencies=[Depends(require_role("admin", "agent"))])
 def create_deep_task(body: DeepTaskRequest, request: Request):
     """发起 DeepAgent 任务: Celery 异步执行（RabbitMQ 不可用则同步 fallback）。仅 admin/agent 角色。"""
@@ -96,49 +131,8 @@ def create_deep_task(body: DeepTaskRequest, request: Request):
         raise HTTPException(status_code=401, detail="未认证")
     task_id = f"deep-{uuid.uuid4().hex[:12]}"
     now = _now_naive_utc()
-
-    # 保存初始状态（含租户归属，供 GET 校验；pending 时 GET 可看到"处理中"而非 404）
-    initial_task = {
-        "task_id": task_id, "goal": body.goal, "status": "pending",
-        "tenant_id": tenant_id, "created_at": now,
-        "token_consumed": 0,
-        "token_budget": settings.deep_agent_token_budget,
-        "termination_reason": "",
-    }
-    _save_task(initial_task)
-
-    # 优先 Celery 异步提交（RabbitMQ 可用时）
-    from app.tasks.deep_agent_tasks import _run_and_save
-    try:
-        from celery_worker import celery_app
-        # 确认 broker 可用：仅尝试连接检查（超时短，避免请求阻塞）
-        celery_app.connection().ensure_connection(max_retries=0, timeout=1)
-        from app.tasks.deep_agent_tasks import run_deep_agent_task
-        run_deep_agent_task.delay(task_id=task_id, goal=body.goal, tenant_id=tenant_id)
-        logger.info(f"DeepAgent task {task_id} submitted to Celery")
-        return {
-            "task_id": task_id,
-            "goal": body.goal,
-            "status": "pending",
-            "steps": [],
-            "report": "",
-            "error": "",
-            "total_elapsed_ms": 0,
-            "token_consumed": 0,
-            "token_budget": settings.deep_agent_token_budget,
-            "termination_reason": "",
-            "tenant_id": tenant_id,
-            "created_at": now,
-        }
-    except Exception as e:
-        # Celery/RabbitMQ 不可用 → 同步 fallback（开发/测试零配置兼容）
-        logger.warning(f"Celery unavailable ({e}), running DeepAgent synchronously")
-        result = _run_and_save(
-            task_id=task_id, goal=body.goal, tenant_id=tenant_id, created_at=now,
-            timeout_seconds=settings.deep_agent_timeout_seconds,
-            token_budget=settings.deep_agent_token_budget,
-        )
-        return result
+    _save_task(_pending_deep_task(task_id, body.goal, tenant_id, now))
+    return _submit_deep_task(task_id, body.goal, tenant_id, now)
 
 
 @router.get("/deep-task/{task_id}")

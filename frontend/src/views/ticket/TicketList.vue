@@ -119,6 +119,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { createTicket, getTicketDetail, getTicketList, transitionTicket, type Ticket } from '@/api/ticket'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { formatDateTime as formatDate } from '@/utils/datetime'
 
 const STATUS_MAP: Record<string, string> = { open: '待处理', in_progress: '处理中', resolved: '已解决', closed: '已关闭' }
 const PRIORITY_MAP: Record<string, string> = { low: '低', medium: '中', high: '高', urgent: '紧急' }
@@ -161,7 +162,6 @@ function countBy(status: string) {
 }
 function priorityType(priority: string) { return ({ urgent: 'danger', high: 'danger', medium: 'warning', low: 'info' } as Record<string, string>)[priority] || 'info' }
 function creatorLabel(value?: string) { return ({ agent: 'AI 创建', staff: '人工创建', message: '客户留言' } as Record<string, string>)[value || ''] || value || '未知' }
-function formatDate(iso: string) { return new Date(iso).toLocaleString('zh-CN') }
 function ageHours(iso: string) { return Math.max(0, (Date.now() - new Date(iso).getTime()) / 3600000) }
 function formatAge(iso: string) { const hours = ageHours(iso); if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} 分钟`; if (hours < 24) return `${Math.round(hours)} 小时`; return `${Math.round(hours / 24)} 天` }
 function isOverdue(ticket: Ticket) { return ['open', 'in_progress'].includes(ticket.status) && ageHours(ticket.created_at) >= (ticket.priority === 'urgent' ? 1 : ticket.priority === 'high' ? 4 : 24) }

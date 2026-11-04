@@ -390,60 +390,51 @@ def _reset_demo_passwords(db: Session, tenant_id: int, admin_pw: str, agent_pw: 
     db.commit()
 
 
-def _seed_business_data(db: Session, tenant_id: int) -> dict:
-    """业务数据（订单/工单/退款/会话/快捷回复/账单/用量/通知/审计），单事务。"""
-    from app.models.billing_invoice import BillingInvoice
-    from app.models.notification import Notification
+def _reject_foreign_demo_row(existing, tenant_id: int, label: str, number: str) -> None:
+    """演示编号已被其他租户占用时拒绝覆盖。"""
+    if existing is not None and existing.tenant_id != tenant_id:
+        raise DemoSeedConflictError(
+            f"演示{label} {number} 已被其他租户占用，拒绝修改他人数据"
+        )
+
+
+def _seed_demo_orders(db: Session, tenant_id: int) -> int:
     from app.models.order import Order
-    from app.models.quick_reply import QuickReply
-    from app.models.refund_approval import RefundApproval
-    from app.models.session import Session
-    from app.models.ticket import Ticket
-    from app.models.usage_record import UsageRecord
-    from app.services.audit_service import log_audit
-    from app.services.order_service import OrderError, approve_refund, request_refund
 
-    counts = {"orders": 0, "tickets": 0, "refunds": 0, "sessions": 0}
-
-    preset_status = {ono: status for ono, _, status, _ in DEMO_ORDERS}
-    preset_amounts = {ono: amount for ono, amount, _, _ in DEMO_ORDERS}
-
+    count = 0
     for order_no, amount, status, _note in DEMO_ORDERS:
         existing = db.query(Order).filter_by(order_no=order_no).first()
-        if existing is not None and existing.tenant_id != tenant_id:
-            raise DemoSeedConflictError(
-                f"演示订单号 {order_no} 已被其他租户占用，拒绝修改他人数据"
-            )
+        _reject_foreign_demo_row(existing, tenant_id, "订单号", order_no)
+        paid_amount = amount if status != "pending_payment" else 0.0
+        payment_trade_no = f"PAY-DEMO-{order_no}" if status != "pending_payment" else None
         if existing is None:
             db.add(Order(
                 tenant_id=tenant_id, order_no=order_no, amount=amount,
-                paid_amount=amount if status != "pending_payment" else 0.0,
-                status=status, phone=DEMO_CUSTOMER_PHONE, version=1,
-                tracking_no=DEMO_ORDER_TRACKING.get(order_no),
-                payment_trade_no=f"PAY-DEMO-{order_no}" if status != "pending_payment" else None,
-                created_by=DEMO_ORDER_CREATED_BY,
+                paid_amount=paid_amount, status=status, phone=DEMO_CUSTOMER_PHONE,
+                version=1, tracking_no=DEMO_ORDER_TRACKING.get(order_no),
+                payment_trade_no=payment_trade_no, created_by=DEMO_ORDER_CREATED_BY,
             ))
         else:
-            # 幂等：恢复全部剧本字段（金额/实付/状态/版本/物流/手机号/支付流水/创建者）
             existing.tenant_id = tenant_id
             existing.amount = amount
-            existing.paid_amount = amount if status != "pending_payment" else 0.0
+            existing.paid_amount = paid_amount
             existing.status = status
             existing.version = 1
             existing.tracking_no = DEMO_ORDER_TRACKING.get(order_no)
             existing.phone = DEMO_CUSTOMER_PHONE
-            existing.payment_trade_no = (
-                f"PAY-DEMO-{order_no}" if status != "pending_payment" else None
-            )
+            existing.payment_trade_no = payment_trade_no
             existing.created_by = DEMO_ORDER_CREATED_BY
-        counts["orders"] += 1
+        count += 1
+    return count
 
+
+def _seed_demo_tickets(db: Session, tenant_id: int) -> int:
+    from app.models.ticket import Ticket
+
+    count = 0
     for ticket_no, title, description, priority, status in DEMO_TICKETS:
         existing = db.query(Ticket).filter_by(ticket_no=ticket_no).first()
-        if existing is not None and existing.tenant_id != tenant_id:
-            raise DemoSeedConflictError(
-                f"演示工单号 {ticket_no} 已被其他租户占用，拒绝修改他人数据"
-            )
+        _reject_foreign_demo_row(existing, tenant_id, "工单号", ticket_no)
         if existing is None:
             db.add(Ticket(
                 tenant_id=tenant_id, ticket_no=ticket_no, title=title,
@@ -460,13 +451,16 @@ def _seed_business_data(db: Session, tenant_id: int) -> dict:
             existing.phone = DEMO_CUSTOMER_PHONE
             existing.created_by = DEMO_TICKET_CREATED_BY
             existing.assignee_id = None
-        counts["tickets"] += 1
+        count += 1
+    return count
 
-    db.flush()
 
-    # 预置退款走真实状态机（订单状态 / approval.status / pre_status / 事件相互一致）：
-    # 0006 活动退款：request_refund → pending + requested 事件（超额需管理员终审）
-    # 0002 终态驳回示例：request_refund → reject → rejected 事件链，订单回退 paid
+def _seed_demo_refunds(db: Session, tenant_id: int) -> int:
+    from app.models.order import Order
+    from app.models.refund_approval import RefundApproval
+    from app.services.order_service import OrderError, approve_refund, request_refund
+
+    count = 0
     for order_no, amount, cid, decision in (
         (*DEMO_REFUND_ACTIVE, None),
         (*DEMO_REFUND_REJECTED, "rejected"),
@@ -474,7 +468,6 @@ def _seed_business_data(db: Session, tenant_id: int) -> dict:
         order = db.query(Order).filter_by(tenant_id=tenant_id, order_no=order_no).first()
         approval = db.query(RefundApproval).filter_by(order_id=order.id, client_request_id=cid).first()
         if approval is None:
-            # 订单处于 paid（DEMO_ORDERS 初始状态）→ request_refund 推进到 refund_requested
             result = request_refund(
                 db, tenant_id=tenant_id, order_no=order_no, amount=amount,
                 reason=f"演示退款申请（{order_no}）", client_request_id=cid,
@@ -482,24 +475,28 @@ def _seed_business_data(db: Session, tenant_id: int) -> dict:
             )
             db.commit()
             approval = db.query(RefundApproval).filter_by(id=result["id"]).first()
+        elif decision is None:
+            order.status = "refund_requested"
         else:
-            # 幂等：审批已存在 → 订单状态与审批聚合保持一致
-            if decision is None:
-                order.status = "refund_requested"  # 活动退款：订单保持退款中
-            else:
-                order.status = "paid"  # 终态驳回语义：回退 pre_status
+            order.status = "paid"
         if decision is not None and approval.status == "pending":
-            # 终态示例：驳回 → 订单回退 pre_status（paid），审批聚合终态与事件一致
             try:
-                approve_refund(db, approval_id=approval.id, decision=decision,
-                               approver_id=None, tenant_id=tenant_id, role="admin")
+                approve_refund(
+                    db, approval_id=approval.id, decision=decision,
+                    approver_id=None, tenant_id=tenant_id, role="admin",
+                )
                 db.commit()
                 order.status = "paid"
             except OrderError:
                 db.rollback()
-        counts["refunds"] += 1
+        count += 1
+    return count
 
-    # 会话: waiting_human 1 + closed 1
+
+def _seed_demo_sessions(db: Session, tenant_id: int) -> int:
+    from app.models.session import Session
+
+    count = 0
     for end_user_id, status in (("eu-demo-waiting", "waiting_human"), ("eu-demo-closed", "closed")):
         sess = db.query(Session).filter_by(tenant_id=tenant_id, end_user_id=end_user_id).first()
         if sess is None:
@@ -513,49 +510,77 @@ def _seed_business_data(db: Session, tenant_id: int) -> dict:
         else:
             sess.status = status
             sess.assignee_id = None
-        counts["sessions"] += 1
+        count += 1
+    return count
 
-    # 快捷回复（幂等：已存在则恢复剧本内容，而非仅按唯一键跳过）
+
+def _upsert_by_lookup(db: Session, model, lookup: dict, values: dict):
+    """按查找条件更新已有演示行，没有则新增。"""
+    existing = db.query(model).filter_by(**lookup).first()
+    if existing is None:
+        db.add(model(**lookup, **values))
+        return
+    for key, value in values.items():
+        setattr(existing, key, value)
+
+
+def _seed_demo_operations(db: Session, tenant_id: int) -> None:
+    """恢复快捷回复、账单、用量、欢迎通知和一次性审计记录。"""
+    from datetime import date
+
+    from app.models.audit_log import AuditLog
+    from app.models.billing_invoice import BillingInvoice
+    from app.models.notification import Notification
+    from app.models.quick_reply import QuickReply
+    from app.models.usage_record import UsageRecord
+    from app.services.audit_service import log_audit
+
     for content, shortcut in (
         ("您好，正在为您查询，请稍候。", "chaxun"),
         ("感谢您的反馈，我们会尽快处理。", "ganxie"),
     ):
-        existing_qr = db.query(QuickReply).filter_by(tenant_id=tenant_id, shortcut=shortcut).first()
-        if existing_qr is None:
-            db.add(QuickReply(tenant_id=tenant_id, content=content, shortcut=shortcut))
-        else:
-            existing_qr.content = content
-
-    # 账单 + 用量（幂等：已存在则恢复演示字段）
+        _upsert_by_lookup(
+            db, QuickReply,
+            {"tenant_id": tenant_id, "shortcut": shortcut},
+            {"content": content},
+        )
     for period, status, base, overage in (("2026-08", "unpaid", 100.0, 12.5), ("2026-07", "paid", 100.0, 0.0)):
-        existing_inv = db.query(BillingInvoice).filter_by(tenant_id=tenant_id, period=period).first()
-        if existing_inv is None:
-            db.add(BillingInvoice(tenant_id=tenant_id, period=period, base_fee=base, overage_fee=overage, status=status))
-        else:
-            existing_inv.status = status
-            existing_inv.base_fee = base
-            existing_inv.overage_fee = overage
-    from datetime import date, timedelta
-    for i in range(3):
-        d = date(2026, 8, 15 - i)
-        existing_ur = db.query(UsageRecord).filter_by(tenant_id=tenant_id, date=d).first()
-        if existing_ur is None:
-            db.add(UsageRecord(tenant_id=tenant_id, date=d, conversation_count=12 + i * 7, is_overage=(i == 0)))
-        else:
-            existing_ur.conversation_count = 12 + i * 7
-            existing_ur.is_overage = (i == 0)
+        _upsert_by_lookup(
+            db, BillingInvoice,
+            {"tenant_id": tenant_id, "period": period},
+            {"base_fee": base, "overage_fee": overage, "status": status},
+        )
+    for index in range(3):
+        _upsert_by_lookup(
+            db, UsageRecord,
+            {"tenant_id": tenant_id, "date": date(2026, 8, 15 - index)},
+            {"conversation_count": 12 + index * 7, "is_overage": index == 0},
+        )
 
-    # 通知样例（幂等）
     if not db.query(Notification).filter_by(tenant_id=tenant_id, type="demo_welcome").first():
-        db.add(Notification(tenant_id=tenant_id, title="欢迎使用 ZhiHub 智选商城演示环境",
-                            content="演示数据已就绪，可开始演示剧本。", type="demo_welcome"))
-
-    # 审计样例（幂等：demo_seed action 只写一次，不随重复 seed 累加）
-    from app.models.audit_log import AuditLog
+        db.add(Notification(
+            tenant_id=tenant_id, title="欢迎使用 ZhiHub 智选商城演示环境",
+            content="演示数据已就绪，可开始演示剧本。", type="demo_welcome",
+        ))
     if not db.query(AuditLog).filter_by(tenant_id=tenant_id, action="demo_seed").first():
-        log_audit(db, tenant_id=tenant_id, user_id=None, action="demo_seed",
-                  target_type="tenant", target_id=tenant_id, detail="demo data seeded")
+        log_audit(
+            db, tenant_id=tenant_id, user_id=None, action="demo_seed",
+            target_type="tenant", target_id=tenant_id, detail="demo data seeded",
+        )
 
+
+def _seed_business_data(db: Session, tenant_id: int) -> dict:
+    """业务数据（订单/工单/退款/会话/快捷回复/账单/用量/通知/审计），单事务。"""
+    counts = {
+        "orders": _seed_demo_orders(db, tenant_id),
+        "tickets": _seed_demo_tickets(db, tenant_id),
+        "refunds": 0,
+        "sessions": 0,
+    }
+    db.flush()
+    counts["refunds"] = _seed_demo_refunds(db, tenant_id)
+    counts["sessions"] = _seed_demo_sessions(db, tenant_id)
+    _seed_demo_operations(db, tenant_id)
     db.commit()
     return counts
 
@@ -711,6 +736,102 @@ def _summary_from_db(db: Session, tenant_id: int, created: bool) -> dict:
     }
 
 
+def _assert_reset_confirmed(confirmed: bool, tenant_id: int | None) -> None:
+    """重置必须同时带上确认标记和明确的演示租户编号。"""
+    if not confirmed:
+        raise DemoSeedConflictError("重置前必须精确确认演示 tenant_id（--tenant-id N --yes）")
+    if tenant_id is None:
+        raise DemoSeedConflictError("重置必须显式提供 --tenant-id")
+
+
+def _demo_tenant_for_reset(db: Session, tenant_id: int):
+    """读取可归档的演示租户。已关闭时返回无修改结果，其他非法状态直接拒绝。"""
+    from app.models.tenant import Tenant
+
+    tenant = db.query(Tenant).filter_by(id=tenant_id).first()
+    if tenant is None or not tenant.is_demo:
+        raise DemoSeedConflictError(
+            f"tenant_id={tenant_id} 不是演示租户（is_demo 标记校验失败），拒绝归档"
+        )
+    # 已归档实例再次 reset → 无修改返回 already_archived；
+    # 非 active（readonly 等）状态拒绝 reset。
+    if tenant.status == "closed":
+        return None, {
+            "tenant_id": tenant_id,
+            "already_archived": True,
+            "demo_tenants_active": _count_demo_tenants(db, "active"),
+            "demo_tenants_archived": _count_demo_tenants(db, "archived"),
+        }
+    if tenant.status != "active":
+        raise DemoSeedConflictError(
+            f"reset 仅允许 active 演示租户，tenant_id={tenant_id} 当前 status={tenant.status!r}"
+        )
+    return tenant, None
+
+
+def _archive_demo_database(db: Session, tenant, tenant_id: int) -> list[int]:
+    """在单个事务内关闭实例、释放号码和单号，并删除文档记录。失败则整体回滚。"""
+    from app.crud import knowledge as knowledge_crud
+    from app.models.knowledge_document import KnowledgeDocument
+
+    try:
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        tenant.status = "closed"
+        tenant.name = f"{DEMO_TENANT_NAME}（已归档 {stamp}）"
+        _release_demo_phones(db, tenant_id)
+        _archive_demo_order_nos(db, tenant_id)
+
+        docs = db.query(KnowledgeDocument).filter_by(tenant_id=tenant_id).all()
+        doc_ids = [d.id for d in docs]
+        for d in docs:
+            if d.status in ("pending", "processing"):
+                knowledge_crud.update_status(db, d, "failed", error_message="演示租户 reset 归档清理")
+        for d in docs:
+            db.delete(d)
+        db.commit()
+        return doc_ids
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _cleanup_archived_uploads(doc_ids: list[int]) -> str:
+    """删除已归档文档的上传文件。单个文件或目录失败只记为 partial。"""
+    upload_cleanup = "ok"
+    try:
+        for doc_id in doc_ids:
+            for name in os.listdir(settings.upload_storage_dir):
+                if name.startswith(f"{doc_id}_"):
+                    try:
+                        os.remove(os.path.join(settings.upload_storage_dir, name))
+                    except OSError:
+                        upload_cleanup = "partial"
+    except OSError:
+        upload_cleanup = "partial"
+    return upload_cleanup
+
+
+def _cleanup_archived_vectors(tenant_id: int) -> str:
+    """删除该租户的向量切片。Milvus 或 ES 失败都记为 partial，不回滚已提交的归档。"""
+    vector_cleanup = "ok"
+    from app.core.embedding_client import get_es_client, get_milvus_collection
+    try:
+        get_milvus_collection().delete(expr=f"tenant_id == {tenant_id}")
+    except Exception as e:
+        print(f"[demo-reset] Milvus 清理失败（partial）: {e}")
+        vector_cleanup = "partial"
+    try:
+        get_es_client().delete_by_query(
+            index="knowledge_chunks",
+            body={"query": {"term": {"tenant_id": tenant_id}}},
+            refresh=True,
+        )
+    except Exception as e:
+        print(f"[demo-reset] ES 清理失败（partial）: {e}")
+        vector_cleanup = "partial"
+    return vector_cleanup
+
+
 def reset(db: Session | None = None, tenant_id: int | None = None, confirmed: bool = False) -> dict:
     """一键重置：归档旧演示实例（关闭 + 释放固定手机号），不动任何不可变证据。
 
@@ -732,93 +853,19 @@ def reset(db: Session | None = None, tenant_id: int | None = None, confirmed: bo
     _assert_env_allowed()
     from app.core.database import SessionLocal
 
-    if not confirmed:
-        raise DemoSeedConflictError("重置前必须精确确认演示 tenant_id（--tenant-id N --yes）")
-    if tenant_id is None:
-        raise DemoSeedConflictError("重置必须显式提供 --tenant-id")
+    _assert_reset_confirmed(confirmed, tenant_id)
 
     own_db = db is None
     if db is None:
         db = SessionLocal()
     try:
-        from app.crud import knowledge as knowledge_crud
-        from app.models.knowledge_document import KnowledgeDocument
-        from app.models.tenant import Tenant
+        tenant, already_archived = _demo_tenant_for_reset(db, tenant_id)
+        if already_archived is not None:
+            return already_archived
 
-        tenant = db.query(Tenant).filter_by(id=tenant_id).first()
-        if tenant is None or not tenant.is_demo:
-            raise DemoSeedConflictError(
-                f"tenant_id={tenant_id} 不是演示租户（is_demo 标记校验失败），拒绝归档"
-            )
-        # 已归档实例再次 reset → 无修改返回 already_archived；
-        # 非 active（readonly 等）状态拒绝 reset。
-        if tenant.status == "closed":
-            return {
-                "tenant_id": tenant_id,
-                "already_archived": True,
-                "demo_tenants_active": _count_demo_tenants(db, "active"),
-                "demo_tenants_archived": _count_demo_tenants(db, "archived"),
-            }
-        if tenant.status != "active":
-            raise DemoSeedConflictError(
-                f"reset 仅允许 active 演示租户，tenant_id={tenant_id} 当前 status={tenant.status!r}"
-            )
-
-        # 1-2. 数据库归档（原子单事务）：关闭实例 + 名字加后缀 + 释放固定演示手机号
-        # 与演示单号 + pending/processing 文档置 failed + 删除文档记录。
-        # 任一步抛错整体 rollback，绝不留下半归档状态。
-        docs: list = []
-        try:
-            stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-            tenant.status = "closed"
-            tenant.name = f"{DEMO_TENANT_NAME}（已归档 {stamp}）"
-            _release_demo_phones(db, tenant_id)
-            _archive_demo_order_nos(db, tenant_id)
-
-            docs = db.query(KnowledgeDocument).filter_by(tenant_id=tenant_id).all()
-            doc_ids = [d.id for d in docs]
-            for d in docs:
-                if d.status in ("pending", "processing"):
-                    knowledge_crud.update_status(db, d, "failed", error_message="演示租户 reset 归档清理")
-            for d in docs:
-                db.delete(d)
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-
-        # 3. 上传目录原始文件清理（{doc_id}_{filename}）—— 数据库归档成功后的外部清理，
-        # 失败单独报告 partial，不影响归档结果。
-        upload_cleanup = "ok"
-        try:
-            for doc_id in doc_ids:
-                for name in os.listdir(settings.upload_storage_dir):
-                    if name.startswith(f"{doc_id}_"):
-                        try:
-                            os.remove(os.path.join(settings.upload_storage_dir, name))
-                        except OSError:
-                            upload_cleanup = "partial"
-        except OSError:
-            upload_cleanup = "partial"
-
-        # 4. 向量库切片清理（Milvus/ES；失败明确报告 partial，不假装全成功）
-        vector_cleanup = "ok"
-        from app.core.embedding_client import get_es_client, get_milvus_collection
-        try:
-            get_milvus_collection().delete(expr=f"tenant_id == {tenant_id}")
-        except Exception as e:
-            print(f"[demo-reset] Milvus 清理失败（partial）: {e}")
-            vector_cleanup = "partial"
-        try:
-            get_es_client().delete_by_query(
-                index="knowledge_chunks",
-                body={"query": {"term": {"tenant_id": tenant_id}}},
-                refresh=True,
-            )
-        except Exception as e:
-            print(f"[demo-reset] ES 清理失败（partial）: {e}")
-            vector_cleanup = "partial"
-
+        doc_ids = _archive_demo_database(db, tenant, tenant_id)
+        upload_cleanup = _cleanup_archived_uploads(doc_ids)
+        vector_cleanup = _cleanup_archived_vectors(tenant_id)
         return {
             "tenant_id": tenant_id,
             "archived": True,
@@ -842,6 +889,16 @@ def _count_demo_tenants(db: Session, which: str) -> int:
     return q.filter(Tenant.status != "active").count()
 
 
+def _archive_demo_number(current: str, prefix: str, tenant_id: int, label: str) -> str | None:
+    """把固定演示编号改成带租户号的归档编号。非演示前缀保持不动。"""
+    if not current.startswith(prefix):
+        return None
+    archived = f"{prefix}OLD{tenant_id}-{current[len(prefix):]}"
+    if len(archived) > 30:
+        raise DemoSeedConflictError(f"归档{label}超长（>{30} 字符）: {archived!r}")
+    return archived
+
+
 def _archive_demo_order_nos(db: Session, tenant_id: int) -> None:
     """归档时释放全局唯一演示单号：旧实例订单/工单号改为归档号。
 
@@ -854,22 +911,14 @@ def _archive_demo_order_nos(db: Session, tenant_id: int) -> None:
     from app.models.order import Order
     from app.models.ticket import Ticket
 
-    for o in db.query(Order).filter_by(tenant_id=tenant_id).all():
-        if o.order_no.startswith("ORD-DEMO-"):
-            new_no = f"ORD-DEMO-OLD{tenant_id}-{o.order_no[len('ORD-DEMO-'):]}"
-            if len(new_no) > 30:
-                raise DemoSeedConflictError(
-                    f"归档订单号超长（>{30} 字符）: {new_no!r}"
-                )
-            o.order_no = new_no
-    for t in db.query(Ticket).filter_by(tenant_id=tenant_id).all():
-        if t.ticket_no.startswith("TK-DEMO-"):
-            new_no = f"TK-DEMO-OLD{tenant_id}-{t.ticket_no[len('TK-DEMO-'):]}"
-            if len(new_no) > 30:
-                raise DemoSeedConflictError(
-                    f"归档工单号超长（>{30} 字符）: {new_no!r}"
-                )
-            t.ticket_no = new_no
+    for order in db.query(Order).filter_by(tenant_id=tenant_id).all():
+        archived = _archive_demo_number(order.order_no, "ORD-DEMO-", tenant_id, "订单号")
+        if archived is not None:
+            order.order_no = archived
+    for ticket in db.query(Ticket).filter_by(tenant_id=tenant_id).all():
+        archived = _archive_demo_number(ticket.ticket_no, "TK-DEMO-", tenant_id, "工单号")
+        if archived is not None:
+            ticket.ticket_no = archived
 
 
 def _generate_archived_phone(db: Session, *, tenant_id: int, index: int) -> str:

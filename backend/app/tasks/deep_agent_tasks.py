@@ -18,6 +18,44 @@ from app.core.deep_agent_store import save_task
 logger = logging.getLogger(__name__)
 
 
+def _public_step(step: dict) -> dict:
+    """把规划步骤收成任务结果里的公开字段。有观察时，结果取观察的前 500 字。"""
+    item = {
+        "step": step.get("step"),
+        "label": step.get("label", ""),
+        "elapsed_ms": step.get("elapsed_ms", 0),
+    }
+    for field in ("thought", "action", "action_input", "observation"):
+        if field in step:
+            item[field] = step[field]
+    if "observation" in step:
+        item["result"] = step["observation"][:500]
+    else:
+        item["result"] = step.get("result", "")
+    return item
+
+
+def _notify_deep_agent_finished(task_id: str, goal: str, tenant_id: int, result) -> None:
+    """任务结束后写站内信。通知失败不改变任务结果。"""
+    try:
+        from app.core.database import SessionLocal
+        from app.services.notification_service import create_notification
+
+        ndb = SessionLocal()
+        try:
+            create_notification(
+                ndb, tenant_id=tenant_id,
+                title=f"DeepAgent 任务{'完成' if result.status == 'completed' else '结束'}",
+                content=f"任务目标：{goal[:80]}；状态：{result.status}"
+                        + (f"；错误：{result.error[:100]}" if result.error else ""),
+                type="deep_agent",
+            )
+        finally:
+            ndb.close()
+    except Exception as exc:
+        logger.warning(f"DeepAgent notification failed (task={task_id}): {exc}")
+
+
 def _run_and_save(
     task_id: str,
     goal: str,
@@ -37,34 +75,11 @@ def _run_and_save(
         token_budget=token_budget,
     )
 
-    # 构建与 API 层兼容的结果结构（steps 保留 ReAct 字段）
-    steps = []
-    for s in result.steps:
-        step_item = {
-            "step": s.get("step"),
-            "label": s.get("label", ""),
-            "elapsed_ms": s.get("elapsed_ms", 0),
-        }
-        # ReAct 步骤附加字段（thought/action/action_input/observation）
-        # result 字段兼容前端展示：优先取 observation，否则用原始 result
-        if "thought" in s:
-            step_item["thought"] = s["thought"]
-        if "action" in s:
-            step_item["action"] = s["action"]
-        if "action_input" in s:
-            step_item["action_input"] = s["action_input"]
-        if "observation" in s:
-            step_item["observation"] = s["observation"]
-            step_item["result"] = s["observation"][:500]
-        else:
-            step_item["result"] = s.get("result", "")
-        steps.append(step_item)
-
     final_task = {
         "task_id": task_id,
         "goal": goal,
         "status": result.status,
-        "steps": steps,
+        "steps": [_public_step(step) for step in result.steps],
         "report": result.report,
         "error": result.error,
         "total_elapsed_ms": result.total_elapsed_ms,
@@ -75,26 +90,7 @@ def _run_and_save(
         "created_at": created_at,
     }
     save_task(final_task)
-
-    # PRD §3.11：任务完成通知（站内信，替代 RabbitMQ 通知的轻量实现）
-    try:
-        from app.core.database import SessionLocal
-        from app.services.notification_service import create_notification
-
-        ndb = SessionLocal()
-        try:
-            create_notification(
-                ndb, tenant_id=tenant_id,
-                title=f"DeepAgent 任务{'完成' if result.status == 'completed' else '结束'}",
-                content=f"任务目标：{goal[:80]}；状态：{result.status}"
-                        + (f"；错误：{result.error[:100]}" if result.error else ""),
-                type="deep_agent",
-            )
-        finally:
-            ndb.close()
-    except Exception as e:
-        logger.warning(f"DeepAgent notification failed (task={task_id}): {e}")
-
+    _notify_deep_agent_finished(task_id, goal, tenant_id, result)
     return final_task
 
 

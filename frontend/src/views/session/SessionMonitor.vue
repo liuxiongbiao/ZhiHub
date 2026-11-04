@@ -64,6 +64,7 @@ import { ElMessage } from 'element-plus'
 import { getSessionList } from '@/api/session'
 import type { Session } from '@/types/session'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { formatDateTime as formatDate } from '@/utils/datetime'
 
 const STATUS_MAP: Record<string, string> = {
   created: '已创建', routing: '路由中', agent_handling: 'AI处理中',
@@ -81,10 +82,6 @@ const total = ref(0)
 
 function statusType(status: string): string {
   return { waiting_human: 'warning', human_handling: 'success', closed: 'info', agent_handling: 'primary' }[status] || 'info'
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString('zh-CN')
 }
 
 /** 等待人工时长 / 最后活跃时长 */

@@ -59,63 +59,72 @@ class RagflowClient:
             raise RagflowUnavailable("RagFlow 登录未返回 access_token")
         return token
 
+    def _upload_document(self, filename: str, content: bytes) -> str:
+        headers = self._headers()
+        resp = httpx.post(
+            f"{self.base_url}/api/v1/datasets/{self.dataset_id}/documents",
+            headers=headers,
+            files={"file": (filename, content)},
+            data={"meta": json.dumps({"filename": filename}, ensure_ascii=False)},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        doc_id = (resp.json().get("data") or {}).get("id")
+        if not doc_id:
+            raise RagflowUnavailable(f"RagFlow 上传未返回文档 ID: {resp.text[:200]}")
+        return doc_id
+
+    def _wait_until_parsed(self, doc_id: str) -> None:
+        headers = self._headers()
+        deadline = time.time() + settings.ragflow_parse_timeout_seconds
+        while True:
+            if time.time() > deadline:
+                raise RagflowUnavailable("RagFlow 解析超时")
+            status_resp = httpx.get(
+                f"{self.base_url}/api/v1/datasets/{self.dataset_id}/documents/{doc_id}",
+                headers=headers, timeout=30.0,
+            )
+            status_resp.raise_for_status()
+            doc = (status_resp.json().get("data") or {})
+            state = (doc.get("status") or "").upper()
+            if state == "DONE":
+                return
+            if state in ("FAIL", "CANCEL"):
+                raise RagflowUnavailable(
+                    f"RagFlow 解析失败: {doc.get('run') or doc.get('progress_msg') or state}"
+                )
+            time.sleep(3)
+
+    def _download_chunks(self, doc_id: str) -> list[Chunk]:
+        chunks_resp = httpx.get(
+            f"{self.base_url}/api/v1/datasets/{self.dataset_id}/documents/{doc_id}/chunks",
+            params={"page": 1, "page_size": 1024},
+            headers=self._headers(), timeout=30.0,
+        )
+        chunks_resp.raise_for_status()
+        raw_chunks = (chunks_resp.json().get("data") or {}).get("chunks") or []
+        chunks = [
+            Chunk(index=index, text=text, heading=None)
+            for index, item in enumerate(raw_chunks)
+            if (text := (item.get("content") or "").strip())
+        ]
+        if not chunks:
+            raise RagflowUnavailable("RagFlow 返回 0 个有效切片")
+        return chunks
+
     def parse(self, filename: str, content: bytes) -> list[Chunk]:
         """上传文档到 RagFlow 并拉取语义切片。失败抛 RagflowUnavailable。"""
         if self.is_mock:
             raise RagflowUnavailable("RagFlow 未配置")
-
-        headers = self._headers()
-        files = {"file": (filename, content)}
-        data = {"meta": json.dumps({"filename": filename}, ensure_ascii=False)}
         try:
-            resp = httpx.post(
-                f"{self.base_url}/api/v1/datasets/{self.dataset_id}/documents",
-                headers=headers, files=files, data=data, timeout=60.0,
-            )
-            resp.raise_for_status()
-            doc_id = (resp.json().get("data") or {}).get("id")
-            if not doc_id:
-                raise RagflowUnavailable(f"RagFlow 上传未返回文档 ID: {resp.text[:200]}")
-
-            deadline = time.time() + settings.ragflow_parse_timeout_seconds
-            while True:
-                if time.time() > deadline:
-                    raise RagflowUnavailable("RagFlow 解析超时")
-                status_resp = httpx.get(
-                    f"{self.base_url}/api/v1/datasets/{self.dataset_id}/documents/{doc_id}",
-                    headers=headers, timeout=30.0,
-                )
-                status_resp.raise_for_status()
-                doc = (status_resp.json().get("data") or {})
-                state = (doc.get("status") or "").upper()
-                if state == "DONE":
-                    break
-                if state in ("FAIL", "CANCEL"):
-                    raise RagflowUnavailable(
-                        f"RagFlow 解析失败: {doc.get('run') or doc.get('progress_msg') or state}"
-                    )
-                time.sleep(3)
-
-            chunks_resp = httpx.get(
-                f"{self.base_url}/api/v1/datasets/{self.dataset_id}/documents/{doc_id}/chunks",
-                params={"page": 1, "page_size": 1024},
-                headers=headers, timeout=30.0,
-            )
-            chunks_resp.raise_for_status()
-            raw_chunks = (chunks_resp.json().get("data") or {}).get("chunks") or []
+            doc_id = self._upload_document(filename, content)
+            self._wait_until_parsed(doc_id)
+            chunks = self._download_chunks(doc_id)
         except RagflowUnavailable:
             raise
-        except Exception as e:
-            logger.warning(f"RagFlow parse request failed: {e}")
-            raise RagflowUnavailable(f"RagFlow 请求失败: {e}") from e
-
-        chunks: list[Chunk] = []
-        for i, c in enumerate(raw_chunks):
-            text = (c.get("content") or "").strip()
-            if text:
-                chunks.append(Chunk(index=i, text=text, heading=None))
-        if not chunks:
-            raise RagflowUnavailable("RagFlow 返回 0 个有效切片")
+        except Exception as exc:
+            logger.warning(f"RagFlow parse request failed: {exc}")
+            raise RagflowUnavailable(f"RagFlow 请求失败: {exc}") from exc
         logger.info(f"RagFlow parsed {filename}: {len(chunks)} chunks")
         return chunks
 

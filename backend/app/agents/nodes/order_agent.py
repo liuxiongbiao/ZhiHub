@@ -24,8 +24,14 @@ import logging
 import re
 from typing import Any
 
+from app.agents.nodes.slot_dialog import (
+    last_user_content,
+    mcp_failure_reply,
+    missing_slot_reply,
+    tool_exception_reply,
+)
 from app.core.langfuse_client import observe
-from app.mcp_servers.base_server import ERR_CIRCUIT_BROKEN, build_request
+from app.mcp_servers.base_server import build_request
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +72,55 @@ def _is_valid_phone(phone: str) -> bool:
     return len(phone) in (4, 11)
 
 
+def resolve_order_query(messages: list[dict], slots: dict):
+    """收集订单号，以及 11 位手机号或后 4 位。缺槽位时返回反问。"""
+    order_no = slots.get("order_no", "").strip()
+    if not order_no:
+        match = _ORDER_NO_TOKEN_RE.search(last_user_content(messages))
+        if match:
+            order_no = match.group(0).upper()
+            slots["order_no"] = order_no
+
+    if not order_no:
+        return missing_slot_reply(
+            "order_agent",
+            slots,
+            "请提供您的订单编号（格式：ORD-XXXXXXXX），以便我为您查询订单信息。",
+        ), None, None
+
+    phone = _extract_phone(messages, slots)
+    if phone:
+        slots["phone"] = phone
+    if not _is_valid_phone(phone):
+        return missing_slot_reply(
+            "order_agent",
+            slots,
+            "为保护您的账户安全，查询订单需验证身份。"
+            "请提供您在订单中绑定的手机号后四位（或完整 11 位手机号）。",
+        ), None, None
+    return None, order_no, phone
+
+
+def _format_order_reply(data: dict) -> str:
+    """把订单状态转成与原来一致的中文详情。"""
+    status_map = {
+        "created": "待支付", "paid": "已支付", "shipped": "已发货",
+        "completed": "已完成", "cancelled": "已取消",
+        "refunding": "退款中", "refunded": "已退款",
+    }
+    status_cn = status_map.get(data.get("status", ""), data.get("status", ""))
+    response = (
+        f"订单 {data['order_no']} 详情：\n"
+        f"状态：{status_cn}\n"
+        f"金额：{data.get('amount', 0):.2f} 元\n"
+        f"实付：{data.get('paid_amount', 0):.2f} 元"
+    )
+    tracking_no = data.get("tracking_no")
+    if tracking_no:
+        response += f"\n物流单号：{tracking_no}"
+    return response
+
+
 @observe(name="order_agent")
 def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     """LangGraph 节点: 订单查询。
@@ -93,44 +148,10 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
     slots: dict = state.get("slots", {})
     tenant_id: int | None = state.get("tenant_id")  # : 不默认租户 1，缺失则 None 让 call_tool fail-closed
 
-    # 1. 提取订单号（slots 优先，否则扫消息正则）
-    order_no = slots.get("order_no", "").strip()
-    if not order_no:
-        last_user = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                last_user = m["content"]
-                break
-        match = _ORDER_NO_TOKEN_RE.search(last_user)
-        if match:
-            order_no = match.group(0).upper()
-            slots["order_no"] = order_no
+    reply, order_no, phone = resolve_order_query(messages, slots)
+    if reply is not None:
+        return reply
 
-    # 缺订单号 → 反问
-    if not order_no:
-        return {
-            "final_response": "请提供您的订单编号（格式：ORD-XXXXXXXX），以便我为您查询订单信息。",
-            "slots": slots,
-            "current_agent": "order_agent",
-        }
-
-    # 2. 提取手机号（双因子）
-    phone = _extract_phone(messages, slots)
-    if phone:
-        slots["phone"] = phone
-
-    # 3. 缺/格式错手机号 → 反问（FR-004：不调工具；接受后四位或完整号码）
-    if not _is_valid_phone(phone):
-        return {
-            "final_response": (
-                "为保护您的账户安全，查询订单需验证身份。"
-                "请提供您在订单中绑定的手机号后四位（或完整 11 位手机号）。"
-            ),
-            "slots": slots,
-            "current_agent": "order_agent",
-        }
-
-    # 4. 双槽齐全 → 调用 MCP（JSON-RPC 信封）
     try:
         from app.services.mcp_service import call_tool
 
@@ -139,47 +160,16 @@ def order_agent_node(state: dict[str, Any]) -> dict[str, Any]:
             {"order_no": order_no, "phone": phone},
         )
         resp = call_tool("agent", env, tenant_id=tenant_id)
-
-        if "error" in resp:
-            err = resp["error"]
-            # 熔断兜底（US4）：工具熔断中 → 兜底话术 + 转人工
-            if err.get("code") == ERR_CIRCUIT_BROKEN:
-                return {
-                    "final_response": err.get("message", "订单查询服务暂时不可用，已转接人工客服。"),
-                    "current_agent": "order_agent",
-                    "should_interrupt": True,
-                }
-            # 身份校验失败统一提示，防枚举
-            return {
-                "final_response": "未查询到匹配信息，请确认订单号和手机号是否正确。",
-                "current_agent": "order_agent",
-            }
-
-        # success 信封：7 态状态映射 + 金额信息
-        data = resp["result"]
-        status_map = {
-            "created": "待支付", "paid": "已支付", "shipped": "已发货",
-            "completed": "已完成", "cancelled": "已取消",
-            "refunding": "退款中", "refunded": "已退款",
-        }
-        status_cn = status_map.get(data.get("status", ""), data.get("status", ""))
-
-        response = (
-            f"订单 {data['order_no']} 详情：\n"
-            f"状态：{status_cn}\n"
-            f"金额：{data.get('amount', 0):.2f} 元\n"
-            f"实付：{data.get('paid_amount', 0):.2f} 元"
+        failure = mcp_failure_reply(
+            resp,
+            agent_name="order_agent",
+            circuit_default="订单查询服务暂时不可用，已转接人工客服。",
+            mismatch="未查询到匹配信息，请确认订单号和手机号是否正确。",
         )
-        # 已发货订单附带物流单号（PRD §3.6 物流查询）
-        tracking_no = data.get("tracking_no")
-        if tracking_no:
-            response += f"\n物流单号：{tracking_no}"
-        return {"final_response": response, "current_agent": "order_agent"}
+        if failure is not None:
+            return failure
+        return {"final_response": _format_order_reply(resp["result"]), "current_agent": "order_agent"}
 
     except Exception as e:
         logger.error(f"Order agent MCP call failed: {e}")
-        return {
-            "final_response": "查询订单时遇到问题，请稍后重试。",
-            "current_agent": "order_agent",
-            "generation_failed": True,
-        }
+        return tool_exception_reply("order_agent", "查询订单时遇到问题，请稍后重试。")

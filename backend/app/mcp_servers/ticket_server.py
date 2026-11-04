@@ -80,6 +80,33 @@ TICKET_TOOLS = [
 ]
 
 
+def _dispatch_ticket_tool(db: Session, tool_name: str, tenant_id: int, params: dict) -> dict:
+    if tool_name == "get_ticket_status":
+        return _get_ticket_status(db, tenant_id, params)
+    if tool_name == "create_ticket":
+        from app.services.ticket_service import create_ticket
+
+        result = create_ticket(
+            db, tenant_id=tenant_id, title=params["title"],
+            description=params.get("description"),
+            priority=params.get("priority", "medium"),
+            client_request_id=params["client_request_id"],
+        )
+        db.commit()
+        return result
+    if tool_name == "update_ticket":
+        from app.services.ticket_service import update_ticket_status
+
+        result = update_ticket_status(
+            db, ticket_no=params["ticket_no"],
+            tenant_id=tenant_id, new_status=params["new_status"],
+            client_request_id=params["client_request_id"],
+        )
+        db.commit()
+        return result
+    raise ValueError(f"未知工单工具: {tool_name}")
+
+
 def handle_ticket_tool(tool_name: str, params: dict, *, db: Session | None = None) -> dict:
     """MCP tools/call 分发器：根据 tool_name 调用对应的工单业务逻辑。
 
@@ -116,33 +143,7 @@ def handle_ticket_tool(tool_name: str, params: dict, *, db: Session | None = Non
         if tenant_id is None:
             raise ValueError("missing tenant_id")
 
-        if tool_name == "get_ticket_status":
-            # 查询走双因子校验，不需 commit
-            return _get_ticket_status(db, tenant_id, params)
-
-        elif tool_name == "create_ticket":
-            from app.services.ticket_service import create_ticket
-            result = create_ticket(
-                db, tenant_id=tenant_id, title=params["title"],
-                description=params.get("description"),
-                priority=params.get("priority", "medium"),
-                client_request_id=params["client_request_id"],
-            )
-            db.commit()
-            return result
-
-        elif tool_name == "update_ticket":
-            from app.services.ticket_service import update_ticket_status
-            result = update_ticket_status(
-                db, ticket_no=params["ticket_no"],
-                tenant_id=tenant_id, new_status=params["new_status"],
-                client_request_id=params["client_request_id"],
-            )
-            db.commit()
-            return result
-
-        else:
-            raise ValueError(f"未知工单工具: {tool_name}")
+        return _dispatch_ticket_tool(db, tool_name, tenant_id, params)
     finally:
         # own_session 才关闭，避免误关外部注入的 Session
         if own_session:

@@ -205,6 +205,10 @@ function formatStorage(value: number | null) {
   return value >= 1024 ? `${value / 1024}GB` : `${value}MB`
 }
 
+function dialogDismissed(error: unknown) {
+  return error === 'cancel' || error === 'close'
+}
+
 async function handleUpgrade(plan: PlanOption) {
   const message = plan.negotiable
     ? '提交后平台运营将联系您议价，当前套餐在审批前继续生效。确认申请企业版？'
@@ -222,7 +226,7 @@ async function handleUpgrade(plan: PlanOption) {
     tenantStore.plan_type = res.data.current_plan
     tenantStore.pending_plan_type = res.data.pending_plan
   } catch (e: any) {
-    if (e !== 'cancel' && e !== 'close') ElMessage.error(e?.message || '套餐升级失败')
+    if (!dialogDismissed(e)) ElMessage.error(e?.message || '套餐升级失败')
   } finally {
     upgradingPlan.value = null
   }
@@ -280,7 +284,7 @@ async function handleRequestCancellation() {
     tenantStore.status = res.data.status
     ElMessage.success('注销申请已提交，请在截止日前完成数据导出')
   } catch (e: any) {
-    if (e !== 'cancel' && e !== 'close') ElMessage.error(e?.message || '申请注销失败')
+    if (!dialogDismissed(e)) ElMessage.error(e?.message || '申请注销失败')
   } finally {
     requestingCancellation.value = false
   }
@@ -298,7 +302,7 @@ async function handleRevokeCancellation() {
     await Promise.all([loadPlans(), loadThreshold()])
     ElMessage.success('注销申请已撤销')
   } catch (e: any) {
-    if (e !== 'cancel' && e !== 'close') ElMessage.error(e?.message || '撤销注销失败')
+    if (!dialogDismissed(e)) ElMessage.error(e?.message || '撤销注销失败')
   } finally {
     revokingCancellation.value = false
   }

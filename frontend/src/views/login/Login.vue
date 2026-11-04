@@ -95,6 +95,7 @@ import { getLoginOptions, smsSend, wechatAuth, wechatCallback } from '@/api/auth
 import { DEMO_ROLE_META } from '@/api/demo'
 import type { DemoPersona, LoginOptionsResponse } from '@/types/auth'
 import ServiceFlowRail from '@/components/common/ServiceFlowRail.vue'
+import { startCooldown } from '@/utils/cooldown'
 
 const router = useRouter()
 const route = useRoute()
@@ -142,22 +143,21 @@ async function handleDemoLogin(persona: DemoPersona) {
   } finally { demoLoading.value = '' }
 }
 
-async function handlePwdLogin() {
-  if (!pwdFormRef.value) return
-  try { await pwdFormRef.value.validate() } catch { return }
+async function submitCredentialLogin(form: FormInstance | undefined, login: () => Promise<unknown>) {
+  if (!form) return
+  try { await form.validate() } catch { return }
   loading.value = true
-  try { await userStore.login(pwdForm); ElMessage.success('登录成功'); safeRedirect() }
+  try { await login(); ElMessage.success('登录成功'); safeRedirect() }
   catch (error: any) { ElMessage.error(error?.message || '登录失败') }
   finally { loading.value = false }
 }
 
+async function handlePwdLogin() {
+  await submitCredentialLogin(pwdFormRef.value, () => userStore.login(pwdForm))
+}
+
 async function handleEmailLogin() {
-  if (!emailFormRef.value) return
-  try { await emailFormRef.value.validate() } catch { return }
-  loading.value = true
-  try { await userStore.loginEmail(emailForm); ElMessage.success('登录成功'); safeRedirect() }
-  catch (error: any) { ElMessage.error(error?.message || '登录失败') }
-  finally { loading.value = false }
+  await submitCredentialLogin(emailFormRef.value, () => userStore.loginEmail(emailForm))
 }
 
 async function sendSmsCode() {
@@ -165,18 +165,12 @@ async function sendSmsCode() {
   try {
     await smsSend(smsForm.phone)
     ElMessage.success('验证码已发送')
-    codeCooldown.value = 60
-    const timer = window.setInterval(() => { codeCooldown.value -= 1; if (codeCooldown.value <= 0) window.clearInterval(timer) }, 1000)
+    startCooldown(codeCooldown)
   } catch (error: any) { ElMessage.error(error?.message || '验证码发送失败') }
 }
 
 async function handleSmsLogin() {
-  if (!smsFormRef.value) return
-  try { await smsFormRef.value.validate() } catch { return }
-  loading.value = true
-  try { await userStore.loginSms(smsForm); ElMessage.success('登录成功'); safeRedirect() }
-  catch (error: any) { ElMessage.error(error?.message || '登录失败') }
-  finally { loading.value = false }
+  await submitCredentialLogin(smsFormRef.value, () => userStore.loginSms(smsForm))
 }
 
 async function handleWechatLogin() {

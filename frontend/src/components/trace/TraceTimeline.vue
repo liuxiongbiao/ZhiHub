@@ -28,10 +28,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { AgentTrace, TraceStep } from '@/types/trace'
+import { traceIntentLabel as intentLabel } from '@/labels'
 defineProps<{ trace: AgentTrace | null }>()
 const expertMode = ref(false)
 function formatPercent(value?: number) { return value === undefined || value === null ? '—' : `${Math.round(value * 100)}%` }
-function intentLabel(value: string) { return ({ knowledge_consult: '知识咨询', order_query: '订单查询', ticket_query: '工单查询', sensitive_action: '风险事项', round_handoff: '多轮未解决' } as Record<string,string>)[value] || '客户咨询' }
 function sentimentLabel(value?: string) { return ({ normal: '平稳', unhappy: '不满', negative: '负面', angry: '愤怒' } as Record<string,string>)[value || ''] || value || '平稳' }
 function businessLabel(step: TraceStep) {
   if (step.label && !step.label.startsWith('Agent:')) return step.label

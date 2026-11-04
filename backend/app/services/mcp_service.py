@@ -170,6 +170,62 @@ def validate_params(tool_name: str, params: dict) -> None:
             raise InvalidParams(f"参数 {field} 长度超过上限（{max_len}）")
 
 
+def _invoke_registered_tool(method: str, params: dict, db):
+    """把已授权的工具分发到工单或订单服务。未知方法由调用方返回协议错误。"""
+    if method in _TICKET_METHODS:
+        from app.mcp_servers.ticket_server import handle_ticket_tool
+        return handle_ticket_tool(method, params, db=db)
+    if method in _ORDER_METHODS:
+        from app.mcp_servers.order_server import handle_order_tool
+        return handle_order_tool(method, params, db=db)
+    return None
+
+
+def _screen_tool_request(role: str, envelope: dict, tenant_id: int | None):
+    """按协议顺序拦截非法调用。通过时返回请求内容，否则返回错误信封。"""
+    try:
+        req_id, method, params = parse_request(envelope)
+    except ValueError:
+        req_id = envelope.get("id") if isinstance(envelope, dict) else None
+        return build_error(ERR_INVALID_REQUEST, req_id), None
+    if tenant_id is None:
+        return build_error(ERR_PERMISSION_DENIED, req_id, "调用上下文缺少租户信息"), None
+    params["tenant_id"] = tenant_id
+    if method not in _ALL_METHODS:
+        return build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}"), None
+    if not check_permission(role, method):
+        return build_error(
+            ERR_PERMISSION_DENIED, req_id, f"角色 {role} 无权调用工具 {method}"
+        ), None
+    if is_broken(method):
+        return build_error(ERR_CIRCUIT_BROKEN, req_id, _fallback_message(method)), None
+    try:
+        validate_params(method, params)
+    except InvalidParams as exc:
+        return build_error(ERR_INVALID_PARAMS, req_id, str(exc)), None
+    return None, (req_id, method, params)
+
+
+def _execute_screened_tool(req_id, method: str, params: dict, db):
+    """执行已通过校验的工具，并把业务异常映射成协议错误。成功时返回结果数据。"""
+    try:
+        data = _invoke_registered_tool(method, params, db)
+        if data is None:
+            return build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}"), None
+    except IdentityVerificationError:
+        return build_error(ERR_INVALID_PARAMS, req_id, "未查询到匹配信息"), None
+    except InvalidParams as exc:
+        return build_error(ERR_INVALID_PARAMS, req_id, str(exc)), None
+    except _BusinessValidationErrors as exc:
+        return build_error(ERR_INVALID_PARAMS, req_id, str(exc)), None
+    except _ConcurrencyConflict as exc:
+        return build_error(ERR_INTERNAL_ERROR, req_id, str(exc)), None
+    except Exception:
+        logger.exception(f"MCP tool {method} internal error")
+        return build_error(ERR_INTERNAL_ERROR, req_id, "Internal error"), None
+    return None, data
+
+
 def call_tool(
     role: str,
     envelope: dict,
@@ -223,72 +279,17 @@ def call_tool(
         )
         return response
 
-    # 1. 解析请求信封（结构校验）
-    try:
-        req_id, method, params = parse_request(envelope)
-    except ValueError:
-        # 信封结构非法：尽量取 id（取不到回退 null）返回 -32600
-        req_id = envelope.get("id") if isinstance(envelope, dict) else None
-        return finish(build_error(ERR_INVALID_REQUEST, req_id))
+    rejected, accepted = _screen_tool_request(role, envelope, tenant_id)
+    if rejected is not None:
+        return finish(rejected)
+    req_id, method, params = accepted
     tracked_method = method
 
-    # 2. 注入 tenant_id（覆盖客户端传入值，宪法原则 II / FR-012 / SC-006）
-    # 关键：tenant_id 来自服务端可信来源（JWT/session），绝不信客户端，防越权访问他租户数据
-    # fail-closed: tenant_id 缺失 = 调用上下文不可信，直接拒绝；
-    # 原条件注入在 None 时会把 params 里客户端自报值原样透传（配合 server 层默认租户 1 可越权写他租户）
-    if tenant_id is None:
-        return finish(build_error(ERR_PERMISSION_DENIED, req_id, "调用上下文缺少租户信息"))
-    params["tenant_id"] = tenant_id
+    error, data = _execute_screened_tool(req_id, method, params, db)
+    if error is not None:
+        return finish(error)
 
-    # 3. 方法存在性校验（未知方法 → -32601，优先于权限，符合 JSON-RPC 语义）
-    # 先校验方法存在性再校验权限：未知方法返回 -32601（标准 JSON-RPC 语义），
-    # 而非 -32000 权限拒绝（避免泄露"方法存在但无权"的信息）
-    if method not in _ALL_METHODS:
-        return finish(build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}"))
-
-    # 4. 权限校验 → -32000（角色无权调用该工具）
-    if not check_permission(role, method):
-        return finish(build_error(
-            ERR_PERMISSION_DENIED, req_id, f"角色 {role} 无权调用工具 {method}"
-        ))
-
-    # 5. 熔断检查（US4）：工具处于熔断中 → -32001 + 兜底话术（不调 handler，直接降级）
-    if is_broken(method):
-        return finish(build_error(ERR_CIRCUIT_BROKEN, req_id, _fallback_message(method)))
-
-    # 6. 入参校验 → -32602
-    try:
-        validate_params(method, params)
-    except InvalidParams as e:
-        return finish(build_error(ERR_INVALID_PARAMS, req_id, str(e)))
-
-    # 7. 分发到 server handler
-    try:
-        if method in _TICKET_METHODS:
-            from app.mcp_servers.ticket_server import handle_ticket_tool
-            data = handle_ticket_tool(method, params, db=db)
-        elif method in _ORDER_METHODS:
-            from app.mcp_servers.order_server import handle_order_tool
-            data = handle_order_tool(method, params, db=db)
-        else:
-            return finish(build_error(ERR_METHOD_NOT_FOUND, req_id, f"Method not found: {method}"))
-    except IdentityVerificationError:
-        # 双因子失败/记录不存在 → 统一 -32602 "未查询到匹配信息"（防枚举，SC-002）
-        return finish(build_error(ERR_INVALID_PARAMS, req_id, "未查询到匹配信息"))
-    except InvalidParams as e:
-        return finish(build_error(ERR_INVALID_PARAMS, req_id, str(e)))
-    except _BusinessValidationErrors as e:
-        # 业务校验失败（退款超额/非法状态跃迁/记录不存在等）→ -32602
-        return finish(build_error(ERR_INVALID_PARAMS, req_id, str(e)))
-    except _ConcurrencyConflict as e:
-        # 乐观锁冲突 → -32603（可重试）
-        return finish(build_error(ERR_INTERNAL_ERROR, req_id, str(e)))
-    except Exception as e:
-        # 兜底：未预期的异常 → -32603，记全栈日志便于排查
-        logger.exception(f"MCP tool {method} internal error")
-        return finish(build_error(ERR_INTERNAL_ERROR, req_id, "Internal error"))
-
-    # 8. 关键字段空值监控（US4）：空/异常 → record_failure（达阈值熔断）；正常 → record_success（half_open 解除）
+    # 关键字段空值监控：空结果记失败，正常结果记成功。
     if _is_empty_result(method, data):
         record_failure(method)
     else:

@@ -117,6 +117,98 @@ async def _ensure_ttl_index(collection) -> None:
         logger.warning(f"TTL index create skipped: {e}")
 
 
+def _masked_slots(raw_slots: dict) -> dict:
+    """槽位里的字符串先脱敏，避免 trace 保存原始手机号。"""
+    return {
+        key: mask_pii(value) if isinstance(value, str) else value
+        for key, value in raw_slots.items()
+    }
+
+
+def _latest_trace_query(state: dict[str, Any]) -> str:
+    messages = state.get("messages", [])
+    return next((item.get("content", "") for item in reversed(messages) if item.get("role") == "user"), "")
+
+
+def _router_step(state: dict[str, Any]) -> dict | None:
+    intent = state.get("intent", "")
+    if not intent:
+        return None
+    return {
+        "step": "router",
+        "label": "理解客户诉求",
+        "technical_label": "意图路由 Router",
+        "intent": intent,
+        "confidence": state.get("confidence", 0.0),
+        "sentiment": state.get("sentiment", "normal"),
+        "slots": _masked_slots(state.get("slots", {})),
+        "elapsed_ms": None,
+    }
+
+
+def _retrieval_step(state: dict[str, Any], retrieval: list) -> dict | None:
+    if not retrieval:
+        return None
+    return {
+        "step": "retrieval",
+        "label": "查找可信知识依据",
+        "technical_label": "混合检索 + Rerank",
+        "query": mask_pii(_latest_trace_query(state)),
+        "result_count": len(retrieval),
+        "top_scores": [item.get("score", 0) for item in retrieval[:3]],
+        "elapsed_ms": None,
+    }
+
+
+def _agent_step(state: dict[str, Any]) -> dict | None:
+    current_agent = state.get("current_agent", "")
+    if not current_agent or current_agent == "router":
+        return None
+    agent_labels = {
+        "knowledge_agent": "根据知识形成答复",
+        "order_agent": "查询订单业务系统",
+        "ticket_agent": "查询工单业务系统",
+        "ticket_agent_fc": "查询工单业务系统",
+        "human_handoff": "判断需要人工协助",
+    }
+    return {
+        "step": "agent",
+        "label": agent_labels.get(current_agent, "执行业务处理"),
+        "technical_label": f"Agent: {current_agent}",
+        "agent_type": current_agent,
+        "elapsed_ms": None,
+    }
+
+
+def _safety_step(state: dict[str, Any]) -> dict | None:
+    if not state.get("should_interrupt"):
+        return None
+    handoff_reason = "涉及风险操作或当前答案可信度不足，由人工继续处理。"
+    if state.get("sentiment") in {"angry", "negative"}:
+        handoff_reason = "识别到客户情绪需要优先安抚，由人工继续处理。"
+    return {
+        "step": "safety",
+        "label": "执行服务安全规则",
+        "technical_label": "Guardrail + Human handoff",
+        "observation": handoff_reason,
+        "elapsed_ms": None,
+    }
+
+
+def _generation_step(state: dict[str, Any], retrieval: list, total_elapsed_ms: int) -> dict | None:
+    final_response = state.get("final_response", "")
+    if not final_response:
+        return None
+    return {
+        "step": "generation",
+        "label": "组织并交付答复",
+        "technical_label": "LLM Generation",
+        "answer_preview": mask_pii(final_response[:100]),
+        "sources_count": len(retrieval) if retrieval else 0,
+        "elapsed_ms": total_elapsed_ms,
+    }
+
+
 def _build_steps(state: dict[str, Any], total_elapsed_ms: int) -> list[dict]:
     """从 final_state 构建面向业务人员可读的决策轨迹。
 
@@ -131,87 +223,17 @@ def _build_steps(state: dict[str, Any], total_elapsed_ms: int) -> list[dict]:
       所有可能含 PII 的字段（slots.phone、query、answer_preview）都过 mask_pii，保证 trace 库
       无原始手机号。elapsed_ms 多为 None（无分步计时），仅 generation 记总耗时--分步计时是未来优化点。
     """
-    steps = []
-
-    # Step 1: 先用业务语言解释系统做了什么，technical_label 供专家模式查看。
-    intent = state.get("intent", "")
-    if intent:
-        raw_slots = state.get("slots", {})
-        # 脱敏 slots 中的手机号（phone 槽位）
-        masked_slots = {
-            k: mask_pii(v) if isinstance(v, str) else v for k, v in raw_slots.items()
-        }
-        steps.append({
-            "step": "router",
-            "label": "理解客户诉求",
-            "technical_label": "意图路由 Router",
-            "intent": intent,
-            "confidence": state.get("confidence", 0.0),
-            "sentiment": state.get("sentiment", "normal"),
-            "slots": masked_slots,
-            "elapsed_ms": None,  # 无分步计时
-        })
-
-    # Step 2: Retrieval（混合检索，仅知识咨询有检索结果）
     retrieval = state.get("retrieval_result", [])
-    if retrieval:
-        top_scores = [r.get("score", 0) for r in retrieval[:3]]
-        # 取最后一条用户消息作为检索 query（避免取到 assistant 回复）
-        _msgs = state.get("messages", [])
-        raw_query = next((m.get("content", "") for m in reversed(_msgs) if m.get("role") == "user"), "")
-        steps.append({
-            "step": "retrieval",
-            "label": "查找可信知识依据",
-            "technical_label": "混合检索 + Rerank",
-            "query": mask_pii(raw_query),  # 脱敏用户查询（可能含手机号）
-            "result_count": len(retrieval),
-            "top_scores": top_scores,
-            "elapsed_ms": None,
-        })
-
-    # Step 3: Agent 执行（订单/工单节点代表真实业务系统调用）。
-    current_agent = state.get("current_agent", "")
-    if current_agent and current_agent != "router":
-        agent_labels = {
-            "knowledge_agent": "根据知识形成答复",
-            "order_agent": "查询订单业务系统",
-            "ticket_agent": "查询工单业务系统",
-            "ticket_agent_fc": "查询工单业务系统",
-            "human_handoff": "判断需要人工协助",
-        }
-        steps.append({
-            "step": "agent",
-            "label": agent_labels.get(current_agent, "执行业务处理"),
-            "technical_label": f"Agent: {current_agent}",
-            "agent_type": current_agent,
-            "elapsed_ms": None,
-        })
-
-    if state.get("should_interrupt"):
-        handoff_reason = "涉及风险操作或当前答案可信度不足，由人工继续处理。"
-        if state.get("sentiment") in {"angry", "negative"}:
-            handoff_reason = "识别到客户情绪需要优先安抚，由人工继续处理。"
-        steps.append({
-            "step": "safety",
-            "label": "执行服务安全规则",
-            "technical_label": "Guardrail + Human handoff",
-            "observation": handoff_reason,
-            "elapsed_ms": None,
-        })
-
-    # Step 4: Generation（生成回答）
-    final_response = state.get("final_response", "")
-    if final_response:
-        sources_count = len(retrieval) if retrieval else 0
-        steps.append({
-            "step": "generation",
-            "label": "组织并交付答复",
-            "technical_label": "LLM Generation",
-            "answer_preview": mask_pii(final_response[:100]),  # 脱敏回答预览（截 100 字）
-            "sources_count": sources_count,
-            "elapsed_ms": total_elapsed_ms,
-        })
-
+    steps = [
+        step for step in (
+            _router_step(state),
+            _retrieval_step(state, retrieval),
+            _agent_step(state),
+            _safety_step(state),
+            _generation_step(state, retrieval, total_elapsed_ms),
+        )
+        if step is not None
+    ]
     return steps
 
 

@@ -31,6 +31,66 @@ NOTIF_COUNT_PREFIX = "notif:count:"
 NOTIF_TTL = 7 * 24 * 3600
 
 
+def _write_quota_notification(tenant_id: int, level: str, count: int, quota: int) -> None:
+    try:
+        from app.core.database import SessionLocal
+        from app.services.notification_service import create_notification
+
+        db = SessionLocal()
+        try:
+            create_notification(
+                db, tenant_id=tenant_id,
+                title=f"配额预警：{level}",
+                content=f"当前用量 {count}/{quota}，已触发 {level} 预警，超出部分将按量计费。",
+                type="quota_warning",
+            )
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f"Quota warning notification write failed (non-blocking): {exc}")
+
+
+def _quota_admin_emails(tenant_id: int) -> list:
+    try:
+        from app.core.database import SessionLocal
+        from app.models.tenant_member import TenantMember
+        from app.models.user import User
+        from sqlalchemy import select
+
+        db = SessionLocal()
+        try:
+            return [
+                email for email in db.execute(
+                    select(User.email)
+                    .join(TenantMember, TenantMember.user_id == User.id)
+                    .where(
+                        TenantMember.tenant_id == tenant_id,
+                        TenantMember.role == "admin",
+                        User.email.isnot(None),
+                    )
+                ).scalars().all() if email
+            ]
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f"Quota warning admin emails load failed: {exc}")
+        return []
+
+
+def _send_quota_emails(emails: list, tenant_id: int, level: str, count: int, quota: int) -> None:
+    from app.core.email_client import send_email
+
+    for email in emails:
+        try:
+            send_email(
+                to=email,
+                subject=f"[智枢] 配额预警：{level}",
+                text=f"租户 {tenant_id} 当月对话用量已达 {level}（{count}/{quota}），超出部分将按量计费。请及时关注或升级套餐。",
+            )
+        except Exception as exc:
+            logger.warning(f"Quota warning email failed (to={email}): {exc}")
+
+
 def notify_quota_warning(tenant_id: int, level: str, count: int, quota: int) -> None:
     """配额预警通知（80%/100%）。
 
@@ -45,60 +105,8 @@ def notify_quota_warning(tenant_id: int, level: str, count: int, quota: int) -> 
     """
     message = f"[配额预警] 租户 {tenant_id} 用量已达 {level}（{count}/{quota}）"
     logger.warning(message)
-
-    # 写站内信（真实触达，前端铃铛可查）
-    try:
-        from app.core.database import SessionLocal
-        from app.services.notification_service import create_notification
-        db = SessionLocal()
-        try:
-            create_notification(
-                db, tenant_id=tenant_id,
-                title=f"配额预警：{level}",
-                content=f"当前用量 {count}/{quota}，已触发 {level} 预警，超出部分将按量计费。",
-                type="quota_warning",
-            )
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"Quota warning notification write failed (non-blocking): {e}")
-
-    # PRD §3.9：配额预警邮件提醒（租户管理员有邮箱者）
-    try:
-        from app.core.database import SessionLocal
-        from app.models.tenant_member import TenantMember
-        from app.models.user import User
-        from sqlalchemy import select
-
-        db = SessionLocal()
-        try:
-            emails = [
-                e for e in db.execute(
-                    select(User.email)
-                    .join(TenantMember, TenantMember.user_id == User.id)
-                    .where(
-                        TenantMember.tenant_id == tenant_id,
-                        TenantMember.role == "admin",
-                        User.email.isnot(None),
-                    )
-                ).scalars().all() if e
-            ]
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"Quota warning admin emails load failed: {e}")
-        emails = []
-
-    from app.core.email_client import send_email
-    for email in emails:
-        try:
-            send_email(
-                to=email,
-                subject=f"[智枢] 配额预警：{level}",
-                text=f"租户 {tenant_id} 当月对话用量已达 {level}（{count}/{quota}），超出部分将按量计费。请及时关注或升级套餐。",
-            )
-        except Exception as e:
-            logger.warning(f"Quota warning email failed (to={email}): {e}")
+    _write_quota_notification(tenant_id, level, count, quota)
+    _send_quota_emails(_quota_admin_emails(tenant_id), tenant_id, level, count, quota)
 
     r = get_redis()
     key = f"{NOTIF_COUNT_PREFIX}quota_warning:{tenant_id}"

@@ -34,16 +34,13 @@ import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAuditLogs, type AuditLogItem } from '@/api/tenant'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { formatDateTime as formatDate } from '@/utils/datetime'
 
 const logs = ref<AuditLogItem[]>([])
 const loading = ref(false)
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString('zh-CN')
-}
 
 async function loadLogs() {
   loading.value = true

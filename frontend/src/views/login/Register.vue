@@ -69,6 +69,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useUserStore } from '@/store/modules/user'
 import { smsSend, registerEmail } from '@/api/auth'
+import { startCooldown } from '@/utils/cooldown'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -118,8 +119,7 @@ async function sendRegCode() {
   try {
     await smsSend(phoneForm.phone)
     ElMessage.success('验证码已发送')
-    regCooldown.value = 60
-    const t = setInterval(() => { regCooldown.value--; if (regCooldown.value <= 0) clearInterval(t) }, 1000)
+    startCooldown(regCooldown)
   } catch (e: any) {
     ElMessage.error(e?.message || '验证码发送失败')
   }

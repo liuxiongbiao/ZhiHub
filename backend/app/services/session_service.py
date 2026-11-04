@@ -313,6 +313,123 @@ def get_session_detail(
     }
 
 
+def _recent_business_text(messages) -> str:
+    """拼接最近对话，供业务编号扫描。每条最多取前 2000 字。"""
+    return "\n".join(
+        message.content[:2000]
+        for message in messages[-40:]
+        if message.role in {"user", "assistant", "agent"}
+    )
+
+
+def _detected_business_refs(text: str) -> dict:
+    """只识别文本里明确出现的订单号、工单号和手机号尾号。"""
+    order_numbers = _ORDER_NO_RE.findall(text)
+    ticket_numbers = _TICKET_NO_RE.findall(text)
+    full_phones = _PHONE_RE.findall(text)
+    last4_values = _LAST4_RE.findall(text)
+    return {
+        "order_no": order_numbers[-1].upper() if order_numbers else None,
+        "ticket_no": ticket_numbers[-1].upper() if ticket_numbers else None,
+        "phone_last4": (
+            full_phones[-1][-4:]
+            if full_phones
+            else (last4_values[-1] if last4_values else None)
+        ),
+    }
+
+
+def _order_for_context(db: DbSession, tenant_id: int, order_no: str | None):
+    """按租户和订单号精确查找，不猜最近一单。"""
+    if not order_no:
+        return None
+    from app.models.order import Order
+
+    return db.query(Order).filter(
+        Order.tenant_id == tenant_id,
+        Order.order_no == order_no,
+    ).first()
+
+
+def _ticket_for_context(db: DbSession, tenant_id: int, ticket_no: str | None):
+    """按租户和工单号精确查找。"""
+    if not ticket_no:
+        return None
+    from app.models.ticket import Ticket
+
+    return db.query(Ticket).filter(
+        Ticket.tenant_id == tenant_id,
+        Ticket.ticket_no == ticket_no,
+    ).first()
+
+
+def _recent_refunds(db: DbSession, order) -> list:
+    """返回该订单最近 5 条退款审批。没有订单时为空。"""
+    if order is None:
+        return []
+    from app.models.refund_approval import RefundApproval
+
+    return db.query(RefundApproval).filter(
+        RefundApproval.order_id == order.id
+    ).order_by(RefundApproval.created_at.desc()).limit(5).all()
+
+
+def _order_context_view(order) -> dict | None:
+    """坐席可见的订单字段。不包含完整手机号。"""
+    if order is None:
+        return None
+    return {
+        "id": order.id,
+        "order_no": order.order_no,
+        "amount": float(order.amount),
+        "paid_amount": float(order.paid_amount),
+        "status": order.status,
+        "tracking_no": order.tracking_no,
+        "created_by": order.created_by,
+    }
+
+
+def _ticket_context_view(ticket) -> dict | None:
+    """坐席可见的工单字段。"""
+    if ticket is None:
+        return None
+    return {
+        "id": ticket.id,
+        "ticket_no": ticket.ticket_no,
+        "title": ticket.title,
+        "status": ticket.status,
+        "priority": ticket.priority,
+    }
+
+
+def _refund_context_views(refunds) -> list[dict]:
+    """坐席可见的退款审批摘要。"""
+    return [
+        {
+            "id": item.id,
+            "amount": float(item.amount),
+            "reason": item.reason,
+            "status": item.status,
+            "created_at": item.created_at,
+        }
+        for item in refunds
+    ]
+
+
+def _business_actions(order, refunds) -> dict:
+    """根据订单状态和在途退款决定坐席可点的操作。资金操作仍要重新核验手机号。"""
+    return {
+        "can_create_ticket": True,
+        "can_request_refund": bool(
+            order is not None
+            and order.status in {"paid", "shipped"}
+            and not any(item.status in {"pending", "refunding"} for item in refunds)
+        ),
+        "can_ship": bool(order is not None and order.status == "paid"),
+        "requires_phone_verification": True,
+    }
+
+
 def get_session_business_context(
     db: DbSession,
     *,
@@ -324,90 +441,21 @@ def get_session_business_context(
     只按会话文本里明确出现的业务编号查询，不用“最近一单”猜测客户身份；
     手机号最多回传尾号，坐席发起资金操作时仍必须重新输入完整号码完成双因子校验。
     """
-    from app.models.order import Order
-    from app.models.refund_approval import RefundApproval
-    from app.models.ticket import Ticket
-
     session = session_crud.get_by_id(db, session_id, tenant_id)
     if session is None:
         raise SessionNotFound(f"会话不存在: {session_id}")
     messages = session_crud.get_messages(db, session_id)
-    text = "\n".join(
-        message.content[:2000]
-        for message in messages[-40:]
-        if message.role in {"user", "assistant", "agent"}
-    )
-    order_numbers = _ORDER_NO_RE.findall(text)
-    ticket_numbers = _TICKET_NO_RE.findall(text)
-    full_phones = _PHONE_RE.findall(text)
-    last4_values = _LAST4_RE.findall(text)
-    phone_last4 = (
-        full_phones[-1][-4:]
-        if full_phones
-        else (last4_values[-1] if last4_values else None)
-    )
-
-    order = None
-    if order_numbers:
-        order = db.query(Order).filter(
-            Order.tenant_id == tenant_id,
-            Order.order_no == order_numbers[-1].upper(),
-        ).first()
-    ticket = None
-    if ticket_numbers:
-        ticket = db.query(Ticket).filter(
-            Ticket.tenant_id == tenant_id,
-            Ticket.ticket_no == ticket_numbers[-1].upper(),
-        ).first()
-    refunds = []
-    if order is not None:
-        refunds = db.query(RefundApproval).filter(
-            RefundApproval.order_id == order.id
-        ).order_by(RefundApproval.created_at.desc()).limit(5).all()
-
+    detected = _detected_business_refs(_recent_business_text(messages))
+    order = _order_for_context(db, tenant_id, detected["order_no"])
+    ticket = _ticket_for_context(db, tenant_id, detected["ticket_no"])
+    refunds = _recent_refunds(db, order)
     return {
         "session_id": session_id,
-        "detected": {
-            "order_no": order_numbers[-1].upper() if order_numbers else None,
-            "ticket_no": ticket_numbers[-1].upper() if ticket_numbers else None,
-            "phone_last4": phone_last4,
-        },
-        "order": None if order is None else {
-            "id": order.id,
-            "order_no": order.order_no,
-            "amount": float(order.amount),
-            "paid_amount": float(order.paid_amount),
-            "status": order.status,
-            "tracking_no": order.tracking_no,
-            "created_by": order.created_by,
-        },
-        "ticket": None if ticket is None else {
-            "id": ticket.id,
-            "ticket_no": ticket.ticket_no,
-            "title": ticket.title,
-            "status": ticket.status,
-            "priority": ticket.priority,
-        },
-        "refunds": [
-            {
-                "id": item.id,
-                "amount": float(item.amount),
-                "reason": item.reason,
-                "status": item.status,
-                "created_at": item.created_at,
-            }
-            for item in refunds
-        ],
-        "actions": {
-            "can_create_ticket": True,
-            "can_request_refund": bool(
-                order is not None
-                and order.status in {"paid", "shipped"}
-                and not any(item.status in {"pending", "refunding"} for item in refunds)
-            ),
-            "can_ship": bool(order is not None and order.status == "paid"),
-            "requires_phone_verification": True,
-        },
+        "detected": detected,
+        "order": _order_context_view(order),
+        "ticket": _ticket_context_view(ticket),
+        "refunds": _refund_context_views(refunds),
+        "actions": _business_actions(order, refunds),
     }
 
 

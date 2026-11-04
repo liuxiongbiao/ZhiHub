@@ -1,4 +1,4 @@
-﻿"""
+"""
 backend/app/middlewares/csrf_middleware.py
 
 职责: 对已携带 Bearer 的状态变更请求，要求 X-CSRF-Token 与该 Bearer 完全一致。

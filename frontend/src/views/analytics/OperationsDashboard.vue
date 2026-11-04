@@ -167,6 +167,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAnalyticsOverview, type AnalyticsOverview } from '@/api/analytics'
+import { dashboardPlanLabel as planLabel, OPS_EVENT_LABELS } from '@/labels'
 
 const days = ref(30)
 const loading = ref(false)
@@ -225,17 +226,7 @@ function formatDuration(seconds: number) {
 }
 function formatMoney(value: number) { return `¥${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}` }
 function formatTime(value: string) { return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }
-function planLabel(value: string) { return ({ trial: '试用', basic: '基础', pro: '专业', enterprise: '企业' } as Record<string, string>)[value] || value }
-function eventLabel(value: string) {
-  return ({
-    session_created: '新建会话', retrieval_executed: '执行检索', mcp_tool_called: '调用工具',
-    human_takeover: '人工接管', order_state_changed: '订单流转', refund_approved: '退款通过',
-    refund_rejected: '退款驳回', quota_exceeded: '配额超限', invoice_paid: '账单支付',
-    security_block: '安全拦截', answer_feedback: '回答反馈', index_rebuild_triggered: '重建索引',
-    degradation_mode_entered: '进入降级', degradation_mode_exited: '退出降级', message_left: '用户留言',
-    session_resolved: '会话解决',
-  } as Record<string, string>)[value] || value
-}
+function eventLabel(value: string) { return OPS_EVENT_LABELS[value] || value }
 function eventDetail(event: AnalyticsOverview['recent_events'][number]) {
   const p = event.properties
   if (event.event_name === 'retrieval_executed') return `置信度 ${Number(p.confidence || 0).toFixed(2)} · ${p.latency || 0} ms`

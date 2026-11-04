@@ -52,6 +52,151 @@ MAX_DUAL_WRITE_RETRIES = 3
 ES_BULK_CHUNK_SIZE = 500
 
 
+def _resolve_document_upload_path(doc_id: int, filename: str) -> str:
+    """优先使用当前存储目录；只在旧临时目录仍有文件时回退。"""
+    upload_path = os.path.join(
+        settings.upload_storage_dir,
+        f"{doc_id}_{os.path.basename(filename)}",
+    )
+    legacy_upload_path = os.path.join(
+        tempfile.gettempdir(),
+        "zhihub_uploads",
+        f"{doc_id}_{os.path.basename(filename)}",
+    )
+    if not os.path.isfile(upload_path) and os.path.isfile(legacy_upload_path):
+        return legacy_upload_path
+    return upload_path
+
+
+def _init_search_indexes() -> None:
+    """准备检索索引。关闭向量能力时不初始化 Milvus。"""
+    try:
+        if settings.embedding_enabled:
+            init_milvus_collection()
+        init_es_index()
+    except Exception as exc:
+        logger.warning(f"Init vector store failed (non-blocking): {exc}")
+
+
+def _parse_document_chunks(doc_id: int, filename: str, content: bytes):
+    """优先使用 RagFlow。失败或模拟模式时回退到本地规则切片。"""
+    chunks = None
+    from app.core.ragflow_client import get_ragflow_client
+
+    ragflow = get_ragflow_client()
+    if not ragflow.is_mock:
+        try:
+            chunks = ragflow.parse(filename, content)
+        except Exception as exc:
+            logger.warning(f"RagFlow parse failed (doc={doc_id}), fallback local: {exc}")
+    if chunks is None:
+        chunks = parse_and_chunk(filename, content)
+    return chunks
+
+
+def _hold_for_quality_review(db, doc, doc_id: int, chunk_texts: list[str]) -> bool:
+    """质量不达标时标记待人工复核，并且不写入检索库。"""
+    quality_rate, empty_ratio = check_quality(chunk_texts)
+    if quality_rate <= 0.3 and empty_ratio <= 0.2:
+        return False
+    doc.quality_status = "pending_review"
+    doc.status = "ready"
+    doc.error_message = (
+        f"质量检测未通过（乱码率 {quality_rate:.2f}，空切片占比 {empty_ratio:.2f}），待人工复核"
+    )
+    db.commit()
+    logger.warning(
+        f"Document {doc_id} pending_review: garbage {quality_rate:.2f}, empty {empty_ratio:.2f}"
+    )
+    return True
+
+
+def _embedding_vectors(doc_id: int, chunk_texts: list[str]) -> list[list[float]] | None:
+    """关闭向量能力时只保留关键词索引，不请求 embedding。"""
+    if not settings.embedding_enabled:
+        logger.info("Embedding disabled: document %s will be indexed in ES only", doc_id)
+        return None
+    return embed_batches(chunk_texts)
+
+
+def _compensate_archived_write(db, doc_id: int, tenant_id: int) -> bool:
+    """双写之后如果租户已归档，清掉刚写入的切片并标记失败。"""
+    db.commit()
+    if _doc_and_tenant_processable(db, doc_id, tenant_id):
+        return False
+    logger.warning(
+        f"Document {doc_id} tenant {tenant_id} archived during vector write, "
+        f"compensating cleanup"
+    )
+    _compensate_vector_cleanup(doc_id)
+    doc_after = knowledge_crud.get_by_id(db, doc_id, tenant_id)
+    if doc_after is not None:
+        knowledge_crud.update_status(
+            db, doc_after, "failed",
+            error_message="写入期间租户被 reset/归档，已补偿清理向量",
+        )
+        db.commit()
+    return True
+
+
+def _fail_uploaded_document(db, doc, message: str, *, chunk_count: int | None = None) -> None:
+    knowledge_crud.update_status(db, doc, "failed", error_message=message[:1000])
+    if chunk_count is not None:
+        knowledge_crud.set_chunk_count(db, doc, chunk_count)
+    db.commit()
+
+
+def _read_uploaded_document(db, doc, doc_id: int) -> bytes | None:
+    """读取上传原文。文件缺失时把文档标为失败并返回 None。"""
+    upload_path = _resolve_document_upload_path(doc_id, doc.filename)
+    if not os.path.isfile(upload_path):
+        reason = f"上传源文件不存在或 worker 无法访问共享目录: {upload_path}"
+        logger.error(reason)
+        _fail_uploaded_document(db, doc, reason, chunk_count=0)
+        return None
+    with open(upload_path, "rb") as handle:
+        return handle.read()
+
+
+def _index_uploaded_document(db, doc, doc_id: int, tenant_id: int) -> None:
+    """读取上传文件，完成质检、向量化和双写。任一步失败都在这里落成终态。"""
+    content = _read_uploaded_document(db, doc, doc_id)
+    if content is None:
+        return
+
+    _init_search_indexes()
+    chunks = _parse_document_chunks(doc_id, doc.filename, content)
+    if not chunks:
+        _fail_uploaded_document(db, doc, "文档解析后无有效文本内容")
+        return
+
+    chunk_texts = [chunk.text for chunk in chunks]
+    if _hold_for_quality_review(db, doc, doc_id, chunk_texts):
+        return
+
+    vectors = _embedding_vectors(doc_id, chunk_texts)
+    if vectors is not None and len(vectors) != len(chunks):
+        _fail_uploaded_document(db, doc, "Embedding向量数与切片数不匹配")
+        return
+
+    db.commit()
+    if not _doc_and_tenant_processable(db, doc_id, tenant_id):
+        logger.info(
+            f"Document {doc_id} or tenant {tenant_id} no longer processable "
+            f"(reset/archived during processing), skip vector write"
+        )
+        return
+    _dual_write_with_retry(doc.tenant_id, doc.id, doc.filename, chunks, vectors)
+
+    if _compensate_archived_write(db, doc_id, tenant_id):
+        return
+
+    knowledge_crud.update_status(db, doc, "ready")
+    knowledge_crud.set_chunk_count(db, doc, len(chunks))
+    db.commit()
+    logger.info(f"Document {doc_id} processed: {len(chunks)} chunks")
+
+
 @shared_task(name="app.tasks.knowledge_tasks.process_document")
 def process_document(doc_id: int, tenant_id: int) -> None:
     """文档处理全流程：解析 -> 切片 -> embedding -> 双写 Milvus+ES -> 更新状态。
@@ -87,122 +232,9 @@ def process_document(doc_id: int, tenant_id: int) -> None:
             logger.info(f"Document {doc_id} status={doc.status}, skip processing")
             return
 
-        # 更新状态为 processing（标记开始处理，前端可显示进度）
         knowledge_crud.update_status(db, doc, "processing")
         db.commit()
-
-        upload_path = os.path.join(
-            settings.upload_storage_dir,
-            f"{doc_id}_{os.path.basename(doc.filename)}",
-        )
-        legacy_upload_path = os.path.join(
-            tempfile.gettempdir(),
-            "zhihub_uploads",
-            f"{doc_id}_{os.path.basename(doc.filename)}",
-        )
-        # 滚动升级兼容：处理部署前已经入队、仍落在旧临时目录中的真实文件。
-        if not os.path.isfile(upload_path) and os.path.isfile(legacy_upload_path):
-            upload_path = legacy_upload_path
-        if not os.path.isfile(upload_path):
-            reason = f"上传源文件不存在或 worker 无法访问共享目录: {upload_path}"
-            logger.error(reason)
-            knowledge_crud.update_status(db, doc, "failed", error_message=reason[:1000])
-            knowledge_crud.set_chunk_count(db, doc, 0)
-            db.commit()
-            return
-
-        # 确保检索索引存在。关闭 embedding 时只初始化 ES，避免误触向量链路。
-        try:
-            if settings.embedding_enabled:
-                init_milvus_collection()
-            init_es_index()
-        except Exception as e:
-            logger.warning(f"Init vector store failed (non-blocking): {e}")
-
-        with open(upload_path, "rb") as f:
-            content = f.read()
-
-        # 1. 解析 + 切片（PRD §3.2：配置 RagFlow 走语义切片，否则/失败降级本地规则解析）
-        chunks = None
-        from app.core.ragflow_client import get_ragflow_client
-
-        ragflow = get_ragflow_client()
-        if not ragflow.is_mock:
-            try:
-                chunks = ragflow.parse(doc.filename, content)
-            except Exception as e:
-                logger.warning(f"RagFlow parse failed (doc={doc_id}), fallback local: {e}")
-        if chunks is None:
-            chunks = parse_and_chunk(doc.filename, content)
-        if not chunks:
-            knowledge_crud.update_status(db, doc, "failed", error_message="文档解析后无有效文本内容")
-            db.commit()
-            return
-
-        # 2. 批量 Embedding
-        chunk_texts = [c.text for c in chunks]
-
-        # 乱码率/空切片检测（PRD §3.2）：超阈值标记 pending_review 不进检索库
-        quality_rate, empty_ratio = check_quality(chunk_texts)
-        if quality_rate > 0.3 or empty_ratio > 0.2:
-            doc.quality_status = "pending_review"
-            doc.status = "ready"
-            doc.error_message = (
-                f"质量检测未通过（乱码率 {quality_rate:.2f}，空切片占比 {empty_ratio:.2f}），待人工复核"
-            )
-            db.commit()
-            logger.warning(
-                f"Document {doc_id} pending_review: garbage {quality_rate:.2f}, empty {empty_ratio:.2f}"
-            )
-            return
-
-        vectors: list[list[float]] | None = None
-        if settings.embedding_enabled:
-            vectors = embed_batches(chunk_texts)
-            if len(vectors) != len(chunks):
-                knowledge_crud.update_status(db, doc, "failed", error_message="Embedding向量数与切片数不匹配")
-                db.commit()
-                return
-        else:
-            logger.info("Embedding disabled: document %s will be indexed in ES only", doc_id)
-
-        # 3. 双写 Milvus + ES（重试 3 次）
-        # 并发窗口防护：写入前重查文档与租户仍可处理。worker 从通过第一次
-        # 状态检查到真正写向量之间存在窗口，期间 demo reset 可能已提交归档事务
-        # （租户 closed / 文档 failed 或已删除）。先 commit 刷新事务快照再查。
-        db.commit()
-        if not _doc_and_tenant_processable(db, doc_id, tenant_id):
-            logger.info(
-                f"Document {doc_id} or tenant {tenant_id} no longer processable "
-                f"(reset/archived during processing), skip vector write"
-            )
-            return
-        _dual_write_with_retry(doc.tenant_id, doc.id, doc.filename, chunks, vectors)
-
-        # 双写期间可能被 reset/归档（向量已落入 Milvus/ES）→ 重查；
-        # 异常时补偿清理该文档已写入的切片，不留旧租户向量。
-        db.commit()
-        if not _doc_and_tenant_processable(db, doc_id, tenant_id):
-            logger.warning(
-                f"Document {doc_id} tenant {tenant_id} archived during vector write, "
-                f"compensating cleanup"
-            )
-            _compensate_vector_cleanup(doc_id)
-            doc_after = knowledge_crud.get_by_id(db, doc_id, tenant_id)
-            if doc_after is not None:
-                knowledge_crud.update_status(
-                    db, doc_after, "failed",
-                    error_message="写入期间租户被 reset/归档，已补偿清理向量",
-                )
-                db.commit()
-            return
-
-        # 4. 更新文档状态
-        knowledge_crud.update_status(db, doc, "ready")
-        knowledge_crud.set_chunk_count(db, doc, len(chunks))
-        db.commit()
-
-        logger.info(f"Document {doc_id} processed: {len(chunks)} chunks")
+        _index_uploaded_document(db, doc, doc_id, tenant_id)
 
     except Exception as e:
         logger.exception(f"Document processing failed: doc_id={doc_id}, error={e}")
@@ -301,6 +333,66 @@ def _index_to_milvus(
     return result.insert_count
 
 
+def _delete_es_doc_chunks(es, doc_id: int) -> None:
+    """写入前删除该文档的旧切片。清理失败只记日志，随后的写入仍继续。"""
+    try:
+        es.delete_by_query(
+            index="knowledge_chunks",
+            body={"query": {"term": {"doc_id": doc_id}}},
+            refresh=True,
+        )
+    except Exception as exc:
+        logger.warning(f"ES cleanup old chunks for doc {doc_id} failed: {exc}")
+
+
+def _es_bulk_operations(tenant_id: int, doc_id: int, doc_filename: str, chunks: list, is_latest: bool) -> list[dict]:
+    """按固定文档编号生成批量索引操作，重试时不会插入重复切片。"""
+    operations: list[dict] = []
+    for chunk in chunks:
+        operations.append({
+            "index": {
+                "_index": "knowledge_chunks",
+                "_id": f"{tenant_id}:{doc_id}:{chunk.index}",
+            }
+        })
+        operations.append({
+            "tenant_id": tenant_id,
+            "doc_id": doc_id,
+            "chunk_index": chunk.index,
+            "chunk_text": chunk.text,
+            "doc_filename": doc_filename,
+            "is_latest": is_latest,
+        })
+    return operations
+
+
+def _flush_es_bulk(es, operations: list[dict]) -> int:
+    """分批写入并刷新索引。任一批出现错误状态就中止。"""
+    count = 0
+    operation_step = ES_BULK_CHUNK_SIZE * 2
+    for start in range(0, len(operations), operation_step):
+        response = es.options(request_timeout=60).bulk(
+            operations=operations[start : start + operation_step]
+        )
+        body = response.body if hasattr(response, "body") else response
+        if body.get("errors"):
+            failures = [
+                detail
+                for item in body.get("items", [])
+                for detail in item.values()
+                if int(detail.get("status", 500)) >= 300
+            ]
+            raise RuntimeError(f"ES bulk 写入失败: {failures[:3]}")
+        count += sum(
+            1
+            for item in body.get("items", [])
+            for detail in item.values()
+            if int(detail.get("status", 500)) < 300
+        )
+    es.indices.refresh(index="knowledge_chunks")
+    return count
+
+
 def _index_to_es(
     tenant_id: int,
     doc_id: int,
@@ -327,58 +419,64 @@ def _index_to_es(
         return 0
 
     es = get_es_client()
-    # 版本管理：插入新切片前清理该文档的旧版本切片（旧版本不进检索库）
-    try:
-        es.delete_by_query(
-            index="knowledge_chunks",
-            body={"query": {"term": {"doc_id": doc_id}}},
-            refresh=True,
-        )
-    except Exception as e:
-        logger.warning(f"ES cleanup old chunks for doc {doc_id} failed: {e}")
-    operations: list[dict] = []
-    for c in chunks:
-        doc_body = {
-            "tenant_id": tenant_id,
-            "doc_id": doc_id,
-            "chunk_index": c.index,
-            "chunk_text": c.text,
-            "doc_filename": doc_filename,
-            "is_latest": is_latest,
-        }
-        # 固定文档 ID 让网络重试保持幂等，不会在 ES 中产生重复切片。
-        operations.append({
-            "index": {
-                "_index": "knowledge_chunks",
-                "_id": f"{tenant_id}:{doc_id}:{c.index}",
-            }
-        })
-        operations.append(doc_body)
+    _delete_es_doc_chunks(es, doc_id)
+    return _flush_es_bulk(es, _es_bulk_operations(tenant_id, doc_id, doc_filename, chunks, is_latest))
 
-    count = 0
-    operation_step = ES_BULK_CHUNK_SIZE * 2
-    for start in range(0, len(operations), operation_step):
-        response = es.options(request_timeout=60).bulk(
-            operations=operations[start : start + operation_step]
-        )
-        body = response.body if hasattr(response, "body") else response
-        if body.get("errors"):
-            failures = [
-                detail
-                for item in body.get("items", [])
-                for detail in item.values()
-                if int(detail.get("status", 500)) >= 300
-            ]
-            raise RuntimeError(f"ES bulk 写入失败: {failures[:3]}")
-        count += sum(
-            1
-            for item in body.get("items", [])
-            for detail in item.values()
-            if int(detail.get("status", 500)) < 300
-        )
-    # 刷新索引使新数据立即可搜索（默认 1s 刷新间隔，显式 refresh 保证实时）
-    es.indices.refresh(index="knowledge_chunks")
-    return count
+
+def _attempt_dual_write(
+    tenant_id: int,
+    doc_id: int,
+    doc_filename: str,
+    chunks: list,
+    vectors: list[list[float]] | None,
+    milvus_ok: bool,
+    es_ok: bool,
+    attempt: int,
+) -> tuple[bool, bool]:
+    """并行补写尚未成功的一侧。已成功的一侧不重复提交。"""
+    jobs: dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        if not milvus_ok:
+            assert vectors is not None
+            jobs["Milvus"] = executor.submit(
+                _index_to_milvus,
+                tenant_id,
+                doc_id,
+                doc_filename,
+                chunks,
+                vectors,
+            )
+        if not es_ok:
+            jobs["ES"] = executor.submit(
+                _index_to_es,
+                tenant_id,
+                doc_id,
+                doc_filename,
+                chunks,
+            )
+
+        for side, future in jobs.items():
+            try:
+                future.result()  # type: ignore[union-attr]
+                if side == "Milvus":
+                    milvus_ok = True
+                else:
+                    es_ok = True
+            except Exception as exc:
+                logger.warning(f"{side} write attempt {attempt + 1} failed: {exc}")
+    return milvus_ok, es_ok
+
+
+def _raise_if_dual_write_failed(milvus_ok: bool, es_ok: bool) -> None:
+    """两侧都成功时直接返回，否则说明哪一侧在重试后仍然失败。"""
+    if milvus_ok and es_ok:
+        return
+    failed = []
+    if not milvus_ok:
+        failed.append("Milvus")
+    if not es_ok:
+        failed.append("ES")
+    raise RuntimeError(f"双写失败（{', '.join(failed)}），已重试 {MAX_DUAL_WRITE_RETRIES} 次")
 
 
 def _dual_write_with_retry(
@@ -413,47 +511,13 @@ def _dual_write_with_retry(
     es_ok = False
 
     for attempt in range(MAX_DUAL_WRITE_RETRIES):
-        jobs: dict[str, object] = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            if not milvus_ok:
-                assert vectors is not None
-                jobs["Milvus"] = executor.submit(
-                    _index_to_milvus,
-                    tenant_id,
-                    doc_id,
-                    doc_filename,
-                    chunks,
-                    vectors,
-                )
-            if not es_ok:
-                jobs["ES"] = executor.submit(
-                    _index_to_es,
-                    tenant_id,
-                    doc_id,
-                    doc_filename,
-                    chunks,
-                )
-
-            for side, future in jobs.items():
-                try:
-                    future.result()  # type: ignore[union-attr]
-                    if side == "Milvus":
-                        milvus_ok = True
-                    else:
-                        es_ok = True
-                except Exception as e:
-                    logger.warning(f"{side} write attempt {attempt + 1} failed: {e}")
-
+        milvus_ok, es_ok = _attempt_dual_write(
+            tenant_id, doc_id, doc_filename, chunks, vectors, milvus_ok, es_ok, attempt,
+        )
         if milvus_ok and es_ok:
             break
 
-    if not milvus_ok or not es_ok:
-        failed = []
-        if not milvus_ok:
-            failed.append("Milvus")
-        if not es_ok:
-            failed.append("ES")
-        raise RuntimeError(f"双写失败（{', '.join(failed)}），已重试 {MAX_DUAL_WRITE_RETRIES} 次")
+    _raise_if_dual_write_failed(milvus_ok, es_ok)
 
 
 # 规格 010 US3: 知识库质量检测

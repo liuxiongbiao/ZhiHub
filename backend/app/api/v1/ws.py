@@ -45,6 +45,35 @@ logger = logging.getLogger(__name__)
 _ALLOWED_ROLES = {"agent", "admin"}
 
 
+async def _workstation_identity(websocket: WebSocket) -> dict | None:
+    """校验工作台令牌。失败时关闭连接并返回 None。"""
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=1008)
+        return None
+    payload = decode_access_token(token)
+    if payload is None:
+        await websocket.close(code=1008)
+        return None
+    jti = payload.get("jti")
+    if jti:
+        try:
+            blocked = is_blocklisted(jti)
+        except Exception as exc:
+            logger.error(
+                f"Redis unavailable, closing workstation socket because blocklist cannot be checked: {exc}"
+            )
+            await websocket.close(code=1008)
+            return None
+        if blocked:
+            await websocket.close(code=1008)
+            return None
+    if payload.get("role") not in _ALLOWED_ROLES or payload.get("tenant_id") is None or not payload.get("ws"):
+        await websocket.close(code=1008)
+        return None
+    return payload
+
+
 @router.websocket("/agent")
 async def agent_workstation(websocket: WebSocket) -> None:
     """坐席工作台 WS 端点。
@@ -62,46 +91,11 @@ async def agent_workstation(websocket: WebSocket) -> None:
       - 不查 JWT 黑名单(jti): 与 HTTP 中间件职责分离一致，黑名单在中间件层；
         WS token 一般是坐席长会话，吊销靠短 exp + 主动断开
     """
-    token = websocket.query_params.get("token")
-
-    # 1. token 存在性 + JWT 签名/过期校验
-    if not token:
-        await websocket.close(code=1008)  # Policy Violation
-        return
-    payload = decode_access_token(token)
+    payload = await _workstation_identity(websocket)
     if payload is None:
-        await websocket.close(code=1008)
-        return
-    # 查 JWT 黑名单（jti）：登出即时失效，与 HTTP 中间件一致
-    jti = payload.get("jti")
-    if jti:
-        try:
-            blocked = is_blocklisted(jti)
-        except Exception as e:
-            logger.error(f"Redis unavailable, closing workstation socket because blocklist cannot be checked: {e}")
-            await websocket.close(code=1008)
-            return
-        if blocked:
-            await websocket.close(code=1008)
-            return
-
-    # 2. 角色校验 —— 仅坐席/管理员可连工作台
-    role = payload.get("role")
-    if role not in _ALLOWED_ROLES:
-        await websocket.close(code=1008)
         return
 
     tenant_id = payload.get("tenant_id")
-    if tenant_id is None:
-        await websocket.close(code=1008)
-        return
-
-    # 仅接受 /ws-token 签发的短效工作台令牌
-    if not payload.get("ws"):
-        await websocket.close(code=1008)
-        return
-
-    # 3. 注册连接 → accept + 入 tenant 分桶 + 捕获事件循环
     user_id = int(payload["sub"])
     await manager.connect(websocket, tenant_id)
     from app.services.session_service import mark_agent_offline, mark_agent_online
@@ -159,43 +153,52 @@ async def _handle_client_message(
         })
 
 
-@router.websocket("/session/{session_id}")
-async def end_user_session(websocket: WebSocket, session_id: int) -> None:
-    """终端用户会话 WS：仅接收目标会话的人工客服回复。"""
+async def _end_user_socket_allowed(websocket: WebSocket, session_id: int) -> int | None:
+    """校验终端用户令牌和会话归属。失败时关闭连接。"""
     token = websocket.query_params.get("token")
     payload = decode_access_token(token) if token else None
     if payload is None:
         await websocket.close(code=1008)
-        return
+        return None
     jti = payload.get("jti")
     if jti:
         try:
-            if is_blocklisted(jti):
-                await websocket.close(code=1008)
-                return
+            blocked = is_blocklisted(jti)
         except Exception as exc:
-            logger.error(f"Redis unavailable, closing session socket because blocklist cannot be checked: {exc}")
+            logger.error(
+                f"Redis unavailable, closing session socket because blocklist cannot be checked: {exc}"
+            )
             await websocket.close(code=1008)
-            return
-
+            return None
+        if blocked:
+            await websocket.close(code=1008)
+            return None
     tenant_id = payload.get("tenant_id")
-    if tenant_id is None:
+    if tenant_id is None or (
+        payload.get("role") == "widget" and payload.get("session_id") != session_id
+    ):
         await websocket.close(code=1008)
-        return
-    if payload.get("role") == "widget" and payload.get("session_id") != session_id:
-        await websocket.close(code=1008)
-        return
+        return None
 
     from app.core.database import SessionLocal
     from app.crud import session as session_crud
+
     db = SessionLocal()
     try:
         if session_crud.get_by_id(db, session_id, int(tenant_id)) is None:
             await websocket.close(code=1008)
-            return
+            return None
     finally:
         db.close()
+    return int(tenant_id)
 
+
+@router.websocket("/session/{session_id}")
+async def end_user_session(websocket: WebSocket, session_id: int) -> None:
+    """终端用户会话 WS：仅接收目标会话的人工客服回复。"""
+    tenant_id = await _end_user_socket_allowed(websocket, session_id)
+    if tenant_id is None:
+        return
     await manager.connect_session(websocket, session_id)
     try:
         while True:
@@ -204,7 +207,7 @@ async def end_user_session(websocket: WebSocket, session_id: int) -> None:
             # 已校验的 URL 强制覆盖，不能通过消息体伪造同租户其他会话。
             await _handle_client_message(
                 data,
-                int(tenant_id),
+                tenant_id,
                 session_id=session_id,
             )
     except WebSocketDisconnect:

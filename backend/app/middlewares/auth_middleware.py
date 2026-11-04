@@ -70,58 +70,68 @@ def _is_public(path: str) -> bool:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # 放行 CORS 预检（不带 Authorization，实际请求仍走鉴权）
-        # 避免 Auth 在 CORSMiddleware 外层时把 preflight OPTIONS 拦成 401
-        if request.method == "OPTIONS":
-            return await call_next(request)
-        if _is_public(request.url.path):
-            return await call_next(request)
+    def _unauthorized(self, detail: str = "未认证", status_code: int = 401):
+        return JSONResponse({"detail": detail}, status_code=status_code)
 
+    def _authenticated_payload(self, request: Request):
+        """返回令牌载荷。缺少令牌、签名失败或黑名单不可用时返回 401 响应。"""
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
-            return JSONResponse({"detail": "未认证"}, status_code=401)
-
-        token = auth_header[len("Bearer "):].strip()
-        payload = decode_access_token(token)
+            return self._unauthorized()
+        payload = decode_access_token(auth_header[len("Bearer "):].strip())
         if payload is None:
-            return JSONResponse({"detail": "未认证"}, status_code=401)
-
+            return self._unauthorized()
         jti = payload.get("jti")
         if jti:
             try:
-                is_blocked = is_blocklisted(jti)
-            except Exception as e:
-                # 黑名单查不到就不能证明令牌仍有效。Redis 故障时拒绝，避免已登出令牌继续使用。
-                logger.error(f"Redis unavailable, rejecting token because blocklist cannot be checked: {e}")
-                return JSONResponse({"detail": "未认证"}, status_code=401)
-            if is_blocked:
-                return JSONResponse({"detail": "未认证"}, status_code=401)
+                blocked = is_blocklisted(jti)
+            except Exception as exc:
+                logger.error(
+                    f"Redis unavailable, rejecting token because blocklist cannot be checked: {exc}"
+                )
+                return self._unauthorized()
+            if blocked:
+                return self._unauthorized()
+        return payload
 
-        # 规格 014: Widget 令牌（role=widget）只允许访问 /api/v1/widget/*，
-        # 注入 widget_session_id，user_id 保持 None（匿名终端用户）。
-        if payload.get("role") == "widget":
-            if not request.url.path.startswith("/api/v1/widget/"):
-                return JSONResponse({"detail": "未认证"}, status_code=401)
-            try:
-                request.state.widget_session_id = int(payload.get("session_id"))
-            except (TypeError, ValueError):
-                return JSONResponse({"detail": "无效令牌"}, status_code=401)
-            request.state.user_id = None
-            request.state.role = "widget"
-            request.state.jti = jti
-            request.state.token_exp = payload.get("exp")
-            request.state.token_tenant_id = payload.get("tenant_id")
-            return await call_next(request)
+    def _apply_widget_identity(self, request: Request, payload: dict):
+        if not request.url.path.startswith("/api/v1/widget/"):
+            return self._unauthorized()
+        try:
+            request.state.widget_session_id = int(payload.get("session_id"))
+        except (TypeError, ValueError):
+            return self._unauthorized("无效令牌")
+        request.state.user_id = None
+        request.state.role = "widget"
+        request.state.jti = payload.get("jti")
+        request.state.token_exp = payload.get("exp")
+        request.state.token_tenant_id = payload.get("tenant_id")
+        return None
 
-        # 注入身份信息到 request.state，供 Tenant 中间件与 deps 消费
+    def _apply_user_identity(self, request: Request, payload: dict):
         try:
             request.state.user_id = int(payload["sub"])
         except (KeyError, ValueError, TypeError):
-            return JSONResponse({"detail": "无效令牌"}, status_code=401)
+            return self._unauthorized("无效令牌")
         request.state.role = payload.get("role")
-        request.state.jti = jti
+        request.state.jti = payload.get("jti")
         request.state.token_exp = payload.get("exp")
         request.state.token_tenant_id = payload.get("tenant_id")
+        return None
 
+    async def dispatch(self, request: Request, call_next):
+        # 放行 CORS 预检（不带 Authorization，实际请求仍走鉴权）
+        # 避免 Auth 在 CORSMiddleware 外层时把 preflight OPTIONS 拦成 401
+        if request.method == "OPTIONS" or _is_public(request.url.path):
+            return await call_next(request)
+
+        payload = self._authenticated_payload(request)
+        if isinstance(payload, JSONResponse):
+            return payload
+        if payload.get("role") == "widget":
+            rejected = self._apply_widget_identity(request, payload)
+        else:
+            rejected = self._apply_user_identity(request, payload)
+        if rejected is not None:
+            return rejected
         return await call_next(request)

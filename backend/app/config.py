@@ -245,23 +245,8 @@ class Settings(BaseSettings):
             issues.append("ELASTICSEARCH_URL (username and password required)")
         return issues
 
-    @model_validator(mode="after")
-    def _validate_enabled_features(self) -> "Settings":
-        """按功能开关一次性报告全部缺失配置，避免首次调用才失败。"""
-        required: dict[str, tuple[str, ...]] = {
-            "payment": (
-                "alipay_app_id", "alipay_app_private_key", "alipay_public_key", "alipay_notify_url",
-            ),
-            "sms": (
-                "aliyun_sms_access_key_id", "aliyun_sms_access_key_secret",
-                "aliyun_sms_sign_name", "aliyun_sms_template_code",
-            ),
-            "wechat": ("wechat_app_id", "wechat_app_secret", "wechat_redirect_uri"),
-            "email": ("smtp_host", "smtp_user", "smtp_password", "smtp_from"),
-            "llm": ("deepseek_api_key",),
-            "embedding": ("embedding_api_key",),
-        }
-        enabled = {
+    def _enabled_feature_flags(self) -> dict[str, bool]:
+        return {
             "payment": self.payment_enabled,
             "sms": self.sms_enabled,
             "wechat": self.wechat_enabled,
@@ -271,6 +256,8 @@ class Settings(BaseSettings):
             "llm": self.llm_enabled,
             "embedding": self.embedding_enabled,
         }
+
+    def _missing_enabled_settings(self, required: dict, enabled: dict) -> list[str]:
         missing = [
             field.upper()
             for feature, fields in required.items()
@@ -288,6 +275,26 @@ class Settings(BaseSettings):
             missing.append("DEMO_QUICK_LOGIN_ENABLED (must be false in production)")
         if self.app_env == "production":
             missing.extend(self._production_credential_issues())
+        return missing
+
+    @model_validator(mode="after")
+    def _validate_enabled_features(self) -> "Settings":
+        """按功能开关一次性报告全部缺失配置，避免首次调用才失败。"""
+        required: dict[str, tuple[str, ...]] = {
+            "payment": (
+                "alipay_app_id", "alipay_app_private_key", "alipay_public_key", "alipay_notify_url",
+            ),
+            "sms": (
+                "aliyun_sms_access_key_id", "aliyun_sms_access_key_secret",
+                "aliyun_sms_sign_name", "aliyun_sms_template_code",
+            ),
+            "wechat": ("wechat_app_id", "wechat_app_secret", "wechat_redirect_uri"),
+            "email": ("smtp_host", "smtp_user", "smtp_password", "smtp_from"),
+            "llm": ("deepseek_api_key",),
+            "embedding": ("embedding_api_key",),
+        }
+        enabled = self._enabled_feature_flags()
+        missing = self._missing_enabled_settings(required, enabled)
         if missing:
             raise ValueError("enabled features have missing configuration: " + ", ".join(missing))
         return self

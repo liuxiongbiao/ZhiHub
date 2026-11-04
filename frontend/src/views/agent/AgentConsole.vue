@@ -64,7 +64,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { getWsToken } from '@/api/auth'
 import { getDemoStatus } from '@/api/demo'
 import { claimSession, getQuickReplies, getSessionBusinessContext, getSessionList, getTrace, returnToAgent, selectLatestTrace, type SessionBusinessContext } from '@/api/session'
-import { requestRefund, shipOrder } from '@/api/order'
+import { requestRefund, shipOrder, REFUND_STATUS_MAP } from '@/api/order'
 import { createTicket } from '@/api/ticket'
 import type { Session } from '@/types/session'
 import type { AgentTrace } from '@/types/trace'
@@ -72,6 +72,7 @@ import ChatWindow from '@/components/chat/ChatWindow.vue'
 import TraceTimeline from '@/components/trace/TraceTimeline.vue'
 import { WsClient } from '@/utils/ws-client'
 import { AUTH_STORAGE_KEY, API_BASE_URL } from '@/constants'
+import { consoleIntentLabel as intentLabel, consoleSessionStatus as statusLabel, consoleOrderStatus as orderStatus, consoleTicketStatus as ticketStatus } from '@/labels'
 import { useUserStore } from '@/store/modules/user'
 
 const router = useRouter()
@@ -99,11 +100,7 @@ const actionLoading = ref(false)
 const ticketForm = reactive({ title: '', description: '', priority: 'high' })
 const refundForm = reactive({ order_no: '', phone: '', amount: 0, reason: '客户申请售后退款' })
 
-function intentLabel(value?: string) { return ({ knowledge_consult: '知识咨询', order_query: '订单问题', ticket_query: '工单问题', sensitive_action: '风险售后', round_handoff: '多轮未解决' } as Record<string,string>)[value || ''] || '待识别诉求' }
-function statusLabel(value: string) { return ({ waiting_human: '等待认领', human_handling: '人工处理中', agent_handling: 'AI 处理中', routing: '正在判断' } as Record<string,string>)[value] || value }
-function orderStatus(value: string) { return ({ created: '待支付', paid: '已支付', shipped: '已发货', completed: '已完成', refund_requested: '退款待审批', refunding: '退款中', refunded: '已退款' } as Record<string,string>)[value] || value }
-function ticketStatus(value: string) { return ({ open: '待处理', in_progress: '处理中', resolved: '已解决', closed: '已关闭' } as Record<string,string>)[value] || value }
-function refundStatus(value: string) { return ({ pending: '待审批', approved: '已批准', rejected: '已拒绝', refunding: '退款中', refunded: '已退款', cancelled: '已撤销' } as Record<string,string>)[value] || value }
+function refundStatus(value: string) { return REFUND_STATUS_MAP[value as keyof typeof REFUND_STATUS_MAP] || value }
 function estimateFor(id: number, index: number) { return `${waitMap.value[id] ?? Math.max(1, (index + 1) * 2)}m` }
 
 async function connectWs() {

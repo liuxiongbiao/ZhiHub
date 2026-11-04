@@ -37,6 +37,45 @@ from app.services.billing_service import TRIAL_QUOTA
 logger = logging.getLogger(__name__)
 
 
+def _daily_usage_delta(redis_client, key: str, tenant_id: int, month: str) -> tuple[str, float, int]:
+    """当日增量等于当前累计减去上次快照。0.5 向上取整，避免银行家舍入丢掉权重零头。"""
+    current_total = float(redis_client.get(key) or 0)
+    snapshot_key = f"billing:usage_last:{tenant_id}:{month}"
+    last_total = float(redis_client.get(snapshot_key) or 0)
+    day_count = max(int(current_total - last_total + 0.5), 0)
+    return snapshot_key, current_total, day_count
+
+
+def _queue_daily_usage(db, redis_client, key: str, today, month: str):
+    """登记当日用量。返回提交成功后才允许写回的快照；非当月键不处理。"""
+    from app.models.usage_record import UsageRecord
+    from sqlalchemy import select
+
+    parts = key.split(":")
+    if len(parts) < 4 or parts[3] != month:
+        return None
+    tenant_id = int(parts[2])
+    snapshot_key, current_total, day_count = _daily_usage_delta(redis_client, key, tenant_id, month)
+    existing = db.execute(
+        select(UsageRecord).where(
+            UsageRecord.tenant_id == tenant_id, UsageRecord.date == today
+        )
+    ).scalar_one_or_none()
+    if not existing:
+        from app.services.billing_service import get_tenant_quota
+
+        db.add(UsageRecord(
+            tenant_id=tenant_id, date=today,
+            conversation_count=day_count,
+            snapshot_total=current_total,
+            is_overage=current_total >= get_tenant_quota(db, tenant_id),
+        ))
+        return snapshot_key, current_total, True
+    if existing.snapshot_total is not None:
+        return snapshot_key, float(existing.snapshot_total), False
+    return None
+
+
 @shared_task
 def aggregate_daily_usage() -> dict:
     """每日聚合：将各租户的 Redis 配额计数器落库到 usage_records 表。
@@ -52,8 +91,6 @@ def aggregate_daily_usage() -> dict:
     Returns:
         {"status": "ok", "tenants": N, "date": str} 或 {"status": "error", "error": str}
     """
-    from app.models.usage_record import UsageRecord
-
     db = SessionLocal()
     try:
         r = get_redis()
@@ -65,46 +102,15 @@ def aggregate_daily_usage() -> dict:
 
         # 扫描所有 billing:quota:* 键（SCAN 非阻塞，避免 KEYS 阻塞 Redis）
         for key in r.scan_iter("billing:quota:*"):
-            # key 格式 billing:quota:{tenant_id}:{YYYY-MM}；只处理当月 key。
-            # 跨月时上月 key 因 40 天 TTL 仍存在，若不过滤会用上月累计值对比当月快照，
-            # 当日增量被污染（上月全月累计被误记为今日增量，真增量因幂等命中丢失）。
-            parts = key.split(":")
-            if len(parts) < 4 or parts[3] != month:
+            # 只处理当月 key。跨月时上月 key 因 40 天 TTL 仍存在，
+            # 若不过滤会用上月累计值对比当月快照，当日增量被污染。
+            queued = _queue_daily_usage(db, r, key, today, month)
+            if queued is None:
                 continue
-            tenant_id = int(parts[2])
-
-            # 当日增量 = 当前累计值 - 上次聚合快照值（首次聚合无快照按 0 起算）。
-            # 计数器由 INCRBYFLOAT 写入（模型权重可为小数，如 0.5），必须 float 解析再取整；
-            # 用 int(x+0.5) 而非 round()（银行家舍入会把 0.5 舍到偶，权重 0.5 的模型系统性丢零头）。
-            cur_total = float(r.get(key) or 0)
-            snapshot_key = f"billing:usage_last:{tenant_id}:{month}"
-            last_total = float(r.get(snapshot_key) or 0)
-            day_count = max(int(cur_total - last_total + 0.5), 0)  # max 防计数器过期后快照超前
-
-            # 检查是否已记录（幂等，防止任务重复执行产生重复记录）
-            from sqlalchemy import select
-            existing = db.execute(
-                select(UsageRecord).where(
-                    UsageRecord.tenant_id == tenant_id, UsageRecord.date == today
-                )
-            ).scalar_one_or_none()
-
-            if not existing:
-                # is_overage 必须按租户套餐配额判定（不能写死 TRIAL_QUOTA）
-                from app.services.billing_service import get_tenant_quota
-                db.add(UsageRecord(
-                    tenant_id=tenant_id, date=today,
-                    conversation_count=day_count,
-                    snapshot_total=cur_total,
-                    is_overage=cur_total >= get_tenant_quota(db, tenant_id),
-                ))
-                committed_snapshots.append((snapshot_key, cur_total))
+            snapshot_key, snapshot_total, created = queued
+            committed_snapshots.append((snapshot_key, snapshot_total))
+            if created:
                 count += 1
-            else:
-                # DB 已有幂等记录但 Redis 位点可能在上次 commit 后写回失败；
-                # 必须重放记录中冻结的位点，不能用当前累计值覆盖并吞掉后续增量。
-                if existing.snapshot_total is not None:
-                    committed_snapshots.append((snapshot_key, float(existing.snapshot_total)))
 
         db.commit()
         # 所有唯一日记录提交成功后，才允许推进 Redis 位点。

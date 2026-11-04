@@ -50,13 +50,8 @@ class SmsClient:
             raise RuntimeError("短信功能缺少配置：" + ", ".join(missing))
         self.is_mock = False
 
-    def send(self, phone: str, code: str) -> bool:
-        """发送验证码短信。mock 模式直接返回 True；真实模式调用阿里云 SendSms。"""
-        if self.is_mock:
-            logger.info(f"[mock sms] send verification code to {phone}: {code}")
-            return True
-
-        params = {
+    def _sms_params(self, phone: str, code: str) -> dict:
+        return {
             "AccessKeyId": settings.aliyun_sms_access_key_id,
             "Action": "SendSms",
             "Format": "JSON",
@@ -72,9 +67,9 @@ class SmsClient:
             "Version": "2017-05-25",
         }
 
-        # RPC 签名: 参数按字典序排序 → 规范化 → HMAC-SHA1(Secret&, StringToSign)
+    def _sign_sms_params(self, params: dict) -> dict:
         canonical = "&".join(
-            f"{k}={_percent_encode(params[k])}" for k in sorted(params)
+            f"{key}={_percent_encode(params[key])}" for key in sorted(params)
         )
         string_to_sign = "GET&%2F&" + _percent_encode(canonical)
         digest = hmac.new(
@@ -83,7 +78,15 @@ class SmsClient:
             hashlib.sha1,
         ).digest()
         params["Signature"] = base64.b64encode(digest).decode("ascii")
+        return params
 
+    def send(self, phone: str, code: str) -> bool:
+        """发送验证码短信。mock 模式直接返回 True；真实模式调用阿里云 SendSms。"""
+        if self.is_mock:
+            logger.info(f"[mock sms] send verification code to {phone}: {code}")
+            return True
+
+        params = self._sign_sms_params(self._sms_params(phone, code))
         try:
             # PRD 验收要求真实短信发送调用 <3s；超时立即失败且不写入验证码/限频状态。
             resp = httpx.get(

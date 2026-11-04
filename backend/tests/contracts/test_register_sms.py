@@ -1,4 +1,4 @@
-﻿"""
+"""
 backend/tests/contracts/test_register_sms.py
 
 职责: 测试 PRD 3.1.1 注册环节短信验证码校验（修复审查报告 6.3）。

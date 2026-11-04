@@ -66,9 +66,68 @@ def _message_scripts() -> dict[str, list[dict]]:
     }
 
 
-def _seed_messages(db: DbSession, tenant_id: int, now: datetime) -> tuple[int, dict[str, list[int]]]:
+def _clear_seeded_messages(db: DbSession, session) -> None:
+    """先解开评价外键，再删除本会话里由演示剧本写入的消息。"""
     from app.models.csat import CsatEvaluation
     from app.models.message import Message
+
+    seeded_messages = [
+        existing
+        for existing in db.query(Message).filter_by(session_id=session.id).all()
+        if (existing.msg_metadata or {}).get("demo_seed")
+    ]
+    seeded_message_ids = [item.id for item in seeded_messages]
+    if seeded_message_ids:
+        db.query(CsatEvaluation).filter(
+            CsatEvaluation.message_id.in_(seeded_message_ids)
+        ).update({CsatEvaluation.message_id: None}, synchronize_session=False)
+        db.flush()
+    for existing in seeded_messages:
+        db.delete(existing)
+    db.flush()
+
+
+def _insert_script_messages(db: DbSession, session, script: list, now: datetime, end_user_id: str) -> list[int]:
+    from app.models.message import Message
+
+    ids: list[int] = []
+    start = now - timedelta(minutes=18 if end_user_id == "eu-demo-waiting" else 90)
+    for index, item in enumerate(script):
+        message = Message(
+            session_id=session.id,
+            role=item["role"],
+            content=item["content"],
+            sources=item.get("sources"),
+            msg_metadata={"demo_seed": True, "story_step": index + 1},
+            created_at=start + timedelta(minutes=index * 2),
+            updated_at=start + timedelta(minutes=index * 2),
+        )
+        db.add(message)
+        db.flush()
+        ids.append(message.id)
+    return ids
+
+
+def _upsert_closed_csat(db: DbSession, session, message_id: int | None) -> None:
+    from app.models.csat import CsatEvaluation
+
+    evaluation = db.query(CsatEvaluation).filter_by(session_id=session.id).first()
+    if evaluation is None:
+        db.add(CsatEvaluation(
+            session_id=session.id,
+            message_id=message_id,
+            feedback="like",
+            score=5,
+            comment="回答清晰，到账时间很明确",
+        ))
+        return
+    evaluation.message_id = message_id
+    evaluation.feedback = "like"
+    evaluation.score = 5
+    evaluation.comment = "回答清晰，到账时间很明确"
+
+
+def _seed_messages(db: DbSession, tenant_id: int, now: datetime) -> tuple[int, dict[str, list[int]]]:
     from app.models.session import Session
 
     message_ids: dict[str, list[int]] = {}
@@ -79,54 +138,12 @@ def _seed_messages(db: DbSession, tenant_id: int, now: datetime) -> tuple[int, d
         ).first()
         if session is None:
             continue
-        seeded_messages = [
-            existing
-            for existing in db.query(Message).filter_by(session_id=session.id).all()
-            if (existing.msg_metadata or {}).get("demo_seed")
-        ]
-        seeded_message_ids = [item.id for item in seeded_messages]
-        # 真实 MySQL 对 csat_evaluations.message_id 启用了外键约束。先解除旧故事
-        # 消息的可空引用，再删除并创建新消息；下方会把既有评价重新指向新的收尾消息。
-        if seeded_message_ids:
-            db.query(CsatEvaluation).filter(
-                CsatEvaluation.message_id.in_(seeded_message_ids)
-            ).update({CsatEvaluation.message_id: None}, synchronize_session=False)
-            db.flush()
-        for existing in seeded_messages:
-            db.delete(existing)
-        db.flush()
-        ids: list[int] = []
-        start = now - timedelta(minutes=18 if end_user_id == "eu-demo-waiting" else 90)
-        for index, item in enumerate(script):
-            message = Message(
-                session_id=session.id,
-                role=item["role"],
-                content=item["content"],
-                sources=item.get("sources"),
-                msg_metadata={"demo_seed": True, "story_step": index + 1},
-                created_at=start + timedelta(minutes=index * 2),
-                updated_at=start + timedelta(minutes=index * 2),
-            )
-            db.add(message)
-            db.flush()
-            ids.append(message.id)
-            total += 1
+        _clear_seeded_messages(db, session)
+        ids = _insert_script_messages(db, session, script, now, end_user_id)
+        total += len(ids)
         message_ids[end_user_id] = ids
         if end_user_id == "eu-demo-closed":
-            evaluation = db.query(CsatEvaluation).filter_by(session_id=session.id).first()
-            if evaluation is None:
-                db.add(CsatEvaluation(
-                    session_id=session.id,
-                    message_id=ids[-1] if ids else None,
-                    feedback="like",
-                    score=5,
-                    comment="回答清晰，到账时间很明确",
-                ))
-            else:
-                evaluation.message_id = ids[-1] if ids else None
-                evaluation.feedback = "like"
-                evaluation.score = 5
-                evaluation.comment = "回答清晰，到账时间很明确"
+            _upsert_closed_csat(db, session, ids[-1] if ids else None)
     db.commit()
     return total, message_ids
 
@@ -174,6 +191,36 @@ def build_demo_events(now: datetime | None = None) -> list[dict]:
     return events
 
 
+def _demo_trace(session_id: int, message_id: int, intent: str, confidence: float, sentiment: str, elapsed_ms: int, created_at, steps: list) -> dict:
+    return {
+        "session_id": session_id,
+        "message_id": message_id,
+        "intent": intent,
+        "confidence": confidence,
+        "sentiment": sentiment,
+        "total_elapsed_ms": elapsed_ms,
+        "created_at": created_at,
+        "steps": steps,
+    }
+
+
+_DEMO_KNOWLEDGE_STEPS = [
+    {"step": "router", "label": "理解客户问题", "intent": "knowledge_consult", "confidence": 0.93, "elapsed_ms": 36},
+    {"step": "retrieval", "label": "查找退货政策", "query": "七天无理由退货流程", "result_count": 5, "top_scores": [0.91, 0.84, 0.78], "elapsed_ms": 421},
+    {"step": "generation", "label": "根据资料生成回答", "sources_count": 1, "answer_preview": "支持七天无理由退货，并说明完整流程。", "elapsed_ms": 823},
+]
+_DEMO_ORDER_STEPS = [
+    {"step": "router", "label": "识别订单查询", "intent": "order_query", "confidence": 0.98, "elapsed_ms": 31},
+    {"step": "tool", "label": "核验身份并查询订单", "agent_type": "order_agent", "observation": "双因子校验通过；订单已发货，物流单号 SF1234567890。", "elapsed_ms": 219},
+    {"step": "generation", "label": "整理业务结果", "sources_count": 0, "answer_preview": "订单金额 899 元，当前已发货。", "elapsed_ms": 36},
+]
+_DEMO_HANDOFF_STEPS = [
+    {"step": "router", "label": "识别赔偿诉求", "intent": "sensitive_action", "confidence": 0.97, "elapsed_ms": 28},
+    {"step": "safety", "label": "执行资金风险规则", "observation": "额外赔偿属于资金操作，必须由人工核验与审批。", "elapsed_ms": 42},
+    {"step": "handoff", "label": "转入人工优先队列", "observation": "已保留完整对话与订单查询结果，坐席无需重新询问。", "elapsed_ms": 124},
+]
+
+
 def _build_demo_traces(db: DbSession, tenant_id: int, message_ids: dict[str, list[int]], now: datetime) -> list[dict]:
     from app.models.session import Session
 
@@ -184,49 +231,13 @@ def _build_demo_traces(db: DbSession, tenant_id: int, message_ids: dict[str, lis
         return []
     ids = message_ids.get("eu-demo-waiting", [])
     assistant_ids = [ids[i] for i in (1, 3, 5) if len(ids) > i]
+    message_id = assistant_ids[0] if assistant_ids else 0
+    order_id = assistant_ids[1] if len(assistant_ids) > 1 else 0
+    handoff_id = assistant_ids[2] if len(assistant_ids) > 2 else 0
     return [
-        {
-            "session_id": waiting.id,
-            "message_id": assistant_ids[0] if assistant_ids else 0,
-            "intent": "knowledge_consult",
-            "confidence": 0.93,
-            "sentiment": "normal",
-            "total_elapsed_ms": 1280,
-            "created_at": now - timedelta(minutes=16),
-            "steps": [
-                {"step": "router", "label": "理解客户问题", "intent": "knowledge_consult", "confidence": 0.93, "elapsed_ms": 36},
-                {"step": "retrieval", "label": "查找退货政策", "query": "七天无理由退货流程", "result_count": 5, "top_scores": [0.91, 0.84, 0.78], "elapsed_ms": 421},
-                {"step": "generation", "label": "根据资料生成回答", "sources_count": 1, "answer_preview": "支持七天无理由退货，并说明完整流程。", "elapsed_ms": 823},
-            ],
-        },
-        {
-            "session_id": waiting.id,
-            "message_id": assistant_ids[1] if len(assistant_ids) > 1 else 0,
-            "intent": "order_query",
-            "confidence": 0.98,
-            "sentiment": "normal",
-            "total_elapsed_ms": 286,
-            "created_at": now - timedelta(minutes=12),
-            "steps": [
-                {"step": "router", "label": "识别订单查询", "intent": "order_query", "confidence": 0.98, "elapsed_ms": 31},
-                {"step": "tool", "label": "核验身份并查询订单", "agent_type": "order_agent", "observation": "双因子校验通过；订单已发货，物流单号 SF1234567890。", "elapsed_ms": 219},
-                {"step": "generation", "label": "整理业务结果", "sources_count": 0, "answer_preview": "订单金额 899 元，当前已发货。", "elapsed_ms": 36},
-            ],
-        },
-        {
-            "session_id": waiting.id,
-            "message_id": assistant_ids[2] if len(assistant_ids) > 2 else 0,
-            "intent": "sensitive_action",
-            "confidence": 0.97,
-            "sentiment": "unhappy",
-            "total_elapsed_ms": 194,
-            "created_at": now - timedelta(minutes=6),
-            "steps": [
-                {"step": "router", "label": "识别赔偿诉求", "intent": "sensitive_action", "confidence": 0.97, "elapsed_ms": 28},
-                {"step": "safety", "label": "执行资金风险规则", "observation": "额外赔偿属于资金操作，必须由人工核验与审批。", "elapsed_ms": 42},
-                {"step": "handoff", "label": "转入人工优先队列", "observation": "已保留完整对话与订单查询结果，坐席无需重新询问。", "elapsed_ms": 124},
-            ],
-        },
+        _demo_trace(waiting.id, message_id, "knowledge_consult", 0.93, "normal", 1280, now - timedelta(minutes=16), _DEMO_KNOWLEDGE_STEPS),
+        _demo_trace(waiting.id, order_id, "order_query", 0.98, "normal", 286, now - timedelta(minutes=12), _DEMO_ORDER_STEPS),
+        _demo_trace(waiting.id, handoff_id, "sensitive_action", 0.97, "unhappy", 194, now - timedelta(minutes=6), _DEMO_HANDOFF_STEPS),
     ]
 
 

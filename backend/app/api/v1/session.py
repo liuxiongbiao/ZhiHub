@@ -165,6 +165,27 @@ def get_session_detail(
 
 # ─── POST /session/message ───
 @router.post("/message", response_model=SendMessageResponse)
+def _reject_busy_user(request: Request) -> None:
+    user_id = getattr(request.state, "user_id", None)
+    if user_id is None:
+        return
+    from app.services.rate_limit_service import check_message_rate_limit
+    if not check_message_rate_limit(user_id)["allowed"]:
+        raise HTTPException(status_code=429, detail="您提问过于频繁，请稍后再试")
+
+
+def _message_http_error(exc: Exception, session_id: int) -> HTTPException:
+    if isinstance(exc, session_service.SessionNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, session_service.SessionHumanControlled):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, tenant_service.TenantInactive):
+        return HTTPException(status_code=403, detail=str(exc))
+    import logging
+    logging.getLogger(__name__).exception("Agent handle_message failed: session=%s", session_id)
+    return HTTPException(status_code=500, detail="Agent 处理失败，请稍后重试")
+
+
 def send_message(
     body: SendMessageRequest,
     request: Request,
@@ -182,35 +203,19 @@ def send_message(
     except session_service.SessionHumanControlled as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
-    # 规格 007 US4: 终端用户对话消息限流（10 次/分钟，超限 429 不落库不计轮次）
-    user_id = getattr(request.state, "user_id", None)
-    if user_id is not None:
-        from app.services.rate_limit_service import check_message_rate_limit
-        if not check_message_rate_limit(user_id)["allowed"]:
-            raise HTTPException(status_code=429, detail="您提问过于频繁，请稍后再试")
-
-    # 导入 agent_service（懒加载，避免循环依赖）
+    _reject_busy_user(request)
     from app.services.agent_service import handle_message
-
     try:
-        result = handle_message(
+        return handle_message(
             db=db,
             session_id=body.session_id,
             tenant_id=tenant_id,
             user_message=body.content,
         )
-        return result
-    except session_service.SessionNotFound as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except session_service.SessionHumanControlled as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    except Exception as e:
-        if isinstance(e, tenant_service.TenantInactive):
-            raise HTTPException(status_code=403, detail=str(e)) from e
-        # 不向客户端泄露内部异常原文（服务端日志保留）
-        import logging
-        logging.getLogger(__name__).exception("Agent handle_message failed: session=%s", body.session_id)
-        raise HTTPException(status_code=500, detail="Agent 处理失败，请稍后重试") from e
+    except session_service.SessionNotFound as exc:
+        raise _message_http_error(exc, body.session_id)
+    except Exception as exc:
+        raise _message_http_error(exc, body.session_id) from exc
 
 @router.post("/message/stream")
 async def send_message_stream(body: SendMessageRequest, request: Request, db: DbSession = Depends(get_db)):

@@ -1,4 +1,4 @@
-﻿"""
+"""
 backend/tests/contracts/test_streaming_agent.py
 
 职责: 测试流式端点 /session/message/stream 复用 Agent 主链路（修复审查报告 6.2）。

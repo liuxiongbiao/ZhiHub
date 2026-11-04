@@ -94,6 +94,76 @@ def _check_transition(from_status: str, to_status: str) -> None:
         raise InvalidTransition(f"非法状态跃迁: {from_status} -> {to_status} (合法: {valid})")
 
 
+def _validate_refund_amount(amount: float, paid_amount: Decimal) -> None:
+    """退款金额必须是有限正数，且不能超过订单实付金额。"""
+    if not isinstance(amount, (int, float)) or isinstance(amount, bool) or not math.isfinite(amount):
+        raise OrderError("退款金额必须是有限数值")
+    if amount <= 0:
+        raise OrderError("退款金额必须大于 0")
+    if Decimal(str(amount)) > paid_amount:
+        raise RefundExceedsPaid(
+            f"退款金额({amount})超过订单实付金额({paid_amount})"
+        )
+
+
+def _verify_refund_phone(phone: str | None, bound_phone: str | None) -> None:
+    """提供手机号时，后四位必须与订单绑定号码一致。"""
+    if phone is None:
+        return
+    from app.utils.validators import verify_phone_suffix
+
+    if not verify_phone_suffix(phone, bound_phone):
+        raise OrderError("身份校验未通过：手机号与订单绑定信息不匹配")
+
+
+def _cached_refund(db: Session, cached: dict, tenant_id: int, client_request_id: str) -> dict:
+    """重复请求返回与首次相同的审批结构；查不到时保留原始缓存。"""
+    logger.info(f"Refund idempotency hit: {client_request_id}")
+    approval = order_crud.get_refund_approval(db, cached.get("resource_id"), tenant_id)
+    if approval is not None:
+        return {
+            "id": approval.id,
+            "order_id": approval.order_id,
+            "amount": approval.amount,
+            "status": approval.status,
+            "client_request_id": approval.client_request_id,
+            "cached": True,
+        }
+    return {**cached, "cached": True}
+
+
+def _commit_refund_request(
+    db: Session, order, amount: float, reason: str | None, client_request_id: str,
+) -> dict:
+    """用乐观锁进入待退款，并在成功后才写入幂等结果。"""
+    pre_status = order.status
+    if not order_crud.update_status_optimistic(db, order, "refund_requested"):
+        raise VersionConflict("订单状态已变更，请刷新重试")
+
+    approval = order_crud.create_refund_approval(
+        db,
+        order_id=order.id,
+        amount=amount,
+        reason=reason,
+        client_request_id=client_request_id,
+        pre_status=pre_status,
+    )
+    order_crud.create_refund_event(
+        db,
+        approval_id=approval.id,
+        event_type="requested",
+        actor_role="user",
+        detail=f"pre_status={pre_status}, amount={amount}",
+    )
+    db.commit()
+    _track_order_state(order, pre_status, "refund_requested", "end_user")
+    record_idempotency(order.id, client_request_id, "refund", approval.id)
+    return {
+        "id": approval.id, "order_id": order.id, "amount": amount,
+        "status": approval.status, "client_request_id": client_request_id, "cached": False,
+    }
+
+
 def request_refund(
     db: Session, *, tenant_id: int, order_no: str, amount: float,
     reason: str | None, client_request_id: str, phone: str | None = None,
@@ -132,78 +202,18 @@ def request_refund(
     if order is None:
         raise OrderError(f"订单不存在: {order_no}")
 
-    # 规格 016: 双因子身份校验（phone 后 4 位与订单绑定手机号一致）
-    if phone is not None:
-        from app.utils.validators import verify_phone_suffix
-        if not verify_phone_suffix(phone, order.phone):
-            raise OrderError("身份校验未通过：手机号与订单绑定信息不匹配")
+    _verify_refund_phone(phone, order.phone)
 
-    # 2. 幂等检查 —— key 粒度 = (order_id, client_request_id)：
-    # 同一订单重试命中缓存；跨租户/跨订单同 id 互不干扰（防跨租户碰撞）
     cached = check_idempotency(order.id, client_request_id)
     if cached:
-        logger.info(f"Refund idempotency hit: {client_request_id}")
-        # L5: 缓存命中返回与首次一致的结构——原 {resource_type, resource_id} 与首次
-        # {id, order_id, amount, status, ...} 不一致，客户端重试拿不到 id/amount/status。
-        # 按 resource_id 查审批（带租户过滤）组装完整结构；查不到时降级返回原始缓存。
-        approval = order_crud.get_refund_approval(db, cached.get("resource_id"), tenant_id)
-        if approval is not None:
-            return {
-                "id": approval.id, "order_id": approval.order_id,
-                "amount": approval.amount, "status": approval.status,
-                "client_request_id": approval.client_request_id, "cached": True,
-            }
-        return {**cached, "cached": True}
+        return _cached_refund(db, cached, tenant_id, client_request_id)
 
-    # 3. 金额校验 —— 上限是实付金额而非订单原价，防止退多于付
-    # T-遗留1: paid_amount 为 Numeric(Decimal)，float 入参须经 str 转 Decimal 精确比较
-    # （float 二进制表示略小于字面值，如 199.95 → 199.9499...，直接比较边界会误判）
-    # L11: 类型防御——str/bool/NaN/Inf 直接比较会 TypeError 或恒 False 穿透
-    if not isinstance(amount, (int, float)) or isinstance(amount, bool) or not math.isfinite(amount):
-        raise OrderError("退款金额必须是有限数值")
-    if amount <= 0:
-        raise OrderError("退款金额必须大于 0")
-    if Decimal(str(amount)) > order.paid_amount:
-        raise RefundExceedsPaid(
-            f"退款金额({amount})超过订单实付金额({order.paid_amount})"
-        )
+    _validate_refund_amount(amount, order.paid_amount)
 
     # 5. 状态机校验: paid/shipped 可退款，终态/已退款订单拒绝
     _check_transition(order.status, "refund_requested")
-
-    # 6. 乐观锁更新状态 —— CAS 保证并发下只有一个退款请求能成功推进状态
-    # 记录退款申请前的订单状态，审批拒绝/撤销/超时取消时精确回退
-    pre_status = order.status
-    ok = order_crud.update_status_optimistic(db, order, "refund_requested")
-    if not ok:
-        raise VersionConflict("订单状态已变更，请刷新重试")
-
-    # 7. 创建退款审批（只追加不覆写）—— 保留完整审计流水
-    approval = order_crud.create_refund_approval(
-        db,
-        order_id=order.id,
-        amount=amount,
-        reason=reason,
-        client_request_id=client_request_id,
-        pre_status=pre_status,
-    )
-    order_crud.create_refund_event(
-        db,
-        approval_id=approval.id,
-        event_type="requested",
-        actor_role="user",
-        detail=f"pre_status={pre_status}, amount={amount}",
-    )
-    db.commit()
-    _track_order_state(order, pre_status, "refund_requested", "end_user")
-
-    # 8. 记录幂等 —— 业务成功后才回写，失败操作不记录（允许重试）
-    record_idempotency(order.id, client_request_id, "refund", approval.id)
-
-    return {
-        "id": approval.id, "order_id": order.id, "amount": amount,
-        "status": approval.status, "client_request_id": client_request_id, "cached": False,
-    }
+    # 6-8. 乐观锁推进、审批流水和幂等回写。失败不记录幂等，允许重试。
+    return _commit_refund_request(db, order, amount, reason, client_request_id)
 
 
 def get_refund_approval_threshold(db: Session, tenant_id: int) -> float:
@@ -219,9 +229,43 @@ def get_refund_approval_threshold(db: Session, tenant_id: int) -> float:
     )
 
 
-def approve_refund(db: Session, *, approval_id: int, decision: str,
-                   approver_id: int, tenant_id: int, role: str = "admin") -> dict:
-    """审批退款：客服额度内可终审，超额只记录初审；终审用条件更新抢占。"""
+def _record_agent_pre_review(
+    db: Session, approval, *, decision: str, approver_id: int, role: str, threshold: float,
+) -> dict:
+    """客服超额时只记录初审，审批保持待管理员终审。"""
+    event_type = "pre_approved" if decision == "approved" else "pre_rejected"
+    detail = f"amount={approval.amount}, threshold={threshold}, pending admin review"
+    order_crud.create_refund_event(
+        db,
+        approval_id=approval.id,
+        event_type=event_type,
+        actor_id=approver_id,
+        actor_role=role,
+        detail=detail,
+    )
+    _append_review(
+        approval,
+        "pre_approve" if decision == "approved" else "pre_reject",
+        approver_id,
+        detail,
+    )
+    db.commit()
+    return {
+        "id": approval.id,
+        "status": "pending",
+        "message": f"退款金额超过客服审批额度 ¥{threshold:.2f}，已提交管理员二次审批复核",
+        "requires_admin_review": True,
+    }
+
+
+def _track_refund_progress(approval, order, decision: str, approver_id: int, to_status: str) -> None:
+    """记录审批决定，以及订单从待退款进入的新状态。"""
+    _track_refund_decision(approval, order, decision, approver_id)
+    _track_order_state(order, "refund_requested", to_status, approver_id)
+
+
+def _pending_refund_target(db: Session, approval_id: int, tenant_id: int, decision: str, role: str):
+    """校验决定、角色和待审批记录。已处理时返回结果，否则返回审批、订单和额度。"""
     if decision not in {"approved", "rejected"}:
         raise OrderError("decision 必须为 approved 或 rejected")
     if role not in {"admin", "agent"}:
@@ -231,50 +275,40 @@ def approve_refund(db: Session, *, approval_id: int, decision: str,
     if approval is None:
         raise OrderError(f"退款审批不存在: {approval_id}")
     if approval.status != "pending":
-        return {"id": approval.id, "status": approval.status, "already_processed": True}
+        return {
+            "id": approval.id,
+            "status": approval.status,
+            "already_processed": True,
+        }, None, None
 
     # 校验审批归属：通过关联订单的 tenant_id 确认当前租户有权操作
     # —— RefundApproval 无 tenant_id 字段，只能经 order 间接校验，防跨租户审批
     order = order_crud.get_by_id(db, approval.order_id, tenant_id)
     if order is None:
         raise OrderError(f"退款审批不存在或无权操作: {approval_id}")
+    return approval, order, get_refund_approval_threshold(db, order.tenant_id)
 
-    threshold = get_refund_approval_threshold(db, order.tenant_id)
-    if role == "agent" and approval.amount > Decimal(str(threshold)):
-        event_type = "pre_approved" if decision == "approved" else "pre_rejected"
-        detail = f"amount={approval.amount}, threshold={threshold}, pending admin review"
-        order_crud.create_refund_event(
-            db,
-            approval_id=approval.id,
-            event_type=event_type,
-            actor_id=approver_id,
-            actor_role=role,
-            detail=detail,
-        )
-        _append_review(approval, "pre_approve" if decision == "approved" else "pre_reject", approver_id, detail)
-        db.commit()
-        return {
-            "id": approval.id,
-            "status": "pending",
-            "message": f"退款金额超过客服审批额度 ¥{threshold:.2f}，已提交管理员二次审批复核",
-            "requires_admin_review": True,
-        }
 
-    # 最终审批以 pending 为条件原子领取。两个并发请求最多一个 rowcount=1。
-    if not order_crud.claim_refund_decision(
+def _claim_final_refund(db: Session, approval, approval_id: int, tenant_id: int, decision: str, approver_id: int):
+    """以 pending 为条件原子领取。没抢到时回滚并返回已处理结果。"""
+    if order_crud.claim_refund_decision(
         db,
         approval_id=approval.id,
         decision=decision,
         approver_id=approver_id,
     ):
-        db.rollback()
-        current = order_crud.get_refund_approval(db, approval_id, tenant_id)
-        return {
-            "id": approval_id,
-            "status": current.status if current is not None else "processed",
-            "already_processed": True,
-        }
+        return None
+    db.rollback()
+    current = order_crud.get_refund_approval(db, approval_id, tenant_id)
+    return {
+        "id": approval_id,
+        "status": current.status if current is not None else "processed",
+        "already_processed": True,
+    }
 
+
+def _record_final_refund(db: Session, approval, order, decision: str, approver_id: int, tenant_id: int, role: str, threshold) -> None:
+    """终审抢占成功后追加审批链、事件和审计。"""
     db.expire(approval)
     db.refresh(approval)
     _append_review(approval, decision, approver_id, f"decision={decision}")
@@ -286,26 +320,26 @@ def approve_refund(db: Session, *, approval_id: int, decision: str,
         actor_role=role,
         detail=f"amount={approval.amount}, threshold={threshold}",
     )
-
-    # PRD §2.1 审计日志: 退款审批操作落库
     log_audit(
         db, tenant_id=tenant_id, user_id=approver_id, action="refund_approve",
         target_type="refund_approval", target_id=approval.id,
         detail=f"decision={decision}, amount={approval.amount}, order_no={order.order_no}",
     )
 
-    if decision == "rejected":
-        restore_status = approval.pre_status or "paid"
-        _check_transition(order.status, restore_status)
-        ok = order_crud.update_status_optimistic(db, order, restore_status)
-        if not ok:
-            raise VersionConflict("订单状态已变更，请刷新重试")
-        db.commit()
-        _track_refund_decision(approval, order, decision, approver_id)
-        _track_order_state(order, "refund_requested", restore_status, approver_id)
-        return {"id": approval.id, "status": decision}
 
-    # 审批通过才从待审批进入渠道处理中；兼容上线前已经是 refunding 的存量数据。
+def _restore_rejected_refund(db: Session, approval, order, decision: str, approver_id: int) -> dict:
+    """拒绝后退回申请前状态。乐观锁失败时不提交。"""
+    restore_status = approval.pre_status or "paid"
+    _check_transition(order.status, restore_status)
+    if not order_crud.update_status_optimistic(db, order, restore_status):
+        raise VersionConflict("订单状态已变更，请刷新重试")
+    db.commit()
+    _track_refund_progress(approval, order, decision, approver_id, restore_status)
+    return {"id": approval.id, "status": decision}
+
+
+def _enqueue_approved_refund(db: Session, approval, order, decision: str, approver_id: int) -> dict:
+    """通过后进入退款中，写出站记录，并同步尝试一次渠道退款。"""
     if order.status == "refund_requested":
         _check_transition(order.status, "refunding")
         if not order_crud.update_status_optimistic(db, order, "refunding"):
@@ -324,24 +358,42 @@ def approve_refund(db: Session, *, approval_id: int, decision: str,
             last_error="missing payment_trade_no, manual review required",
         ))
         db.commit()
-        _track_refund_decision(approval, order, decision, approver_id)
-        _track_order_state(order, "refund_requested", "refunding", approver_id)
+        _track_refund_progress(approval, order, decision, approver_id, "refunding")
         raise
 
-    outbox = RefundOutbox(
+    db.add(RefundOutbox(
         approval_id=approval.id, order_id=order.id,
         amount=approval.amount, trade_no=trade_no, status="pending",
-    )
-    db.add(outbox)
+    ))
     db.commit()
-    _track_refund_decision(approval, order, decision, approver_id)
-    _track_order_state(order, "refund_requested", "refunding", approver_id)
+    _track_refund_progress(approval, order, decision, approver_id, "refunding")
 
     # 同步尽力执行（mock/单实例部署）；失败进入 pending 由后台任务重试
-    ok = process_refund_outbox(db, approval.id)
-    if ok is False:
+    if process_refund_outbox(db, approval.id) is False:
         raise RefundError("支付宝退款调用失败，已进入重试队列（订单保持退款中状态）")
     return {"id": approval.id, "status": decision}
+
+
+def approve_refund(db: Session, *, approval_id: int, decision: str,
+                   approver_id: int, tenant_id: int, role: str = "admin") -> dict:
+    """审批退款：客服额度内可终审，超额只记录初审；终审用条件更新抢占。"""
+    approval, order, threshold = _pending_refund_target(db, approval_id, tenant_id, decision, role)
+    if order is None:
+        return approval
+
+    if role == "agent" and approval.amount > Decimal(str(threshold)):
+        return _record_agent_pre_review(
+            db, approval, decision=decision, approver_id=approver_id, role=role, threshold=threshold,
+        )
+
+    claimed = _claim_final_refund(db, approval, approval_id, tenant_id, decision, approver_id)
+    if claimed is not None:
+        return claimed
+
+    _record_final_refund(db, approval, order, decision, approver_id, tenant_id, role, threshold)
+    if decision == "rejected":
+        return _restore_rejected_refund(db, approval, order, decision, approver_id)
+    return _enqueue_approved_refund(db, approval, order, decision, approver_id)
 
 
 def _append_review(approval, action: str, approver_id: int | None, detail: str | None = None) -> None:
@@ -409,18 +461,12 @@ def _mark_refund_success(db: Session, outbox, order) -> bool:
     return cas_ok
 
 
-def process_refund_outbox(
-    db: Session,
-    approval_id: int,
-    max_attempts: int = 10,
-    lease_seconds: int = 300,
-) -> bool | None:
-    """执行 pending 或租约过期的 processing 退款，重试前先向渠道对账。"""
+def _claimable_refund_clause(now: datetime, lease_seconds: int):
+    """待执行，或处理租约已经过期的退款出站记录。"""
     from app.models.refund_outbox import RefundOutbox
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
     stale_before = now - timedelta(seconds=lease_seconds)
-    claimable = or_(
+    return or_(
         RefundOutbox.status == "pending",
         (
             (RefundOutbox.status == "processing")
@@ -430,6 +476,41 @@ def process_refund_outbox(
             )
         ),
     )
+
+
+def _update_processing_outbox(db: Session, outbox_id: int, **values) -> None:
+    """只更新仍处于 processing 的记录，避免覆盖并发领取后的新状态。"""
+    from app.models.refund_outbox import RefundOutbox
+
+    db.execute(
+        sa_update(RefundOutbox)
+        .where(RefundOutbox.id == outbox_id, RefundOutbox.status == "processing")
+        .values(**values)
+    )
+
+
+def _notify_refund_manual_review(db: Session, order, max_attempts: int) -> None:
+    """自动重试耗尽后通知人工处理。通知失败不改变退款状态。"""
+    try:
+        from app.services.notification_service import create_notification
+
+        create_notification(
+            db,
+            tenant_id=order.tenant_id,
+            title="退款执行失败，需人工处理",
+            content=f"订单 {order.order_no} 的退款已重试 {max_attempts} 次仍失败，已停止自动重试，请人工处理。",
+            type="refund_failed",
+        )
+    except Exception as exc:
+        logger.warning(f"Refund failed notification error (order={order.order_no}): {exc}")
+
+
+def _claim_refund_outbox(db: Session, approval_id: int, lease_seconds: int):
+    """领取一条待执行或租约过期的出站记录。没有可领取记录时返回 None。"""
+    from app.models.refund_outbox import RefundOutbox
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    claimable = _claimable_refund_clause(now, lease_seconds)
     outbox = db.execute(
         select(RefundOutbox).where(
             RefundOutbox.approval_id == approval_id,
@@ -452,79 +533,96 @@ def process_refund_outbox(
     if claimed.rowcount == 0:
         return None
     db.commit()
+    return outbox, previous_attempts
 
-    order = db.get(Order, outbox.order_id)
-    if order is None:
-        db.execute(
-            sa_update(RefundOutbox)
-            .where(RefundOutbox.id == outbox.id)
-            .values(status="failed", processing_at=None, last_error="order missing")
+
+def _fail_missing_refund_order(db: Session, outbox) -> bool:
+    """订单已经不存在时，把出站记录标为失败。"""
+    from app.models.refund_outbox import RefundOutbox
+
+    db.execute(
+        sa_update(RefundOutbox)
+        .where(RefundOutbox.id == outbox.id)
+        .values(status="failed", processing_at=None, last_error="order missing")
+    )
+    db.commit()
+    return False
+
+
+def _reconcile_previous_refund(db: Session, outbox, order, previous_attempts: int, request_no: str):
+    """重试前先向渠道对账。返回 None 表示还需要重新发起退款。"""
+    if previous_attempts <= 0:
+        return None
+    channel_status = _query_alipay_refund(outbox.trade_no, request_no)
+    if channel_status is True:
+        return _mark_refund_success(db, outbox, order)
+    if channel_status is None:
+        _update_processing_outbox(
+            db,
+            outbox.id,
+            status="pending",
+            processing_at=None,
+            last_error="refund status unknown; reconciliation required before retry",
         )
         db.commit()
         return False
+    return None
+
+
+def _park_failed_refund_attempt(db: Session, outbox, order, previous_attempts: int, max_attempts: int) -> bool:
+    """渠道拒绝后放回待重试；次数用尽则失败并通知人工。"""
+    attempt_count = previous_attempts + 1
+    if attempt_count >= max_attempts:
+        _update_processing_outbox(
+            db,
+            outbox.id,
+            status="failed",
+            processing_at=None,
+            last_error="max attempts reached, manual review required",
+        )
+        _notify_refund_manual_review(db, order, max_attempts)
+    else:
+        _update_processing_outbox(
+            db,
+            outbox.id,
+            status="pending",
+            processing_at=None,
+            last_error="alipay refund rejected",
+        )
+    db.commit()
+    return False
+
+
+def process_refund_outbox(
+    db: Session,
+    approval_id: int,
+    max_attempts: int = 10,
+    lease_seconds: int = 300,
+) -> bool | None:
+    """执行 pending 或租约过期的 processing 退款，重试前先向渠道对账。"""
+    claimed = _claim_refund_outbox(db, approval_id, lease_seconds)
+    if claimed is None:
+        return None
+    outbox, previous_attempts = claimed
+
+    order = db.get(Order, outbox.order_id)
+    if order is None:
+        return _fail_missing_refund_order(db, outbox)
 
     request_no = refund_request_no(outbox.approval_id)
-    if previous_attempts > 0:
-        channel_status = _query_alipay_refund(outbox.trade_no, request_no)
-        if channel_status is True:
-            return _mark_refund_success(db, outbox, order)
-        if channel_status is None:
-            db.execute(
-                sa_update(RefundOutbox)
-                .where(RefundOutbox.id == outbox.id, RefundOutbox.status == "processing")
-                .values(
-                    status="pending",
-                    processing_at=None,
-                    last_error="refund status unknown; reconciliation required before retry",
-                )
-            )
-            db.commit()
-            return False
+    reconciled = _reconcile_previous_refund(db, outbox, order, previous_attempts, request_no)
+    if reconciled is not None:
+        return reconciled
 
-    ok_refund = _invoke_alipay_refund(
+    if _invoke_alipay_refund(
         db,
         order,
         float(outbox.amount),
         outbox.trade_no,
         request_no,
-    )
-    if ok_refund:
+    ):
         return _mark_refund_success(db, outbox, order)
-
-    attempt_count = previous_attempts + 1
-    if attempt_count >= max_attempts:
-        db.execute(
-            sa_update(RefundOutbox)
-            .where(RefundOutbox.id == outbox.id, RefundOutbox.status == "processing")
-            .values(
-                status="failed",
-                processing_at=None,
-                last_error="max attempts reached, manual review required",
-            )
-        )
-        try:
-            from app.services.notification_service import create_notification
-            create_notification(
-                db,
-                tenant_id=order.tenant_id,
-                title="退款执行失败，需人工处理",
-                content=f"订单 {order.order_no} 的退款已重试 {max_attempts} 次仍失败，已停止自动重试，请人工处理。",
-                type="refund_failed",
-            )
-        except Exception as e:
-            logger.warning(f"Refund failed notification error (order={order.order_no}): {e}")
-    else:
-        db.execute(
-            sa_update(RefundOutbox)
-            .where(RefundOutbox.id == outbox.id, RefundOutbox.status == "processing")
-            .values(
-                status="pending",
-                processing_at=None,
-                last_error="alipay refund rejected",
-            )
-        )
-    db.commit()
-    return False
+    return _park_failed_refund_attempt(db, outbox, order, previous_attempts, max_attempts)
 
 
 def process_refund_outbox_batch(
@@ -611,6 +709,65 @@ def _invoke_alipay_refund(
         return False
 
 
+def _pending_refund_for_cancel(db: Session, approval_id: int, tenant_id: int, reason: str | None, phone: str | None):
+    """读取仍可撤销的审批和订单。原因、状态、租户和手机号都在这里拒绝。"""
+    approval = order_crud.get_refund_approval(db, approval_id, tenant_id)
+    if approval is None:
+        raise OrderError(f"退款审批不存在: {approval_id}")
+    if not reason or not reason.strip():
+        raise OrderError("请填写撤销原因")
+    if approval.status != "pending":
+        raise OrderError(f"退款已处理（{approval.status}），不可撤销")
+
+    order = order_crud.get_by_id(db, approval.order_id, tenant_id)
+    if order is None:
+        raise OrderError(f"退款审批不存在或无权操作: {approval_id}")
+    _verify_refund_phone(phone, order.phone)
+    return approval, order
+
+
+def _restore_cancelled_refund(db: Session, approval, order, approval_id: int, tenant_id: int, reason: str) -> dict:
+    """抢占撤销并按申请前状态退回订单。没抢到时返回已处理结果。"""
+    restore_status = approval.pre_status or "paid"
+    if not order_crud.claim_refund_decision(
+        db,
+        approval_id=approval.id,
+        decision="cancelled",
+        approver_id=None,
+    ):
+        db.rollback()
+        current = order_crud.get_refund_approval(db, approval_id, tenant_id)
+        return {
+            "id": approval_id,
+            "status": current.status if current is not None else "processed",
+            "already_processed": True,
+        }
+
+    db.expire(approval)
+    db.refresh(approval)
+    _check_transition(order.status, restore_status)
+    if not order_crud.update_status_optimistic(db, order, restore_status):
+        raise VersionConflict("订单状态已变更，请刷新重试")
+    cleaned_reason = reason.strip()
+    _append_review(approval, "cancel", None, f"用户/管理员撤销售后申请：{cleaned_reason}")
+    order_crud.create_refund_event(
+        db,
+        approval_id=approval.id,
+        event_type="cancelled",
+        actor_role="user",
+        detail=cleaned_reason,
+    )
+    log_audit(
+        db, tenant_id=tenant_id, user_id=None, action="refund_cancel",
+        target_type="refund_approval", target_id=approval.id,
+        detail=f"amount={approval.amount}, order_no={order.order_no}, reason={cleaned_reason}",
+    )
+    db.commit()
+    _track_order_state(order, "refund_requested", restore_status, "tenant")
+    logger.info(f"Refund {approval_id} cancelled by tenant {tenant_id}")
+    return {"id": approval.id, "status": "cancelled"}
+
+
 def cancel_refund(
     db: Session, *, approval_id: int, tenant_id: int, phone: str | None = None,
     reason: str | None = None,
@@ -637,63 +794,8 @@ def cancel_refund(
     Returns:
         dict: approval_id / status
     """
-    approval = order_crud.get_refund_approval(db, approval_id, tenant_id)
-    if approval is None:
-        raise OrderError(f"退款审批不存在: {approval_id}")
-    if not reason or not reason.strip():
-        raise OrderError("请填写撤销原因")
-    if approval.status != "pending":
-        raise OrderError(f"退款已处理（{approval.status}），不可撤销")
-
-    # 通过关联订单间接校验租户归属 —— 同 approve_refund
-    order = order_crud.get_by_id(db, approval.order_id, tenant_id)
-    if order is None:
-        raise OrderError(f"退款审批不存在或无权操作: {approval_id}")
-
-    # 规格 016: Widget 撤单需双因子（phone 后 4 位与订单绑定手机号一致）
-    if phone is not None:
-        from app.utils.validators import verify_phone_suffix
-        if not verify_phone_suffix(phone, order.phone):
-            raise OrderError("身份校验未通过：手机号与订单绑定信息不匹配")
-
-    restore_status = approval.pre_status or "paid"
-    if not order_crud.claim_refund_decision(
-        db,
-        approval_id=approval.id,
-        decision="cancelled",
-        approver_id=None,
-    ):
-        db.rollback()
-        current = order_crud.get_refund_approval(db, approval_id, tenant_id)
-        return {
-            "id": approval_id,
-            "status": current.status if current is not None else "processed",
-            "already_processed": True,
-        }
-    db.expire(approval)
-    db.refresh(approval)
-    _check_transition(order.status, restore_status)
-    ok = order_crud.update_status_optimistic(db, order, restore_status)
-    if not ok:
-        raise VersionConflict("订单状态已变更，请刷新重试")
-    _append_review(approval, "cancel", None, f"用户/管理员撤销售后申请：{reason.strip()}")
-    order_crud.create_refund_event(
-        db,
-        approval_id=approval.id,
-        event_type="cancelled",
-        actor_role="user",
-        detail=reason.strip(),
-    )
-    # PRD §2.1 审计日志: 退款撤销操作落库（同事务）
-    log_audit(
-        db, tenant_id=tenant_id, user_id=None, action="refund_cancel",
-        target_type="refund_approval", target_id=approval.id,
-        detail=f"amount={approval.amount}, order_no={order.order_no}, reason={reason.strip()}",
-    )
-    db.commit()
-    _track_order_state(order, "refund_requested", restore_status, "tenant")
-    logger.info(f"Refund {approval_id} cancelled by tenant {tenant_id}")
-    return {"id": approval.id, "status": "cancelled"}
+    approval, order = _pending_refund_for_cancel(db, approval_id, tenant_id, reason, phone)
+    return _restore_cancelled_refund(db, approval, order, approval_id, tenant_id, reason)
 
 
 

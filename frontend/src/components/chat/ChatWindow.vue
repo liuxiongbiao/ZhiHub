@@ -177,6 +177,45 @@ watch(input, (value) => {
   }, 1200)
 })
 
+async function replaceLastMessage(messageId: number) {
+  const local = messages.value[messages.value.length - 1]
+  messages.value[messages.value.length - 1] = { ...local, message_id: messageId }
+}
+
+async function sendAsAgent(sessionId: number, text: string) {
+  const response = await sendAgentMessage(sessionId, text)
+  await replaceLastMessage(response.data.message_id)
+  emit('message-sent')
+}
+
+async function sendAsUser(sessionId: number, text: string) {
+  const assistantIdx = messages.value.length
+  messages.value.push({ _localId: `assistant-${Date.now()}`, role: 'assistant', content: '', created_at: new Date().toISOString() })
+  scrollToBottom()
+  try {
+    let streamedMessageId: number | undefined
+    await sendMessageStream(sessionId, text, (chunk) => {
+      const current = messages.value[assistantIdx]
+      messages.value[assistantIdx] = { ...current, content: current.content + chunk }
+      scrollToBottom()
+    }, (messageId) => {
+      streamedMessageId = messageId
+    })
+    if (streamedMessageId) {
+      const current = messages.value[assistantIdx]
+      messages.value[assistantIdx] = { ...current, message_id: streamedMessageId }
+    }
+  } catch (streamError) {
+    if (streamError instanceof StreamRequestError && ![404, 405, 501].includes(streamError.status)) {
+      throw streamError
+    }
+    messages.value.pop()
+    const res = await sendMessageApi(sessionId, text)
+    messages.value.push({ message_id: res.data.message_id, role: res.data.role, content: res.data.content, sources: res.data.sources })
+  }
+  emit('message-sent')
+}
+
 async function handleSend() {
   const text = input.value.trim()
   if (!text || !props.sessionId || loading.value) return
@@ -188,46 +227,10 @@ async function handleSend() {
   loading.value = true
   try {
     if (props.mode === 'agent') {
-      const response = await sendAgentMessage(props.sessionId, text)
-      const local = messages.value[messages.value.length - 1]
-      messages.value[messages.value.length - 1] = {
-        ...local,
-        message_id: response.data.message_id,
-      }
-      emit('message-sent')
+      await sendAsAgent(props.sessionId, text)
       return
     }
-    // 规格 013 US7: 优先走 SSE 流式（后端已复用 Agent 主链路），逐字渲染
-    const assistantIdx = messages.value.length
-    messages.value.push({ _localId: `assistant-${Date.now()}`, role: 'assistant', content: '', created_at: new Date().toISOString() })
-    scrollToBottom()
-    try {
-      let streamedMessageId: number | undefined
-      await sendMessageStream(props.sessionId, text, (chunk) => {
-        // 规格 013: 直接修改原始对象不会触发 Vue 响应式（push 后数组存的是代理），
-        // 必须替换数组元素才会重渲染 —— 否则流式气泡 content 永远为空（只显示角色名）。
-        const current = messages.value[assistantIdx]
-        messages.value[assistantIdx] = { ...current, content: current.content + chunk }
-        scrollToBottom()
-      }, (messageId) => {
-        streamedMessageId = messageId
-      })
-      // 规格 013: SSE 结束前后端下发落库的 assistant message_id，关联本地气泡（刷新后可对应反馈等操作）
-      if (streamedMessageId) {
-        const current = messages.value[assistantIdx]
-        messages.value[assistantIdx] = { ...current, message_id: streamedMessageId }
-      }
-    } catch (streamError) {
-      // 鉴权、CSRF 和业务错误必须直接展示，禁止再发一次非流式请求。
-      if (streamError instanceof StreamRequestError && ![404, 405, 501].includes(streamError.status)) {
-        throw streamError
-      }
-      // 流式端点不可用时回退非流式 /message（后端仍支持）
-      messages.value.pop()
-      const res = await sendMessageApi(props.sessionId, text)
-      messages.value.push({ message_id: res.data.message_id, role: res.data.role, content: res.data.content, sources: res.data.sources })
-    }
-    emit('message-sent')
+    await sendAsUser(props.sessionId, text)
   } catch (e: any) {
     ElMessage.error(e?.message || '发送失败')
     messages.value.push({ _localId: `error-${Date.now()}`, role: 'system', content: '消息发送失败，请重试。' })

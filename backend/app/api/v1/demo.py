@@ -26,6 +26,28 @@ def _tenant_id(request: Request) -> int:
     return int(value)
 
 
+_DEMO_SCENARIOS = [
+    {
+        "id": "knowledge",
+        "title": "可信知识回答",
+        "prompt": "你们支持七天无理由退货吗？退货流程是什么？",
+        "outcome": "AI 根据政策回答并展示引用",
+    },
+    {
+        "id": "order",
+        "title": "查询真实订单",
+        "prompt": "帮我查订单 ORD-DEMO-0003，手机号后四位 2222。",
+        "outcome": "身份核验后调用订单工具返回物流",
+    },
+    {
+        "id": "handoff",
+        "title": "风险转人工",
+        "prompt": "商品运输中破损了，你们能额外赔偿我 500 元吗？",
+        "outcome": "资金风险规则触发，完整上下文转交坐席",
+    },
+]
+
+
 @router.get("/status", dependencies=[Depends(require_role("admin", "agent"))])
 def demo_status(request: Request, db: Session = Depends(get_db)):
     """返回当前租户可用的演示剧本，不包含账号密码。"""
@@ -48,26 +70,7 @@ def demo_status(request: Request, db: Session = Depends(get_db)):
         "customer_phone_last4": "2222" if is_demo else None,
         "order_no": "ORD-DEMO-0003" if is_demo else None,
         "widget_api_key": widget_api_key,
-        "scenarios": [
-            {
-                "id": "knowledge",
-                "title": "可信知识回答",
-                "prompt": "你们支持七天无理由退货吗？退货流程是什么？",
-                "outcome": "AI 根据政策回答并展示引用",
-            },
-            {
-                "id": "order",
-                "title": "查询真实订单",
-                "prompt": "帮我查订单 ORD-DEMO-0003，手机号后四位 2222。",
-                "outcome": "身份核验后调用订单工具返回物流",
-            },
-            {
-                "id": "handoff",
-                "title": "风险转人工",
-                "prompt": "商品运输中破损了，你们能额外赔偿我 500 元吗？",
-                "outcome": "资金风险规则触发，完整上下文转交坐席",
-            },
-        ] if is_demo else [],
+        "scenarios": _DEMO_SCENARIOS if is_demo else [],
     }
 
 

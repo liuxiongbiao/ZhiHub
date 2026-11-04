@@ -269,58 +269,66 @@ def _chunk_generic(text: str) -> list[Chunk]:
     return _merge_semantic_units([(None, paragraph) for paragraph in paragraphs])
 
 
-def _merge_semantic_units(units: list[tuple[str | None, str]]) -> list[Chunk]:
-    """把相邻标题/段落单元合并为接近 700 字的语义完整切片。"""
-    pending_text = ""
-    pending_heading: str | None = None
-    merged: list[tuple[str, str | None]] = []
+def _merge_short_tail(merged: list[tuple[str, str | None]]) -> None:
+    """尾片过短且能放进前一片时并入，避免文档末尾留下孤立短句。"""
+    if len(merged) < 2 or len(merged[-1][0]) >= CHUNK_MIN_CHARS:
+        return
+    previous_text, previous_heading = merged[-2]
+    tail_text, _ = merged[-1]
+    combined = f"{previous_text}\n\n{tail_text}"
+    if len(combined) <= CHUNK_MAX_CHARS:
+        merged[-2] = (combined, previous_heading)
+        merged.pop()
 
-    def flush_pending() -> None:
-        """提交当前缓冲区；缓冲只在语义单元边界处刷新。"""
+
+def _absorb_semantic_unit(merged, pending_text, pending_heading, heading, body):
+    """把一个标题段落并入缓冲区。超长段落先切分再单独成片。"""
+    body = body.strip()
+    if not body:
+        return pending_text, pending_heading
+
+    def flush() -> None:
         nonlocal pending_text, pending_heading
         if pending_text:
             merged.append((pending_text, pending_heading))
         pending_text = ""
         pending_heading = None
 
-    for heading, body in units:
-        body = body.strip()
-        if not body:
-            continue
-        heading_prefix = f"{heading}\n" if heading else ""
-        unit_text = f"{heading_prefix}{body}"
+    heading_prefix = f"{heading}\n" if heading else ""
+    unit_text = f"{heading_prefix}{body}"
+    if len(unit_text) > CHUNK_MAX_CHARS:
+        flush()
+        available = max(CHUNK_MIN_CHARS, CHUNK_MAX_CHARS - len(heading_prefix))
+        for part in _split_by_size(body, available, CHUNK_OVERLAP_CHARS):
+            merged.append((f"{heading_prefix}{part}", heading))
+        return pending_text, pending_heading
 
-        if len(unit_text) > CHUNK_MAX_CHARS:
-            flush_pending()
-            available = max(CHUNK_MIN_CHARS, CHUNK_MAX_CHARS - len(heading_prefix))
-            for part in _split_by_size(body, available, CHUNK_OVERLAP_CHARS):
-                merged.append((f"{heading_prefix}{part}", heading))
-            continue
-
-        candidate = f"{pending_text}\n\n{unit_text}" if pending_text else unit_text
-        if pending_text and len(candidate) > CHUNK_MAX_CHARS:
-            flush_pending()
-            pending_text = unit_text
+    candidate = f"{pending_text}\n\n{unit_text}" if pending_text else unit_text
+    if pending_text and len(candidate) > CHUNK_MAX_CHARS:
+        flush()
+        pending_text = unit_text
+        pending_heading = heading
+    else:
+        pending_text = candidate
+        if pending_heading is None:
             pending_heading = heading
-        else:
-            pending_text = candidate
-            if pending_heading is None:
-                pending_heading = heading
+    if len(pending_text) >= CHUNK_TARGET_CHARS:
+        flush()
+    return pending_text, pending_heading
 
-        if len(pending_text) >= CHUNK_TARGET_CHARS:
-            flush_pending()
 
-    flush_pending()
-
-    # 尾片过短且可安全并入前片时合并，避免文档末尾产生孤立的一两句话。
-    if len(merged) >= 2 and len(merged[-1][0]) < CHUNK_MIN_CHARS:
-        previous_text, previous_heading = merged[-2]
-        tail_text, _ = merged[-1]
-        combined = f"{previous_text}\n\n{tail_text}"
-        if len(combined) <= CHUNK_MAX_CHARS:
-            merged[-2] = (combined, previous_heading)
-            merged.pop()
-
+def _merge_semantic_units(units: list[tuple[str | None, str]]) -> list[Chunk]:
+    """把相邻标题/段落单元合并为接近 700 字的语义完整切片。"""
+    pending_text = ""
+    pending_heading: str | None = None
+    merged: list[tuple[str, str | None]] = []
+    for heading, body in units:
+        pending_text, pending_heading = _absorb_semantic_unit(
+            merged, pending_text, pending_heading, heading, body,
+        )
+    if pending_text:
+        merged.append((pending_text, pending_heading))
+    _merge_short_tail(merged)
     return [
         Chunk(index=index, text=chunk_text, heading=heading)
         for index, (chunk_text, heading) in enumerate(merged)
