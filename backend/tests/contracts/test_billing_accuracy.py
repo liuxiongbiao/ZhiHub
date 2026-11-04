@@ -1,10 +1,16 @@
 """契约测试：规格 015 计费准确性（docs/specs/015-billing-accuracy/spec.md）。"""
 
 import pytest
+from datetime import datetime, timezone
 
 from app.models.tenant import Tenant
 from app.services import billing_service
 from app.config import settings
+
+
+def _current_period() -> str:
+    """用量计数写在当前 UTC 月，账单必须读同一个账期。"""
+    return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
 def _mk_tenant(db, plan_type: str, *, status: str = "active") -> Tenant:
@@ -49,7 +55,7 @@ class TestInvoiceFormula:
         t = _mk_tenant(db, "basic")
         for _ in range(2100):
             billing_service.incr_usage_for_tenant(db, t.id)
-        inv = billing_service.generate_invoice(db, tenant_id=t.id, period="2026-08")
+        inv = billing_service.generate_invoice(db, tenant_id=t.id, period=_current_period())
         assert float(inv["base_fee"]) == 999.0
         assert float(inv["overage_fee"]) == 50.0  # 100 * 0.5
         assert float(inv["base_fee"] + inv["overage_fee"]) == 1049.0
@@ -58,7 +64,7 @@ class TestInvoiceFormula:
         t = _mk_tenant(db, "pro")
         for _ in range(10500):
             billing_service.incr_usage_for_tenant(db, t.id)
-        inv = billing_service.generate_invoice(db, tenant_id=t.id, period="2026-08")
+        inv = billing_service.generate_invoice(db, tenant_id=t.id, period=_current_period())
         assert float(inv["base_fee"]) == 4999.0
         assert float(inv["overage_fee"]) == 250.0
 
@@ -86,7 +92,7 @@ class TestInvoiceFormula:
         t = _mk_tenant(db, "trial")
         for _ in range(150):
             billing_service.incr_usage_for_tenant(db, t.id)
-        inv = billing_service.generate_invoice(db, tenant_id=t.id, period="2026-08")
+        inv = billing_service.generate_invoice(db, tenant_id=t.id, period=_current_period())
         assert float(inv["base_fee"]) == 0.0
         assert float(inv["overage_fee"]) == 25.0  # 50 * 0.5
 
@@ -94,6 +100,6 @@ class TestInvoiceFormula:
         t = _mk_tenant(db, "basic")
         for _ in range(1000):
             billing_service.incr_usage_for_tenant(db, t.id)
-        inv = billing_service.generate_invoice(db, tenant_id=t.id, period="2026-08")
+        inv = billing_service.generate_invoice(db, tenant_id=t.id, period=_current_period())
         assert float(inv["base_fee"]) == 999.0
         assert float(inv["overage_fee"]) == 0.0

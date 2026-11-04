@@ -23,7 +23,8 @@ class TestAggregateDailyUsage:
         from app.models.usage_record import UsageRecord
 
         monkeypatch.setattr(bt, "SessionLocal", lambda: db)
-        fake_redis.set("billing:quota:1:2026-08", "12.5")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        fake_redis.set(f"billing:quota:1:{month}", "12.5")
         result = bt.aggregate_daily_usage()
         assert result["status"] == "ok" and result["tenants"] == 1, result
         rec = db.query(UsageRecord).one()
@@ -36,7 +37,8 @@ class TestAggregateDailyUsage:
         from app.models.usage_record import UsageRecord
 
         monkeypatch.setattr(bt, "SessionLocal", lambda: db)
-        fake_redis.set("billing:quota:1:2026-08", "12.5")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        fake_redis.set(f"billing:quota:1:{month}", "12.5")
         bt.aggregate_daily_usage()
         bt.aggregate_daily_usage()
         assert db.query(UsageRecord).count() == 1
@@ -74,7 +76,8 @@ class TestAggregateDailyUsage:
         from app.models.usage_record import UsageRecord
 
         monkeypatch.setattr(bt, "SessionLocal", lambda: db)
-        fake_redis.set("billing:quota:2:2026-08", "150")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        fake_redis.set(f"billing:quota:2:{month}", "150")
         bt.aggregate_daily_usage()
         rec = db.query(UsageRecord).one()
         assert rec.conversation_count == 150
