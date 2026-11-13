@@ -164,7 +164,6 @@ def get_session_detail(
 
 
 # ─── POST /session/message ───
-@router.post("/message", response_model=SendMessageResponse)
 def _reject_busy_user(request: Request) -> None:
     user_id = getattr(request.state, "user_id", None)
     if user_id is None:
@@ -186,6 +185,7 @@ def _message_http_error(exc: Exception, session_id: int) -> HTTPException:
     return HTTPException(status_code=500, detail="Agent 处理失败，请稍后重试")
 
 
+@router.post("/message", response_model=SendMessageResponse)
 def send_message(
     body: SendMessageRequest,
     request: Request,
