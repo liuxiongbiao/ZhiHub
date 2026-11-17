@@ -22,7 +22,7 @@
           <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
-              <el-tag :type="statusType(row.status)" size="small">{{ STATUS_MAP[row.status] || row.status }}</el-tag>
+              <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="created_at" label="申请时间" width="180">
@@ -59,7 +59,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getRefundList, getRefundRules, approveRefund, cancelRefund, REFUND_STATUS_MAP as STATUS_MAP, type RefundApproval } from '@/api/order'
+import { getRefundList, getRefundRules, approveRefund, cancelRefund, REFUND_STATUS_MAP as STATUS_MAP, type RefundApproval, type RefundStatus } from '@/api/order'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useUserStore } from '@/store/modules/user'
 import { formatDateTime as formatDate } from '@/utils/datetime'
@@ -86,6 +86,15 @@ async function loadRules() {
   } catch {
     ruleText.value = '退款终审额度加载失败，服务端仍会执行额度校验。'
   }
+}
+
+function isRefundStatus(status: string): status is RefundStatus {
+  return Object.prototype.hasOwnProperty.call(STATUS_MAP, status)
+}
+
+/** 审批状态 → 中文标签；未知状态原样显示 */
+function statusLabel(status: string): string {
+  return isRefundStatus(status) ? STATUS_MAP[status] : status
 }
 
 /** 审批状态 → el-tag 配色 */
